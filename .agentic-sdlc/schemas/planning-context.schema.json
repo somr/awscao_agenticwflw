@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agentic-sdlc/planning-context.schema.json",
+  "title": "Agentic SDLC Planning Context",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ticket",
+    "sources",
+    "problem_statement",
+    "scope",
+    "acceptance_criteria",
+    "functional_requirements",
+    "non_functional_requirements",
+    "constraints",
+    "dependencies",
+    "open_questions",
+    "contradictions",
+    "retrieval_warnings"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "ticket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "summary"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1}
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "problem_statement": {"$ref": "#/$defs/sourcedStatement"},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["in", "out", "uncertain"],
+      "properties": {
+        "in": {"type": "array", "items": {"$ref": "#/$defs/sourcedStatement"}},
+        "out": {"type": "array", "items": {"$ref": "#/$defs/sourcedStatement"}},
+        "uncertain": {"type": "array", "items": {"$ref": "#/$defs/sourcedStatement"}}
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/requirement"}
+    },
+    "functional_requirements": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/requirement"}
+    },
+    "non_functional_requirements": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/requirement"}
+    },
+    "constraints": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/requirement"}
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/sourcedStatement"}
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/openQuestion"}
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/contradiction"}
+    },
+    "retrieval_warnings": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/retrievalWarning"}
+    }
+  },
+  "$defs": {
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "location"],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "location": {"type": "string", "minLength": 1}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "type", "title", "status"],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "type": {"type": "string", "enum": ["JIRA", "CONFLUENCE", "HUMAN", "OTHER"]},
+        "title": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "enum": ["RETRIEVED", "PARTIAL", "UNAVAILABLE"]},
+        "content_digest": {"type": ["string", "null"]}
+      }
+    },
+    "sourcedStatement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "sources"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/sourceRef"}
+        }
+      }
+    },
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text", "origin", "sources"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "text": {"type": "string", "minLength": 1},
+        "origin": {"type": "string", "enum": ["EXPLICIT", "NORMALIZED_FROM_SOURCE"]},
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/sourceRef"}
+        }
+      }
+    },
+    "openQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "question", "reason", "blocking", "sources"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "question": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "blocking": {"type": "boolean"},
+        "sources": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/sourceRef"}
+        }
+      }
+    },
+    "contradiction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "blocking", "sources"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "blocking": {"type": "boolean"},
+        "sources": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"$ref": "#/$defs/sourceRef"}
+        }
+      }
+    },
+    "retrievalWarning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "severity", "message", "blocking"],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "severity": {"type": "string", "enum": ["INFO", "WARNING", "ERROR"]},
+        "message": {"type": "string", "minLength": 1},
+        "blocking": {"type": "boolean"}
+      }
+    }
+  }
+}

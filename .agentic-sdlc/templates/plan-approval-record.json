@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "ticket_id": "<JIRA-ID>",
+  "plan_path": "<relative-path-to-development-plan>",
+  "plan_sha256": "<sha256-of-immutable-plan-file>",
+  "repository_baseline_sha": "<git-sha>",
+  "decision": "APPROVED",
+  "approved_by": "<human-identity-or-external-approval-reference>",
+  "approved_at": "<ISO-8601 timestamp>",
+  "approval_reference": "<optional Jira/Git/other audit reference>"
+}

@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Agentic SDLC execution scratch/evidence; durable records remain tracked.
+.agentic-sdlc/runtime/
+
+# IDE
+.idea/
+
+# OS
+.DS_Store

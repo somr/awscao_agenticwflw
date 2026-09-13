@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "ticket": {
+    "id": "PAY-DEMO-001",
+    "source_id": "JIRA:PAY-DEMO-001",
+    "title": "Make payment callbacks idempotent",
+    "file": "jira.md",
+    "required": true
+  },
+  "confluence": [
+    {
+      "source_id": "CONF:4812",
+      "title": "Payment Callback Processing",
+      "file": "confluence/feature-spec.md",
+      "required": true
+    },
+    {
+      "source_id": "CONF:4934",
+      "title": "Payment Service Architecture",
+      "file": "confluence/architecture.md",
+      "required": true
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "schema_version": "1.0",
+  "ticket": {
+    "id": "PAY-1427",
+    "summary": "Add idempotent processing of payment callbacks"
+  },
+  "sources": [
+    {
+      "source_id": "JIRA:PAY-1427",
+      "type": "JIRA",
+      "title": "PAY-1427",
+      "status": "RETRIEVED",
+      "content_digest": null
+    },
+    {
+      "source_id": "CONF:4812",
+      "type": "CONFLUENCE",
+      "title": "Payment Callback Processing",
+      "status": "RETRIEVED",
+      "content_digest": null
+    }
+  ],
+  "problem_statement": {
+    "text": "Repeated provider callbacks can cause the same business event to be processed more than once.",
+    "sources": [
+      {"source_id": "JIRA:PAY-1427", "location": "description"}
+    ]
+  },
+  "scope": {
+    "in": [
+      {
+        "text": "Prevent duplicate business processing for repeated provider event IDs.",
+        "sources": [
+          {"source_id": "JIRA:PAY-1427", "location": "AC-1"}
+        ]
+      }
+    ],
+    "out": [],
+    "uncertain": []
+  },
+  "acceptance_criteria": [
+    {
+      "id": "AC-1",
+      "text": "Repeated callbacks with the same provider event ID must not cause duplicate fulfilment.",
+      "origin": "EXPLICIT",
+      "sources": [
+        {"source_id": "JIRA:PAY-1427", "location": "acceptance criteria / AC-1"}
+      ]
+    }
+  ],
+  "functional_requirements": [],
+  "non_functional_requirements": [],
+  "constraints": [
+    {
+      "id": "CON-1",
+      "text": "Do not introduce a distributed lock service.",
+      "origin": "EXPLICIT",
+      "sources": [
+        {"source_id": "CONF:4812", "location": "Constraints"}
+      ]
+    }
+  ],
+  "dependencies": [],
+  "open_questions": [],
+  "contradictions": [],
+  "retrieval_warnings": []
+}
