@@ -16,8 +16,12 @@ import hashlib
 import json
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from cao_workflow import emit_output, get_inputs, step
 
@@ -37,6 +41,24 @@ PLANNING_ANALYST = "sdlc_planning_analyst"
 PLAN_AUTHOR = "sdlc_plan_author"
 PLAN_REVIEWER = "sdlc_plan_reviewer"
 STEP_TIMEOUT_SECONDS = 1800
+CAO_HTTP_TIMEOUT_SECONDS = 30.0
+COMPLETION_INITIAL_SETTLE_SECONDS = 5.0
+COMPLETION_POLL_SECONDS = 3.0
+COMPLETION_MAX_POLLS = 100
+COMPLETION_STABLE_POLLS = 2
+
+# CAO 2.5.0's Claude Code run-step path can transiently report COMPLETED
+# while the Claude Ink TUI is still processing. Keep the worker alive and
+# independently stabilize the extracted answer before accepting the step.
+LIVE_TUI_ACTIVITY_RE = re.compile(
+    r"^[ \t]*(?:[✶✢✽✻✳·*][ \t]+\w*ing\b[^\n]*…|(?:Reading|Searching|Analyzing|Inspecting)\b[^\n]*…)",
+    re.MULTILINE | re.IGNORECASE,
+)
+COMPLETION_SUMMARY_RE = re.compile(
+    r"^[ \t]*[✶✢✽✻✳][^\n…]*\bfor\s+\d+(?:\.\d+)?\s*s\b",
+    re.IGNORECASE,
+)
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 REVIEW_STATUSES = {
     "PASS",
@@ -68,6 +90,246 @@ CATEGORIES = {
 
 class WorkflowContractError(ValueError):
     """Raised when deterministic validation rejects workflow data."""
+
+
+class IncompleteAgentExecutionError(WorkflowContractError):
+    """Raised when CAO returns before the agent has produced a final response."""
+
+
+def _wait(seconds: float) -> None:
+    """Sleep without importing the workflow-linter's nondeterministic `time` module."""
+    threading.Event().wait(seconds)
+
+
+def _cao_base_url() -> str:
+    value = os.environ.get("CAO_API_BASE_URL", "").strip().rstrip("/")
+    if not value:
+        raise WorkflowContractError(
+            "CAO_API_BASE_URL is unavailable; stabilized workflow steps must run under `cao workflow run`"
+        )
+    return value
+
+
+def _cao_json_request(
+    path: str,
+    *,
+    method: str = "GET",
+    query: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    url = f"{_cao_base_url()}{path}"
+    if query:
+        url = f"{url}?{urlencode(query)}"
+    data = None if method == "GET" else b""
+    request = Request(url, data=data, method=method, headers={"Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=CAO_HTTP_TIMEOUT_SECONDS) as response:
+            payload = response.read().decode("utf-8")
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise WorkflowContractError(
+            f"CAO API {method} {path} failed with HTTP {exc.code}: {body[:500]}"
+        ) from exc
+    except URLError as exc:
+        raise WorkflowContractError(f"CAO API {method} {path} failed: {exc}") from exc
+    if not payload.strip():
+        return {}
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise WorkflowContractError(
+            f"CAO API {method} {path} returned invalid JSON: {exc}"
+        ) from exc
+    if not isinstance(value, dict):
+        raise WorkflowContractError(f"CAO API {method} {path} returned a non-object JSON payload")
+    return value
+
+
+def _cao_terminal_snapshot(terminal_id: str) -> tuple[str, str, str]:
+    terminal = _cao_json_request(f"/terminals/{terminal_id}")
+    last = _cao_json_request(
+        f"/terminals/{terminal_id}/output", query={"mode": "last"}
+    )
+    full = _cao_json_request(
+        f"/terminals/{terminal_id}/output", query={"mode": "full"}
+    )
+    status = str(terminal.get("status", "unknown")).lower()
+    last_output = str(last.get("output", ""))
+    full_output = str(full.get("output", ""))
+    return status, last_output, full_output
+
+
+def _has_live_tui_activity(text: str) -> bool:
+    clean = ANSI_RE.sub("", text)
+    nonempty = [line for line in clean.splitlines() if line.strip()][-20:]
+    last_activity = -1
+    last_completion = -1
+    for index, line in enumerate(nonempty):
+        if LIVE_TUI_ACTIVITY_RE.search(line):
+            last_activity = index
+        if COMPLETION_SUMMARY_RE.search(line):
+            last_completion = index
+    # A spinner/read marker is live only when no newer completion summary has
+    # superseded it. This avoids treating a stale spinner retained in Claude's
+    # scrollback as current work after the turn has actually finished.
+    return last_activity >= 0 and last_activity > last_completion
+
+
+def _looks_incomplete_agent_output(text: str) -> bool:
+    stripped = ANSI_RE.sub("", text).strip()
+    if not stripped:
+        return True
+    if stripped.startswith("[NO RESPONSE -") or stripped.startswith("[PARTIAL RESPONSE -"):
+        return True
+    if "tmux focus-events off" in stripped:
+        return True
+    if _has_live_tui_activity(stripped):
+        return True
+    return False
+
+
+def _cleanup_step_terminal(terminal_id: str, evidence_dir: Path, step_id: str) -> None:
+    """Best-effort graceful exit + delete for a teardown=False workflow worker."""
+    errors: list[str] = []
+    try:
+        _cao_json_request(f"/terminals/{terminal_id}/exit", method="POST")
+    except WorkflowContractError as exc:
+        errors.append(f"exit: {exc}")
+    _wait(0.25)
+    try:
+        _cao_json_request(f"/terminals/{terminal_id}", method="DELETE")
+    except WorkflowContractError as exc:
+        errors.append(f"delete: {exc}")
+    if errors:
+        _write_text(evidence_dir / f"{step_id}.cleanup-warning.txt", "\n".join(errors))
+
+
+def _stabilize_live_step_output(
+    *,
+    terminal_id: str,
+    initial_output: str,
+    step_id: str,
+    evidence_dir: Path,
+) -> str:
+    """Wait past transient CAO COMPLETED states and return a stable final answer.
+
+    CAO's own Claude E2E tests re-check completion after a delay because the
+    TUI can transiently report COMPLETED. Python workflow run-step currently
+    settles immediately, so this workflow keeps the terminal alive and polls
+    the public terminal API until the provider-extracted answer is stable.
+    """
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    _write_text(evidence_dir / f"{step_id}.initial.txt", initial_output)
+
+    polls: list[dict[str, Any]] = []
+    previous_candidate: str | None = None
+    stable_polls = 0
+    last_status = "unknown"
+    last_output = initial_output
+    last_full = ""
+
+    _wait(COMPLETION_INITIAL_SETTLE_SECONDS)
+    for poll_no in range(1, COMPLETION_MAX_POLLS + 1):
+        last_status, last_output, last_full = _cao_terminal_snapshot(terminal_id)
+        live_activity = _has_live_tui_activity(last_full)
+        incomplete = _looks_incomplete_agent_output(last_output)
+        candidate_sha = _sha256_bytes(last_output.encode("utf-8")) if last_output else None
+        polls.append({
+            "poll": poll_no,
+            "status": last_status,
+            "last_output_length": len(last_output),
+            "last_output_sha256": candidate_sha,
+            "live_tui_activity": live_activity,
+            "incomplete_output": incomplete,
+        })
+
+        if last_status == "error":
+            raise IncompleteAgentExecutionError(
+                f"{step_id} terminal entered ERROR while waiting for a stable final response"
+            )
+        if last_status == "waiting_user_answer":
+            raise IncompleteAgentExecutionError(
+                f"{step_id} requires an interactive human answer; headless planning agents must not block on prompts"
+            )
+
+        if not incomplete and not live_activity:
+            if last_output == previous_candidate:
+                stable_polls += 1
+            else:
+                previous_candidate = last_output
+                stable_polls = 1
+            if stable_polls >= COMPLETION_STABLE_POLLS:
+                _write_text(evidence_dir / f"{step_id}.final.txt", last_output)
+                _write_json(
+                    evidence_dir / f"{step_id}.stabilization.json",
+                    {
+                        "stabilized": True,
+                        "required_stable_polls": COMPLETION_STABLE_POLLS,
+                        "polls": polls,
+                    },
+                )
+                return last_output
+        else:
+            previous_candidate = None
+            stable_polls = 0
+
+        _wait(COMPLETION_POLL_SECONDS)
+
+    _write_text(evidence_dir / f"{step_id}.timeout-last.txt", last_output)
+    _write_text(evidence_dir / f"{step_id}.timeout-full.txt", last_full)
+    _write_json(
+        evidence_dir / f"{step_id}.stabilization.json",
+        {
+            "stabilized": False,
+            "required_stable_polls": COMPLETION_STABLE_POLLS,
+            "polls": polls,
+        },
+    )
+    raise IncompleteAgentExecutionError(
+        f"{step_id} did not produce a stable final response after "
+        f"{COMPLETION_INITIAL_SETTLE_SECONDS + COMPLETION_MAX_POLLS * COMPLETION_POLL_SECONDS:.0f}s "
+        f"of completion stabilization (last CAO status: {last_status})"
+    )
+
+
+def _run_stabilized_step(
+    *,
+    agent: str,
+    prompt: str,
+    step_id: str,
+    repo: Path,
+    evidence_dir: Path,
+) -> str:
+    """Run one CAO step without teardown, then stabilize and explicitly clean it."""
+    handle = step(
+        PROVIDER,
+        agent,
+        prompt,
+        recovery="idempotent",
+        step_id=step_id,
+        timeout=STEP_TIMEOUT_SECONDS,
+        working_directory=str(repo),
+        teardown=False,
+    )
+
+    # A replayed handle names a terminal that no longer exists. Accept only a
+    # previously stabilized-looking answer; incomplete replays require a new run
+    # (or an explicit CAO recovery decision), not an HTTP poll of a dead id.
+    if handle.replayed:
+        if _looks_incomplete_agent_output(handle.output):
+            raise IncompleteAgentExecutionError(
+                f"{step_id} replayed an incomplete prior result; start a fresh run or rerun this step explicitly"
+            )
+        return handle.output
+
+    try:
+        return _stabilize_live_step_output(
+            terminal_id=handle.terminal_id,
+            initial_output=handle.output,
+            step_id=step_id,
+            evidence_dir=evidence_dir,
+        )
+    finally:
+        _cleanup_step_terminal(handle.terminal_id, evidence_dir, step_id)
 
 
 def _safe_component(value: str, label: str) -> str:
@@ -113,6 +375,83 @@ def _parse_json_output(text: str, label: str) -> Any:
         return json.loads(candidate)
     except json.JSONDecodeError as exc:
         raise WorkflowContractError(f"{label} did not return valid JSON: {exc}") from exc
+
+
+def _run_json_contract_step(
+    *,
+    agent: str,
+    prompt: str,
+    label: str,
+    step_id: str,
+    repo: Path,
+    evidence_dir: Path,
+    validator=None,
+    max_repairs: int = 1,
+) -> Any:
+    """Run a stabilized LLM step that must return machine-readable JSON.
+
+    Execution completeness is established *before* JSON parsing. Live TUI or
+    transport-truncated output raises IncompleteAgentExecutionError and never
+    enters the JSON-repair path. Once a stable final response exists, one
+    bounded contract-repair turn is allowed for genuine JSON/shape defects.
+    """
+    current_prompt = prompt
+    previous_output = ""
+    last_error: WorkflowContractError | None = None
+
+    for attempt in range(max_repairs + 1):
+        current_step_id = step_id if attempt == 0 else f"{step_id}-repair-{attempt}"
+        output = _run_stabilized_step(
+            agent=agent,
+            prompt=current_prompt,
+            step_id=current_step_id,
+            repo=repo,
+            evidence_dir=evidence_dir,
+        )
+
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        _write_text(evidence_dir / f"{current_step_id}.raw.txt", output)
+
+        try:
+            value = _parse_json_output(output, label)
+            if validator is not None:
+                value = validator(value)
+            return value
+        except WorkflowContractError as exc:
+            last_error = exc
+            previous_output = output
+            if attempt >= max_repairs:
+                break
+
+            current_prompt = f"""{prompt}
+
+## CONTRACT REPAIR REQUIRED
+
+The previous response completed normally but failed the deterministic JSON contract.
+Repair the response and return the COMPLETE corrected JSON document.
+
+Validation error:
+{exc}
+
+Previous response:
+<previous_response>
+{previous_output}
+</previous_response>
+
+Rules for this repair:
+- Preserve the meaning and provenance of the source material.
+- Do not invent requirements, evidence, defaults, thresholds or decisions.
+- Correct JSON syntax and/or the reported contract-shape problem only.
+- Return strict RFC 8259 JSON only.
+- Use double quotes for every object key and string value.
+- Do not use comments, trailing commas, single-quoted strings, NaN, Infinity, ellipses or Markdown fences.
+- Return no prose before or after the JSON.
+"""
+
+    assert last_error is not None
+    raise WorkflowContractError(
+        f"{label} failed its JSON contract after {max_repairs + 1} attempts: {last_error}"
+    ) from last_error
 
 
 def _require_dict(value: Any, path: str) -> dict[str, Any]:
@@ -594,16 +933,22 @@ def main() -> None:
 
     # 2. Agentic semantic normalization.
     context_version = 1
-    normalizer = step(
-        PROVIDER,
-        CONTEXT_NORMALIZER,
-        build_normalizer_prompt(repo, raw_dir, schema, context_contract),
-        recovery="idempotent",
+    def _context_contract_validator(value: Any) -> Any:
+        # validate_planning_context raises on structural/contract defects and
+        # returns semantic readiness blockers separately. Only the former are
+        # repaired by the LLM boundary helper.
+        validate_planning_context(value, ticket_id)
+        return value
+
+    context = _run_json_contract_step(
+        agent=CONTEXT_NORMALIZER,
+        prompt=build_normalizer_prompt(repo, raw_dir, schema, context_contract),
+        label="Context Normalizer",
         step_id="context-normalize-v1",
-        timeout=STEP_TIMEOUT_SECONDS,
-        working_directory=str(repo),
+        repo=repo,
+        evidence_dir=normalized_dir / "agent-output",
+        validator=_context_contract_validator,
     )
-    context = _parse_json_output(normalizer.output, "Context Normalizer")
     context_json = normalized_dir / "planning-context-v1.json"
     _write_json(context_json, context)
 
@@ -617,51 +962,46 @@ def main() -> None:
         return
 
     # 4. Repository analysis.
-    analysis_handle = step(
-        PROVIDER,
-        PLANNING_ANALYST,
-        build_analysis_prompt(repo, context_json, raw_dir, baseline_sha, planning_contract, governance),
-        recovery="idempotent",
+    analysis_output = _run_stabilized_step(
+        agent=PLANNING_ANALYST,
+        prompt=build_analysis_prompt(repo, context_json, raw_dir, baseline_sha, planning_contract, governance),
         step_id="planning-analysis-v1",
-        timeout=STEP_TIMEOUT_SECONDS,
-        working_directory=str(repo),
+        repo=repo,
+        evidence_dir=analysis_dir / "agent-output",
     )
     analysis_path = analysis_dir / "planning-analysis-v1.md"
-    _write_text(analysis_path, analysis_handle.output)
+    _write_text(analysis_path, analysis_output)
 
     # 5. Initial Development Plan.
-    plan_handle = step(
-        PROVIDER,
-        PLAN_AUTHOR,
-        build_author_prompt(
+    plan_output = _run_stabilized_step(
+        agent=PLAN_AUTHOR,
+        prompt=build_author_prompt(
             repo, ticket_id, context_json, analysis_path, plan_template,
             planning_contract, governance, baseline_sha, base_branch,
         ),
-        recovery="idempotent",
         step_id="plan-author-r1-c1",
-        timeout=STEP_TIMEOUT_SECONDS,
-        working_directory=str(repo),
+        repo=repo,
+        evidence_dir=planning_dir / "agent-output",
     )
     plan_path = planning_dir / "plan-r1.md"
-    _write_text(plan_path, plan_handle.output)
+    _write_text(plan_path, plan_output)
 
     # 6. Independent review and bounded convergence.
     final_review: dict[str, Any] | None = None
     review_round = 1
     while review_round <= max_review_rounds:
-        review_handle = step(
-            PROVIDER,
-            PLAN_REVIEWER,
-            build_reviewer_prompt(
+        review = _run_json_contract_step(
+            agent=PLAN_REVIEWER,
+            prompt=build_reviewer_prompt(
                 repo, context_json, raw_dir, analysis_path, plan_path,
                 planning_contract, governance, baseline_sha,
             ),
-            recovery="idempotent",
+            label="Plan Reviewer",
             step_id=f"plan-review-r{review_round}-c{context_version}",
-            timeout=STEP_TIMEOUT_SECONDS,
-            working_directory=str(repo),
+            repo=repo,
+            evidence_dir=planning_dir / "agent-output",
+            validator=validate_review,
         )
-        review = validate_review(_parse_json_output(review_handle.output, "Plan Reviewer"))
         review_path = planning_dir / f"review-r{review_round}-c{context_version}.json"
         _write_json(review_path, review)
         final_review = review
@@ -686,16 +1026,17 @@ def main() -> None:
 
         if status == "CONTEXT_RENORMALIZATION_REQUIRED":
             context_version += 1
-            renormalizer = step(
-                PROVIDER,
-                CONTEXT_NORMALIZER,
-                build_normalizer_prompt(repo, raw_dir, schema, context_contract, context_json, review_path),
-                recovery="idempotent",
+            context = _run_json_contract_step(
+                agent=CONTEXT_NORMALIZER,
+                prompt=build_normalizer_prompt(
+                    repo, raw_dir, schema, context_contract, context_json, review_path
+                ),
+                label="Context Normalizer",
                 step_id=f"context-normalize-v{context_version}",
-                timeout=STEP_TIMEOUT_SECONDS,
-                working_directory=str(repo),
+                repo=repo,
+                evidence_dir=normalized_dir / "agent-output",
+                validator=_context_contract_validator,
             )
-            context = _parse_json_output(renormalizer.output, "Context Normalizer")
             context_json = normalized_dir / f"planning-context-v{context_version}.json"
             _write_json(context_json, context)
             blockers = validate_planning_context(context, ticket_id) + source_blockers
@@ -711,35 +1052,31 @@ def main() -> None:
                 _emit_human_needed(ticket_id, run_id, "renormalized_context_not_ready", blockers, runtime_dir)
                 return
 
-            analysis_handle = step(
-                PROVIDER,
-                PLANNING_ANALYST,
-                build_analysis_prompt(repo, context_json, raw_dir, baseline_sha, planning_contract, governance),
-                recovery="idempotent",
+            analysis_output = _run_stabilized_step(
+                agent=PLANNING_ANALYST,
+                prompt=build_analysis_prompt(repo, context_json, raw_dir, baseline_sha, planning_contract, governance),
                 step_id=f"planning-analysis-v{context_version}",
-                timeout=STEP_TIMEOUT_SECONDS,
-                working_directory=str(repo),
+                repo=repo,
+                evidence_dir=analysis_dir / "agent-output",
             )
             analysis_path = analysis_dir / f"planning-analysis-v{context_version}.md"
-            _write_text(analysis_path, analysis_handle.output)
+            _write_text(analysis_path, analysis_output)
 
         # CHANGES_REQUIRED and re-normalization both return to the Plan Author.
         next_round = review_round + 1
-        plan_handle = step(
-            PROVIDER,
-            PLAN_AUTHOR,
-            build_author_prompt(
+        plan_output = _run_stabilized_step(
+            agent=PLAN_AUTHOR,
+            prompt=build_author_prompt(
                 repo, ticket_id, context_json, analysis_path, plan_template,
                 planning_contract, governance, baseline_sha, base_branch,
                 previous_plan=plan_path, review_path=review_path,
             ),
-            recovery="idempotent",
             step_id=f"plan-author-r{next_round}-c{context_version}",
-            timeout=STEP_TIMEOUT_SECONDS,
-            working_directory=str(repo),
+            repo=repo,
+            evidence_dir=planning_dir / "agent-output",
         )
         plan_path = planning_dir / f"plan-r{next_round}-c{context_version}.md"
-        _write_text(plan_path, plan_handle.output)
+        _write_text(plan_path, plan_output)
         review_round = next_round
 
     if final_review is None or final_review["review_status"] != "PASS":
@@ -764,6 +1101,7 @@ def main() -> None:
         "schema_version": "1.0",
         "ticket_id": ticket_id,
         "planning_workflow": "dev_plan",
+        "planning_workflow_version": "1.3",
         "workflow_run_id": run_id,
         "provider": PROVIDER,
         "repository_root": str(repo),

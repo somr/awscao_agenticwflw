@@ -72,7 +72,14 @@ Review status:
 
 ## Output
 
-Return valid JSON only. Do not use Markdown fences and do not add prose outside the JSON.
+Return strict RFC 8259 JSON only. Do not use Markdown fences and do not add prose outside the JSON.
+
+Before responding, verify the JSON serialization itself:
+- every object key and string value uses double quotes;
+- there are no comments or trailing commas;
+- do not use single-quoted strings, Python/JavaScript literals, NaN, Infinity or ellipses;
+- arrays and objects are fully closed;
+- enum-like schema descriptions such as `A | B` mean choose exactly one allowed value, not copy the whole expression.
 
 Use exactly this top-level shape:
 

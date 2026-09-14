@@ -1,8 +1,28 @@
-# Planning Workflow 1 — CAO Python workflow
+# Planning Workflow 1 — CAO Python workflow (v1.3)
 
-`dev_plan.py` is the executable orchestration for the planning phase.
+`dev_plan.py` orchestrates the planning phase using deterministic macro-orchestration and read-only Claude Code specialists.
 
-It intentionally uses a **local fixture retrieval adapter** in this first version. The retrieval boundary is deterministic; everything after retrieval is already production-shaped.
+## v1.3 completion stabilization
+
+CAO 2.5.0 can transiently report a Claude Code worker as `COMPLETED` while the interactive TUI is still working. The workflow therefore calls every agent step with:
+
+```python
+teardown=False
+```
+
+and applies a workflow-owned stabilization boundary before accepting the returned text.
+
+The boundary:
+
+1. leaves the CAO-created terminal alive after the first `COMPLETED`;
+2. waits 5 seconds;
+3. polls the public CAO terminal and output APIs;
+4. rejects `[NO RESPONSE ...]`, `[PARTIAL RESPONSE ...]`, live spinner/TUI output, and interactive-wait/error states;
+5. requires the extracted candidate answer to be identical for consecutive stable polls;
+6. writes stabilization evidence;
+7. explicitly exits and deletes the terminal.
+
+No CAO source or installed package is modified.
 
 ## Inputs
 
@@ -13,25 +33,25 @@ It intentionally uses a **local fixture retrieval adapter** in this first versio
 - `base_branch` — defaults to `main`.
 - `max_review_rounds` — defaults to 3; valid range 1–10.
 
-`baseline_sha` is an explicit workflow input rather than being discovered during execution. CAO journals inputs and replays them on resume, so this prevents a repository change between the original run and a resume from silently changing the approved planning baseline.
+`baseline_sha` remains an explicit workflow input so CAO replay cannot silently shift the repository planning baseline.
 
 ## Install
 
-Start `cao-server` first; workflow validation is server-backed:
+Start `cao-server` first:
 
 ```bash
 cao-server
 ```
 
-Then, from the application repository root in another terminal:
+Then, from the application repository root:
 
 ```bash
 .agentic-sdlc/cao/workflows/install.sh
 ```
 
-The installer does **not** ask CAO to validate the repository-local path directly. It stages the file inside CAO's permitted workflow directory first, because the server intentionally rejects workflow-spec paths that escape that directory.
+The installer stages the Python workflow inside CAO's permitted workflow directory before server-side validation because CAO intentionally rejects validation paths outside that directory.
 
-Ensure the four profiles are already installed:
+Ensure the four profiles are installed:
 
 ```bash
 cao profile show sdlc_context_normalizer
@@ -40,13 +60,13 @@ cao profile show sdlc_plan_author
 cao profile show sdlc_plan_reviewer
 ```
 
-## Run the synthetic example
+## Run
 
-Start `cao-server` in another terminal, then from the repository you want the agents to inspect:
+Use a new run ID after each workflow-source change:
 
 ```bash
-RUN_ID=plan-PAY-DEMO-001-1
-BASELINE_SHA=$(git rev-parse HEAD)
+RUN_ID=plan-PAY-DEMO-001-7
+BASELINE_SHA=$(git rev-parse --verify HEAD)
 
 cao workflow run dev_plan \
   --run-id "$RUN_ID" \
@@ -58,18 +78,42 @@ cao workflow run dev_plan \
   --input max_review_rounds=3
 ```
 
-Use an explicit run ID so status/cancel/resume operations remain easy:
+Useful run commands:
 
 ```bash
-cao workflow status plan-PAY-DEMO-001-1
-cao workflow events plan-PAY-DEMO-001-1 --follow
-cao workflow cancel plan-PAY-DEMO-001-1
-cao workflow resume plan-PAY-DEMO-001-1
+cao workflow status "$RUN_ID"
+cao workflow events "$RUN_ID" --follow
+cao workflow result "$RUN_ID"
+cao workflow cancel "$RUN_ID"
 ```
 
-## Result
+## Machine-readable boundaries
 
-A successful planning run finishes with the **business outcome** `AWAITING_HUMAN_APPROVAL` and writes:
+Context Normalizer and Plan Reviewer must return strict JSON. v1.3 distinguishes two failure classes:
+
+```text
+incomplete/live agent execution
+    → IncompleteAgentExecutionError
+    → no JSON repair
+
+stable completed response + invalid JSON/shape
+    → one bounded contract-repair turn
+    → strict deterministic validation again
+```
+
+This prevents CAO/TUI lifecycle defects from being misdiagnosed as model serialization defects.
+
+## Evidence
+
+Detailed evidence remains Git-ignored under:
+
+```text
+.agentic-sdlc/runtime/<ticket>/<run-id>/
+```
+
+Agent-output directories contain `.initial.txt`, `.final.txt`, `.stabilization.json`, and machine-output `.raw.txt` files where applicable.
+
+A successful planning run publishes:
 
 ```text
 .agentic-sdlc/records/<ticket>/
@@ -78,24 +122,4 @@ A successful planning run finishes with the **business outcome** `AWAITING_HUMAN
     execution-manifest.json
 ```
 
-Detailed run evidence remains Git-ignored under:
-
-```text
-.agentic-sdlc/runtime/<ticket>/<run-id>/
-```
-
-The human then records a decision:
-
-```bash
-python .agentic-sdlc/scripts/approve_plan.py \
-  --repository-root "$(pwd)" \
-  --ticket-id PAY-DEMO-001 \
-  --decision APPROVED \
-  --reference "reviewed by team lead"
-```
-
-The helper verifies that the plan's SHA-256 still matches the independently reviewed plan before recording approval.
-
-## Important distinction: two approval layers
-
-CAO itself can optionally require approval of a **workflow execution plan** using `CAO_WORKFLOW_REQUIRE_APPROVAL=1`. That protects execution of changed CAO workflow source/inputs. It is separate from the **Development Plan human approval** implemented here, which protects the transition from Planning Workflow 1 into Delivery Workflow 2.
+The business outcome is `AWAITING_HUMAN_APPROVAL`; the workflow itself never approves the plan.
