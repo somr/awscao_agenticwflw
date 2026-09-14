@@ -110,6 +110,36 @@ class WorkflowHelpersTest(unittest.TestCase):
         self.assertEqual(mod._parse_json_output('```json\n{"a": 1}\n```', "x"), {"a": 1})
 
 
+    def test_run_delivered_step_uses_answer_suffix_and_appends_instructions(self):
+        # Every direct main() call site (planning analyst, plan author) goes
+        # through this helper with answer_suffix=".answer.md" for Markdown
+        # steps, distinct from the JSON-contract default ".answer.json".
+        seen = {}
+
+        def fake_run(**kwargs):
+            seen.update(kwargs)
+            return "the answer"
+
+        original_run = mod._run_stabilized_step
+        mod._run_stabilized_step = fake_run
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                evidence_dir = Path(temp) / "evidence"
+                result = mod._run_delivered_step(
+                    agent="test-agent",
+                    prompt="Write the analysis",
+                    step_id="planning-analysis-v1",
+                    repo=Path(temp),
+                    evidence_dir=evidence_dir,
+                    answer_suffix=".answer.md",
+                )
+                self.assertEqual(result, "the answer")
+                self.assertEqual(seen["answer_path"], evidence_dir / "planning-analysis-v1.answer.md")
+                self.assertIn(str(seen["answer_path"]), seen["prompt"])
+                self.assertIn("OUTPUT DELIVERY", seen["prompt"])
+        finally:
+            mod._run_stabilized_step = original_run
+
     def test_run_stabilized_step_keeps_terminal_alive_until_wrapper_cleanup(self):
         calls = {}
 
@@ -119,85 +149,189 @@ class WorkflowHelpersTest(unittest.TestCase):
                 output="initial", terminal_id="term-1", replayed=False
             )
 
-        def fake_stabilize(**kwargs):
-            calls["stabilize"] = kwargs
+        def fake_wait_for_answer_file(**kwargs):
+            calls["wait_for_answer_file"] = kwargs
             return "final answer"
 
         def fake_cleanup(*args, **kwargs):
             calls["cleanup"] = (args, kwargs)
 
         original_step = mod.step
-        original_stabilize = mod._stabilize_live_step_output
+        original_wait_for_answer_file = mod._wait_for_answer_file
         original_cleanup = mod._cleanup_step_terminal
         mod.step = fake_step
-        mod._stabilize_live_step_output = fake_stabilize
+        mod._wait_for_answer_file = fake_wait_for_answer_file
         mod._cleanup_step_terminal = fake_cleanup
         try:
             with tempfile.TemporaryDirectory() as temp:
+                answer_path = Path(temp) / "evidence" / "stable-step.answer.json"
                 result = mod._run_stabilized_step(
                     agent="test-agent",
                     prompt="do it",
                     step_id="stable-step",
                     repo=Path(temp),
                     evidence_dir=Path(temp) / "evidence",
+                    answer_path=answer_path,
                 )
             self.assertEqual(result, "final answer")
             self.assertFalse(calls["step_kwargs"]["teardown"])
-            self.assertEqual(calls["stabilize"]["terminal_id"], "term-1")
+            self.assertEqual(calls["wait_for_answer_file"]["terminal_id"], "term-1")
+            self.assertEqual(calls["wait_for_answer_file"]["answer_path"], answer_path)
             self.assertIn("cleanup", calls)
         finally:
             mod.step = original_step
-            mod._stabilize_live_step_output = original_stabilize
+            mod._wait_for_answer_file = original_wait_for_answer_file
             mod._cleanup_step_terminal = original_cleanup
 
-    def test_live_tui_output_is_classified_as_incomplete(self):
-        live = (
-            "Reading 1 file…\n\n"
-            "✻ Architecting… (2s · ↓ 67 tokens · thinking with high effort)\n"
-            "tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf"
-        )
-        self.assertTrue(mod._looks_incomplete_agent_output(live))
-        self.assertTrue(mod._has_live_tui_activity(live))
+    def test_run_stabilized_step_replay_reads_answer_file_from_disk(self):
+        def fake_step(*args, **kwargs):
+            return types.SimpleNamespace(output="stale terminal text", terminal_id="dead", replayed=True)
 
-    def test_stale_spinner_before_completion_summary_is_not_live_activity(self):
-        settled = (
-            "✻ Architecting… (5s · thinking)\n"
-            "● {\"ok\": true}\n"
-            "✻ Architected for 7s\n"
-            "❯"
-        )
-        self.assertFalse(mod._has_live_tui_activity(settled))
+        original_step = mod.step
+        mod.step = fake_step
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                evidence_dir = Path(temp) / "evidence"
+                evidence_dir.mkdir()
+                answer_path = evidence_dir / "s1.answer.json"
+                answer_path.write_text('{"ok": true}', encoding="utf-8")
+                result = mod._run_stabilized_step(
+                    agent="test-agent",
+                    prompt="do it",
+                    step_id="s1",
+                    repo=Path(temp),
+                    evidence_dir=evidence_dir,
+                    answer_path=answer_path,
+                )
+                self.assertEqual(result, '{"ok": true}')
+        finally:
+            mod.step = original_step
 
-    def test_stabilizer_waits_past_premature_completed_until_answer_is_stable(self):
-        snapshots = iter([
-            (
-                "completed",
-                "[NO RESPONSE - agent completed without producing a text response]\nReading 1 file…",
-                "✻ Architecting… (2s · thinking)",
-            ),
-            ("processing", "{\"ok\": true}", "✻ Architecting… (5s · thinking)"),
-            ("completed", "{\"ok\": true}", "✻ Architected for 7s\n❯"),
-            ("completed", "{\"ok\": true}", "✻ Architected for 7s\n❯"),
-        ])
-        original_snapshot = mod._cao_terminal_snapshot
+    def test_run_stabilized_step_replay_without_answer_file_raises(self):
+        def fake_step(*args, **kwargs):
+            return types.SimpleNamespace(output="stale terminal text", terminal_id="dead", replayed=True)
+
+        original_step = mod.step
+        mod.step = fake_step
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                evidence_dir = Path(temp) / "evidence"
+                with self.assertRaises(mod.IncompleteAgentExecutionError):
+                    mod._run_stabilized_step(
+                        agent="test-agent",
+                        prompt="do it",
+                        step_id="s1",
+                        repo=Path(temp),
+                        evidence_dir=evidence_dir,
+                        answer_path=evidence_dir / "s1.answer.json",
+                    )
+        finally:
+            mod.step = original_step
+
+    def test_answer_file_delivery_instructions_embed_path_and_forbid_chat_json(self):
+        path = Path("/tmp/evidence/s1.answer.json")
+        text = mod._answer_file_delivery_instructions(path)
+        self.assertIn(str(path), text)
+        self.assertIn("Do not print the answer", text)
+
+    def test_wait_for_answer_file_returns_content_once_stable(self):
+        original_status = mod._cao_terminal_status
         original_wait = mod._wait
-        mod._cao_terminal_snapshot = lambda terminal_id: next(snapshots)
+        mod._cao_terminal_status = lambda terminal_id: "completed"
         mod._wait = lambda seconds: None
         try:
             with tempfile.TemporaryDirectory() as temp:
-                result = mod._stabilize_live_step_output(
+                evidence_dir = Path(temp) / "evidence"
+                evidence_dir.mkdir()
+                answer_path = evidence_dir / "s1.answer.json"
+                answer_path.write_text('{"ok": true}', encoding="utf-8")
+
+                result = mod._wait_for_answer_file(
                     terminal_id="term-1",
-                    initial_output="Reading 1 file…",
+                    answer_path=answer_path,
                     step_id="s1",
-                    evidence_dir=Path(temp),
+                    evidence_dir=evidence_dir,
                 )
                 self.assertEqual(result, '{"ok": true}')
-                evidence = json.loads((Path(temp) / "s1.stabilization.json").read_text())
+                evidence = json.loads((evidence_dir / "s1.stabilization.json").read_text())
                 self.assertTrue(evidence["stabilized"])
-                self.assertEqual(len(evidence["polls"]), 4)
+                self.assertEqual(len(evidence["polls"]), 2)
         finally:
-            mod._cao_terminal_snapshot = original_snapshot
+            mod._cao_terminal_status = original_status
             mod._wait = original_wait
+
+    def test_wait_for_answer_file_raises_on_terminal_error_status(self):
+        original_status = mod._cao_terminal_status
+        original_wait = mod._wait
+        mod._cao_terminal_status = lambda terminal_id: "error"
+        mod._wait = lambda seconds: None
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                evidence_dir = Path(temp) / "evidence"
+                with self.assertRaises(mod.IncompleteAgentExecutionError):
+                    mod._wait_for_answer_file(
+                        terminal_id="term-1",
+                        answer_path=evidence_dir / "s1.answer.json",
+                        step_id="s1",
+                        evidence_dir=evidence_dir,
+                    )
+        finally:
+            mod._cao_terminal_status = original_status
+            mod._wait = original_wait
+
+    def test_wait_for_answer_file_times_out_if_never_written(self):
+        original_status = mod._cao_terminal_status
+        original_wait = mod._wait
+        original_max_polls = mod.COMPLETION_MAX_POLLS
+        mod._cao_terminal_status = lambda terminal_id: "completed"
+        mod._wait = lambda seconds: None
+        mod.COMPLETION_MAX_POLLS = 2
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                evidence_dir = Path(temp) / "evidence"
+                with self.assertRaises(mod.IncompleteAgentExecutionError):
+                    mod._wait_for_answer_file(
+                        terminal_id="term-1",
+                        answer_path=evidence_dir / "s1.answer.json",
+                        step_id="s1",
+                        evidence_dir=evidence_dir,
+                    )
+                evidence = json.loads((evidence_dir / "s1.stabilization.json").read_text())
+                self.assertFalse(evidence["stabilized"])
+        finally:
+            mod._cao_terminal_status = original_status
+            mod._wait = original_wait
+            mod.COMPLETION_MAX_POLLS = original_max_polls
+
+    def test_json_contract_step_uses_per_attempt_answer_path_and_delivery_instructions(self):
+        seen = []
+        outputs = iter(['{foo: "bar"}', '{"foo": "bar"}'])
+
+        def fake_run(**kwargs):
+            seen.append(kwargs)
+            return next(outputs)
+
+        original_run = mod._run_stabilized_step
+        mod._run_stabilized_step = fake_run
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                mod._run_json_contract_step(
+                    agent="test-agent",
+                    prompt="Return JSON",
+                    label="test",
+                    step_id="json-test",
+                    repo=Path(temp),
+                    evidence_dir=Path(temp) / "evidence",
+                    validator=lambda x: x,
+                )
+            self.assertEqual(
+                [call["answer_path"].name for call in seen],
+                ["json-test.answer.json", "json-test-repair-1.answer.json"],
+            )
+            self.assertIn(str(seen[0]["answer_path"]), seen[0]["prompt"])
+            self.assertIn("OUTPUT DELIVERY", seen[0]["prompt"])
+        finally:
+            mod._run_stabilized_step = original_run
 
     def test_json_contract_step_repairs_malformed_completed_response_once(self):
         calls = []

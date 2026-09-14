@@ -1,0 +1,17 @@
+{
+  "promptSuggestionEnabled": false,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/restrict-write-scope.py",
+            "statusMessage": "Checking CAO worker write-scope restriction…"
+          }
+        ]
+      }
+    ]
+  }
+}

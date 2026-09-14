@@ -1,28 +1,52 @@
-# Planning Workflow 1 — CAO Python workflow (v1.3)
+# Planning Workflow 1 — CAO Python workflow (v1.4)
 
-`dev_plan.py` orchestrates the planning phase using deterministic macro-orchestration and read-only Claude Code specialists.
+`dev_plan.py` orchestrates the planning phase using deterministic macro-orchestration and effectively-read-only Claude Code specialists.
 
-## v1.3 completion stabilization
+## v1.4 answer-file delivery (replaces v1.3 terminal-text stabilization)
 
-CAO 2.5.0 can transiently report a Claude Code worker as `COMPLETED` while the interactive TUI is still working. The workflow therefore calls every agent step with:
+CAO 2.5.0 can transiently report a Claude Code worker as `COMPLETED` while the interactive TUI is still working, so every agent step still runs with:
 
 ```python
 teardown=False
 ```
 
-and applies a workflow-owned stabilization boundary before accepting the returned text.
+and the workflow still waits and polls before accepting a step's result. What changed in v1.4 is *what* it waits for.
 
-The boundary:
+**v1.3 (abandoned) tried to parse the terminal's own screen text** (CAO's `mode=last`/`mode=full` output) to decide when an answer was final. Three independent failures made that fundamentally unreliable, discovered by testing live against a running `cao-server`:
+
+1. Claude Code's post-completion "suggested next prompt" ghost-text feature left stray text in the idle input box that CAO's `mode=last` misread as an unanswered new turn.
+2. CAO's `mode=last` turned out to flag **any** idle prompt — ghost text or not — as `"[NO RESPONSE - ...]"`, immediately after a real, complete answer. Reproduced even with the ghost-text feature disabled (`promptSuggestionEnabled: false`).
+3. `mode=full` is not rendered text — it is the raw PTY byte stream. Claude Code's TUI redraws the screen using cursor-addressing escape codes (e.g. `\x1b[19G` to jump to column 19), so stripping escape codes while keeping byte order produces garbled, reordered text (observed live: `"source_id"` came back as `"ource_id"`). Correctly reconstructing the screen would require a real terminal emulator, which this stdlib-only script does not have.
+
+**v1.4 has the agent write its answer to a file instead**, and the workflow polls for that file's existence and content stability, checking only the CAO-reported terminal *status* (not its screen text) for `error`/`waiting_user_answer`:
 
 1. leaves the CAO-created terminal alive after the first `COMPLETED`;
-2. waits 5 seconds;
-3. polls the public CAO terminal and output APIs;
-4. rejects `[NO RESPONSE ...]`, `[PARTIAL RESPONSE ...]`, live spinner/TUI output, and interactive-wait/error states;
-5. requires the extracted candidate answer to be identical for consecutive stable polls;
-6. writes stabilization evidence;
-7. explicitly exits and deletes the terminal.
+2. waits 5 seconds, then polls `GET /terminals/{id}` for status and the answer file on disk every 3 seconds;
+3. rejects terminal `error` and `waiting_user_answer` states outright — headless agents must never block on a prompt;
+4. requires the answer file's content to be identical for two consecutive polls before accepting it;
+5. writes stabilization evidence (`<step_id>.stabilization.json`);
+6. explicitly exits and deletes the terminal.
 
 No CAO source or installed package is modified.
+
+## Answer file delivery & the write-scope hook
+
+This section is the authoritative writeup for a security-relevant design decision — keep it in sync with `dev_plan.py`'s own module-level comment above `_wait_for_answer_file`, which points back here.
+
+**Why an agent writes at all.** These profiles were originally strictly read-only (`allowedTools: ["@builtin", "fs_read", "fs_list"]`). Delivering an answer through a file requires granting `fs_write`, which CAO maps to Claude Code's native `Edit`, `Write` and `NotebookEdit` tools as a whole category (`cli_agent_orchestrator/utils/tool_mapping.py`) — there is no CAO-level mechanism to scope `fs_write` to a single path.
+
+**Why `permissions.allow`/`deny` path rules don't help here.** Claude Code does support path-scoped rules like `"Write(.agentic-sdlc/runtime/**)"` in `permissions.allow`. They don't apply to these workers: CAO always launches its `claude_code` provider terminals with `--dangerously-skip-permissions` (`cli_agent_orchestrator/providers/claude_code.py`), which bypasses the permission-prompt/rule-check layer entirely, not just interactive confirmation dialogs.
+
+**The actual enforcement mechanism: a `PreToolUse` hook.** Hooks are a separate layer from permission prompts and are **not** skipped by `--dangerously-skip-permissions`. This repository's `.claude/settings.json` declares a `PreToolUse` hook on `Write|Edit|NotebookEdit` that denies any write attempt outside `.agentic-sdlc/runtime/**` — the only place `dev_plan.py` ever instructs an agent to write. Each step's prompt is built by `_run_json_contract_step` to include `_answer_file_delivery_instructions(answer_path)`, where `answer_path` is always `<evidence_dir>/<step_id>.answer.json` under that same runtime tree.
+
+**Why this matters.** All four profiles process *untrusted external content* — the Jira/Confluence source material in `context/raw/sources/` — and a prompt-injection payload hidden in that content could try to instruct an agent to write or overwrite an arbitrary file. `fs_write` alone would not stop that (CAO's tool-category grant plus `--dangerously-skip-permissions` gives no path restriction). The hook is what actually prevents it, independent of anything the agent is tricked into attempting.
+
+**Tested.** `tests/test_restrict_write_scope.py` invokes the hook script as a real subprocess (controlled `CAO_TERMINAL_ID` env and stdin, exactly as Claude Code fires it) and covers: non-CAO sessions are never restricted, in-scope/out-of-scope decisions, path-traversal attempts, an absolute path outside the repo, both `file_path` and `notebook_path` input shapes, and a cross-check that every real answer-path shape `dev_plan.py` builds actually passes the hook. Run it whenever either the hook or `dev_plan.py`'s evidence-path layout changes.
+
+**If you change any part of this:**
+- Removing `fs_write` from a profile requires reverting that step's prompt/stabilization back to a terminal-text-based approach (not recommended — see the v1.3 failure history above) or another delivery mechanism.
+- Narrowing or removing the `PreToolUse` hook in `.claude/settings.json` reopens the write-scope gap described above. Keep an equivalent restriction in place.
+- Do not rely on `permissions.allow`/`deny` rules as a substitute — they are bypassed for these workers.
 
 ## Inputs
 
@@ -89,14 +113,15 @@ cao workflow cancel "$RUN_ID"
 
 ## Machine-readable boundaries
 
-Context Normalizer and Plan Reviewer must return strict JSON. v1.3 distinguishes two failure classes:
+Context Normalizer and Plan Reviewer must return strict JSON. The workflow distinguishes two failure classes:
 
 ```text
-incomplete/live agent execution
+terminal error/waiting_user_answer, or the answer file never
+appears/stabilizes within the timeout
     → IncompleteAgentExecutionError
     → no JSON repair
 
-stable completed response + invalid JSON/shape
+stable answer file content + invalid JSON/shape
     → one bounded contract-repair turn
     → strict deterministic validation again
 ```
@@ -111,7 +136,7 @@ Detailed evidence remains Git-ignored under:
 .agentic-sdlc/runtime/<ticket>/<run-id>/
 ```
 
-Agent-output directories contain `.initial.txt`, `.final.txt`, `.stabilization.json`, and machine-output `.raw.txt` files where applicable.
+Agent-output directories contain `.answer.json` (the file the agent itself wrote), `.stabilization.json` (the poll log), and `.raw.txt` (the accepted answer content, as consumed by JSON-contract parsing) for each step attempt.
 
 A successful planning run publishes:
 

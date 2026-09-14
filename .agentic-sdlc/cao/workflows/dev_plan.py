@@ -47,18 +47,45 @@ COMPLETION_POLL_SECONDS = 3.0
 COMPLETION_MAX_POLLS = 100
 COMPLETION_STABLE_POLLS = 2
 
-# CAO 2.5.0's Claude Code run-step path can transiently report COMPLETED
-# while the Claude Ink TUI is still processing. Keep the worker alive and
-# independently stabilize the extracted answer before accepting the step.
-LIVE_TUI_ACTIVITY_RE = re.compile(
-    r"^[ \t]*(?:[✶✢✽✻✳·*][ \t]+\w*ing\b[^\n]*…|(?:Reading|Searching|Analyzing|Inspecting)\b[^\n]*…)",
-    re.MULTILINE | re.IGNORECASE,
-)
-COMPLETION_SUMMARY_RE = re.compile(
-    r"^[ \t]*[✶✢✽✻✳][^\n…]*\bfor\s+\d+(?:\.\d+)?\s*s\b",
-    re.IGNORECASE,
-)
-ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# --- Step completion & answer delivery --------------------------------------
+#
+# SECURITY DESIGN — full writeup in .agentic-sdlc/cao/workflows/README.md
+# under "Answer file delivery & the write-scope hook". Summary: agent
+# profiles are granted fs_write (Claude Code's Edit/Write/NotebookEdit tools)
+# so each step saves its JSON answer to a file instead of relying on
+# terminal-text extraction (see below for why that was unreliable). CAO's own
+# allowedTools enforcement is tool-name-level only, not path-scoped, and CAO
+# always launches these workers with `--dangerously-skip-permissions`, which
+# also bypasses Claude Code's own path-scoped permissions.allow/deny rules.
+# The actual, non-bypassable restriction is a PreToolUse hook (matcher
+# "Write|Edit|NotebookEdit") in the project's .claude/settings.json, which
+# denies any write outside .agentic-sdlc/runtime/** — the only place these
+# agents are ever asked to write. This specifically matters because these
+# profiles read untrusted external content (Jira/Confluence text) that a
+# prompt-injection payload could hide in. Do not remove or narrow that hook
+# without keeping an equivalent restriction in place.
+#
+# CAO 2.5.0's Claude Code run-step path can also transiently report COMPLETED
+# while the Claude Ink TUI is still processing, so a step's worker terminal is
+# kept alive (teardown=False) and polled rather than torn down immediately.
+#
+# An earlier version of this workflow tried to detect step completion by
+# parsing the terminal's own screen text (CAO's mode=last/mode=full output).
+# That approach was abandoned as fundamentally unreliable:
+#   - Claude Code's post-completion "next prompt" ghost-text suggestion left
+#     stray text in the idle input box that CAO's mode=last misread as an
+#     unanswered new turn.
+#   - CAO's mode=last flags ANY idle prompt (ghost text or not) as
+#     "[NO RESPONSE - ...]", even immediately after a real, complete answer —
+#     confirmed reproducible even with the ghost-text feature turned off.
+#   - mode=full is not rendered text — it is the raw PTY byte stream, and
+#     Claude Code's TUI redraws the screen using cursor-addressing escape
+#     codes (e.g. "\x1b[19G" to jump to column 19), so stripping escape codes
+#     while keeping byte order produces garbled, reordered text (observed
+#     live: "source_id" came back as "ource_id"). Correctly reconstructing
+#     the screen would require a real terminal emulator.
+# Polling the CAO-reported terminal *status* (not its screen text) plus a
+# file the agent itself writes sidesteps all of this.
 
 REVIEW_STATUSES = {
     "PASS",
@@ -144,47 +171,9 @@ def _cao_json_request(
     return value
 
 
-def _cao_terminal_snapshot(terminal_id: str) -> tuple[str, str, str]:
+def _cao_terminal_status(terminal_id: str) -> str:
     terminal = _cao_json_request(f"/terminals/{terminal_id}")
-    last = _cao_json_request(
-        f"/terminals/{terminal_id}/output", query={"mode": "last"}
-    )
-    full = _cao_json_request(
-        f"/terminals/{terminal_id}/output", query={"mode": "full"}
-    )
-    status = str(terminal.get("status", "unknown")).lower()
-    last_output = str(last.get("output", ""))
-    full_output = str(full.get("output", ""))
-    return status, last_output, full_output
-
-
-def _has_live_tui_activity(text: str) -> bool:
-    clean = ANSI_RE.sub("", text)
-    nonempty = [line for line in clean.splitlines() if line.strip()][-20:]
-    last_activity = -1
-    last_completion = -1
-    for index, line in enumerate(nonempty):
-        if LIVE_TUI_ACTIVITY_RE.search(line):
-            last_activity = index
-        if COMPLETION_SUMMARY_RE.search(line):
-            last_completion = index
-    # A spinner/read marker is live only when no newer completion summary has
-    # superseded it. This avoids treating a stale spinner retained in Claude's
-    # scrollback as current work after the turn has actually finished.
-    return last_activity >= 0 and last_activity > last_completion
-
-
-def _looks_incomplete_agent_output(text: str) -> bool:
-    stripped = ANSI_RE.sub("", text).strip()
-    if not stripped:
-        return True
-    if stripped.startswith("[NO RESPONSE -") or stripped.startswith("[PARTIAL RESPONSE -"):
-        return True
-    if "tmux focus-events off" in stripped:
-        return True
-    if _has_live_tui_activity(stripped):
-        return True
-    return False
+    return str(terminal.get("status", "unknown")).lower()
 
 
 def _cleanup_step_terminal(terminal_id: str, evidence_dir: Path, step_id: str) -> None:
@@ -203,62 +192,64 @@ def _cleanup_step_terminal(terminal_id: str, evidence_dir: Path, step_id: str) -
         _write_text(evidence_dir / f"{step_id}.cleanup-warning.txt", "\n".join(errors))
 
 
-def _stabilize_live_step_output(
+def _answer_file_delivery_instructions(answer_path: Path) -> str:
+    return f"""## OUTPUT DELIVERY
+
+Use your file-write tool to save your complete final answer to exactly this path (create parent directories if needed; overwrite the file if it already exists):
+{answer_path}
+
+Do not print the answer in your chat reply. After writing the file, reply with a short one-line confirmation only (e.g. "Written."). You are permitted to write to this one file for this purpose only."""
+
+
+def _wait_for_answer_file(
     *,
     terminal_id: str,
-    initial_output: str,
+    answer_path: Path,
     step_id: str,
     evidence_dir: Path,
 ) -> str:
-    """Wait past transient CAO COMPLETED states and return a stable final answer.
+    """Wait for the agent to write its answer file and for its content to settle.
 
     CAO's own Claude E2E tests re-check completion after a delay because the
-    TUI can transiently report COMPLETED. Python workflow run-step currently
-    settles immediately, so this workflow keeps the terminal alive and polls
-    the public terminal API until the provider-extracted answer is stable.
+    TUI can transiently report COMPLETED, so this still polls terminal
+    *status* (not its screen text — see the module-level comment above this
+    function's neighborhood for why that was abandoned) alongside the file.
     """
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    _write_text(evidence_dir / f"{step_id}.initial.txt", initial_output)
 
     polls: list[dict[str, Any]] = []
-    previous_candidate: str | None = None
+    previous_content: str | None = None
     stable_polls = 0
-    last_status = "unknown"
-    last_output = initial_output
-    last_full = ""
+    status = "unknown"
 
     _wait(COMPLETION_INITIAL_SETTLE_SECONDS)
     for poll_no in range(1, COMPLETION_MAX_POLLS + 1):
-        last_status, last_output, last_full = _cao_terminal_snapshot(terminal_id)
-        live_activity = _has_live_tui_activity(last_full)
-        incomplete = _looks_incomplete_agent_output(last_output)
-        candidate_sha = _sha256_bytes(last_output.encode("utf-8")) if last_output else None
+        status = _cao_terminal_status(terminal_id)
+        content = answer_path.read_text(encoding="utf-8") if answer_path.is_file() else None
         polls.append({
             "poll": poll_no,
-            "status": last_status,
-            "last_output_length": len(last_output),
-            "last_output_sha256": candidate_sha,
-            "live_tui_activity": live_activity,
-            "incomplete_output": incomplete,
+            "status": status,
+            "answer_file_exists": content is not None,
+            "answer_length": len(content) if content is not None else None,
+            "answer_sha256": _sha256_bytes(content.encode("utf-8")) if content is not None else None,
         })
 
-        if last_status == "error":
+        if status == "error":
             raise IncompleteAgentExecutionError(
-                f"{step_id} terminal entered ERROR while waiting for a stable final response"
+                f"{step_id} terminal entered ERROR while waiting for {answer_path.name}"
             )
-        if last_status == "waiting_user_answer":
+        if status == "waiting_user_answer":
             raise IncompleteAgentExecutionError(
                 f"{step_id} requires an interactive human answer; headless planning agents must not block on prompts"
             )
 
-        if not incomplete and not live_activity:
-            if last_output == previous_candidate:
+        if content is not None:
+            if content == previous_content:
                 stable_polls += 1
             else:
-                previous_candidate = last_output
+                previous_content = content
                 stable_polls = 1
             if stable_polls >= COMPLETION_STABLE_POLLS:
-                _write_text(evidence_dir / f"{step_id}.final.txt", last_output)
                 _write_json(
                     evidence_dir / f"{step_id}.stabilization.json",
                     {
@@ -267,15 +258,13 @@ def _stabilize_live_step_output(
                         "polls": polls,
                     },
                 )
-                return last_output
+                return content
         else:
-            previous_candidate = None
+            previous_content = None
             stable_polls = 0
 
         _wait(COMPLETION_POLL_SECONDS)
 
-    _write_text(evidence_dir / f"{step_id}.timeout-last.txt", last_output)
-    _write_text(evidence_dir / f"{step_id}.timeout-full.txt", last_full)
     _write_json(
         evidence_dir / f"{step_id}.stabilization.json",
         {
@@ -285,9 +274,9 @@ def _stabilize_live_step_output(
         },
     )
     raise IncompleteAgentExecutionError(
-        f"{step_id} did not produce a stable final response after "
+        f"{step_id} did not write a stable {answer_path.name} after "
         f"{COMPLETION_INITIAL_SETTLE_SECONDS + COMPLETION_MAX_POLLS * COMPLETION_POLL_SECONDS:.0f}s "
-        f"of completion stabilization (last CAO status: {last_status})"
+        f"(last CAO status: {status})"
     )
 
 
@@ -298,8 +287,9 @@ def _run_stabilized_step(
     step_id: str,
     repo: Path,
     evidence_dir: Path,
+    answer_path: Path,
 ) -> str:
-    """Run one CAO step without teardown, then stabilize and explicitly clean it."""
+    """Run one CAO step without teardown, then wait for its answer file and clean up."""
     handle = step(
         PROVIDER,
         agent,
@@ -311,25 +301,55 @@ def _run_stabilized_step(
         teardown=False,
     )
 
-    # A replayed handle names a terminal that no longer exists. Accept only a
-    # previously stabilized-looking answer; incomplete replays require a new run
-    # (or an explicit CAO recovery decision), not an HTTP poll of a dead id.
+    # A replayed handle names a terminal that no longer exists, so there is no
+    # terminal left to poll. Accept only an answer file already on disk from
+    # the earlier attempt; an incomplete replay requires a new run (or an
+    # explicit CAO recovery decision), not polling a dead terminal id.
     if handle.replayed:
-        if _looks_incomplete_agent_output(handle.output):
-            raise IncompleteAgentExecutionError(
-                f"{step_id} replayed an incomplete prior result; start a fresh run or rerun this step explicitly"
-            )
-        return handle.output
+        if answer_path.is_file():
+            return answer_path.read_text(encoding="utf-8")
+        raise IncompleteAgentExecutionError(
+            f"{step_id} replayed a terminal with no {answer_path.name} on disk; "
+            "start a fresh run or rerun this step explicitly"
+        )
 
     try:
-        return _stabilize_live_step_output(
+        return _wait_for_answer_file(
             terminal_id=handle.terminal_id,
-            initial_output=handle.output,
+            answer_path=answer_path,
             step_id=step_id,
             evidence_dir=evidence_dir,
         )
     finally:
         _cleanup_step_terminal(handle.terminal_id, evidence_dir, step_id)
+
+
+def _run_delivered_step(
+    *,
+    agent: str,
+    prompt: str,
+    step_id: str,
+    repo: Path,
+    evidence_dir: Path,
+    answer_suffix: str = ".answer.json",
+) -> str:
+    """Run one stabilized step, appending file-delivery instructions to its prompt.
+
+    Every agent step in this workflow delivers its answer as a file (see the
+    security-design comment above _wait_for_answer_file); this is the single
+    place that appends the delivery instructions and computes the answer
+    path, so every call site — JSON-contract steps and free-form Markdown
+    steps alike — stays consistent.
+    """
+    answer_path = evidence_dir / f"{step_id}{answer_suffix}"
+    return _run_stabilized_step(
+        agent=agent,
+        prompt=f"{prompt}\n\n{_answer_file_delivery_instructions(answer_path)}",
+        step_id=step_id,
+        repo=repo,
+        evidence_dir=evidence_dir,
+        answer_path=answer_path,
+    )
 
 
 def _safe_component(value: str, label: str) -> str:
@@ -401,7 +421,11 @@ def _run_json_contract_step(
 
     for attempt in range(max_repairs + 1):
         current_step_id = step_id if attempt == 0 else f"{step_id}-repair-{attempt}"
-        output = _run_stabilized_step(
+        # current_step_id (not step_id) gives each attempt a fresh,
+        # attempt-unique answer path, so a repair attempt never reads a stale
+        # file left over from the earlier attempt before it has written its
+        # own answer.
+        output = _run_delivered_step(
             agent=agent,
             prompt=current_prompt,
             step_id=current_step_id,
@@ -962,18 +986,19 @@ def main() -> None:
         return
 
     # 4. Repository analysis.
-    analysis_output = _run_stabilized_step(
+    analysis_output = _run_delivered_step(
         agent=PLANNING_ANALYST,
         prompt=build_analysis_prompt(repo, context_json, raw_dir, baseline_sha, planning_contract, governance),
         step_id="planning-analysis-v1",
         repo=repo,
         evidence_dir=analysis_dir / "agent-output",
+        answer_suffix=".answer.md",
     )
     analysis_path = analysis_dir / "planning-analysis-v1.md"
     _write_text(analysis_path, analysis_output)
 
     # 5. Initial Development Plan.
-    plan_output = _run_stabilized_step(
+    plan_output = _run_delivered_step(
         agent=PLAN_AUTHOR,
         prompt=build_author_prompt(
             repo, ticket_id, context_json, analysis_path, plan_template,
@@ -982,6 +1007,7 @@ def main() -> None:
         step_id="plan-author-r1-c1",
         repo=repo,
         evidence_dir=planning_dir / "agent-output",
+        answer_suffix=".answer.md",
     )
     plan_path = planning_dir / "plan-r1.md"
     _write_text(plan_path, plan_output)
@@ -1052,19 +1078,20 @@ def main() -> None:
                 _emit_human_needed(ticket_id, run_id, "renormalized_context_not_ready", blockers, runtime_dir)
                 return
 
-            analysis_output = _run_stabilized_step(
+            analysis_output = _run_delivered_step(
                 agent=PLANNING_ANALYST,
                 prompt=build_analysis_prompt(repo, context_json, raw_dir, baseline_sha, planning_contract, governance),
                 step_id=f"planning-analysis-v{context_version}",
                 repo=repo,
                 evidence_dir=analysis_dir / "agent-output",
+                answer_suffix=".answer.md",
             )
             analysis_path = analysis_dir / f"planning-analysis-v{context_version}.md"
             _write_text(analysis_path, analysis_output)
 
         # CHANGES_REQUIRED and re-normalization both return to the Plan Author.
         next_round = review_round + 1
-        plan_output = _run_stabilized_step(
+        plan_output = _run_delivered_step(
             agent=PLAN_AUTHOR,
             prompt=build_author_prompt(
                 repo, ticket_id, context_json, analysis_path, plan_template,
@@ -1074,6 +1101,7 @@ def main() -> None:
             step_id=f"plan-author-r{next_round}-c{context_version}",
             repo=repo,
             evidence_dir=planning_dir / "agent-output",
+            answer_suffix=".answer.md",
         )
         plan_path = planning_dir / f"plan-r{next_round}-c{context_version}.md"
         _write_text(plan_path, plan_output)
