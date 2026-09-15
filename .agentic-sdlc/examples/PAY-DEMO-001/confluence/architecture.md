@@ -17,6 +17,8 @@ PostgreSQL is the system of record for payment state. For this repository's curr
 
 Payment state transitions and fulfilment coordination are initiated by PaymentService.
 
+Concurrent callback requests are each handled on their own thread/request context. PaymentRepository must be constructed per-request (a fresh connection to the same underlying persistence store), not shared as a single long-lived instance across concurrent requests — this is the standard, idiomatic way to give each concurrent caller its own connection to the same system of record, and it is what makes concurrent inserts genuinely race at the persistence layer under the uniqueness constraint rather than serializing through a single in-process connection.
+
 ## Constraints
 
 Do not introduce a distributed lock service solely for callback idempotency.
