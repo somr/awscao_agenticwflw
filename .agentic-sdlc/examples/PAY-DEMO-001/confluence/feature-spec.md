@@ -12,6 +12,8 @@ A provider event that has already completed business processing must not execute
 
 If processing fails before completion, the provider is allowed to retry the event.
 
+If a duplicate callback for the same provider event ID arrives while the original delivery is still being processed (neither completed nor yet failed), the duplicate must not trigger a second fulfilment. Enforce this via a persistence-layer uniqueness constraint on the provider event ID rather than an application-level or distributed lock: the constraint check itself is the concurrency-safe idempotency guarantee, since a database rejects a concurrent duplicate insert independently of timing.
+
 ## Compatibility
 
 The external HTTP response contract for callbacks must remain unchanged by this feature.
