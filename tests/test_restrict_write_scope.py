@@ -15,21 +15,79 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / ".claude" / "hooks" / "restrict-write-scope.py"
 
 
-def run_hook(*, cao_terminal_id: str | None, tool_input: dict) -> subprocess.CompletedProcess:
+class _FakeTerminalServer:
+    """Stands in for cao-server's GET /terminals/{id} for one test.
+
+    Always returns the same canned agent_profile regardless of the terminal
+    id requested — good enough for exercising the hook's own decision logic,
+    which is all these tests are targeting.
+    """
+
+    def __init__(self, agent_profile: str | None, status: int = 200):
+        self._agent_profile = agent_profile
+        self._status = status
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 (stdlib API name)
+                if outer._agent_profile is None:
+                    body = b"not json{{{"
+                else:
+                    body = json.dumps({"agent_profile": outer._agent_profile}).encode()
+                self.send_response(outer._status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self._server = HTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def __enter__(self) -> int:
+        self._thread.start()
+        return self._server.server_address[1]
+
+    def __exit__(self, *exc: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def _unused_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def run_hook(
+    *,
+    cao_terminal_id: str | None,
+    tool_input: dict,
+    cao_api_port: int | None = None,
+) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     if cao_terminal_id is None:
         env.pop("CAO_TERMINAL_ID", None)
     else:
         env["CAO_TERMINAL_ID"] = cao_terminal_id
+    if cao_api_port is not None:
+        env["CAO_API_HOST"] = "127.0.0.1"
+        env["CAO_API_PORT"] = str(cao_api_port)
+        env.pop("CAO_API_BASE_URL", None)
     payload = json.dumps({"tool_input": tool_input})
     return subprocess.run(
         [sys.executable, str(HOOK)],
@@ -94,6 +152,110 @@ class WriteScopeHookTest(unittest.TestCase):
 
     def test_missing_file_path_is_a_no_op(self):
         assert_allowed(self, run_hook(cao_terminal_id="term-1", tool_input={}))
+
+    def test_implementer_profile_may_write_under_app(self):
+        with _FakeTerminalServer("sdlc_implementer") as port:
+            assert_allowed(
+                self,
+                run_hook(
+                    cao_terminal_id="term-1",
+                    tool_input={"file_path": "app/payment_service/payment_service.py"},
+                    cao_api_port=port,
+                ),
+            )
+
+    def test_remediator_profile_may_write_under_app(self):
+        with _FakeTerminalServer("sdlc_remediator") as port:
+            assert_allowed(
+                self,
+                run_hook(
+                    cao_terminal_id="term-1",
+                    tool_input={"file_path": "app/tests/test_payment_service.py"},
+                    cao_api_port=port,
+                ),
+            )
+
+    def test_non_widened_profile_still_cannot_write_under_app(self):
+        with _FakeTerminalServer("sdlc_context_normalizer") as port:
+            assert_denied(
+                self,
+                run_hook(
+                    cao_terminal_id="term-1",
+                    tool_input={"file_path": "app/payment_service/payment_service.py"},
+                    cao_api_port=port,
+                ),
+            )
+
+    def test_unrecognized_profile_still_cannot_write_under_app(self):
+        with _FakeTerminalServer("some_future_profile_nobody_widened_yet") as port:
+            assert_denied(
+                self,
+                run_hook(
+                    cao_terminal_id="term-1",
+                    tool_input={"file_path": "app/payment_service/payment_service.py"},
+                    cao_api_port=port,
+                ),
+            )
+
+    def test_deny_list_wins_over_a_widened_profile(self):
+        # Even sdlc_implementer must never be able to rewrite its own
+        # guardrails (the hook, its wiring, or published governance records).
+        with _FakeTerminalServer("sdlc_implementer") as port:
+            for path in (
+                ".claude/hooks/restrict-write-scope.py",
+                ".claude/settings.json",
+                ".agentic-sdlc/policies/governance.md",
+                ".agentic-sdlc/records/PAY-DEMO-001/execution-manifest.json",
+                ".agentic-sdlc/cao/profiles/implementer.md",
+            ):
+                with self.subTest(path=path):
+                    assert_denied(
+                        self,
+                        run_hook(cao_terminal_id="term-1", tool_input={"file_path": path}, cao_api_port=port),
+                    )
+
+    def test_implementer_profile_still_keeps_the_answer_file_channel(self):
+        with _FakeTerminalServer("sdlc_implementer") as port:
+            assert_allowed(
+                self,
+                run_hook(
+                    cao_terminal_id="term-1",
+                    tool_input={"file_path": ".agentic-sdlc/runtime/PAY-DEMO-001/plan-1/implement-v1.answer.json"},
+                    cao_api_port=port,
+                ),
+            )
+
+    def test_widening_fails_closed_on_http_error_status(self):
+        with _FakeTerminalServer("sdlc_implementer", status=500) as port:
+            assert_denied(
+                self,
+                run_hook(
+                    cao_terminal_id="term-1",
+                    tool_input={"file_path": "app/payment_service/payment_service.py"},
+                    cao_api_port=port,
+                ),
+            )
+
+    def test_widening_fails_closed_on_malformed_response_body(self):
+        with _FakeTerminalServer(None) as port:  # server returns non-JSON body
+            assert_denied(
+                self,
+                run_hook(
+                    cao_terminal_id="term-1",
+                    tool_input={"file_path": "app/payment_service/payment_service.py"},
+                    cao_api_port=port,
+                ),
+            )
+
+    def test_widening_fails_closed_on_connection_error(self):
+        assert_denied(
+            self,
+            run_hook(
+                cao_terminal_id="term-1",
+                tool_input={"file_path": "app/payment_service/payment_service.py"},
+                cao_api_port=_unused_port(),  # nothing listening
+            ),
+        )
 
     def test_dev_plan_answer_paths_all_pass_the_hook(self):
         # Cross-check against the real path shape dev_plan.py builds
