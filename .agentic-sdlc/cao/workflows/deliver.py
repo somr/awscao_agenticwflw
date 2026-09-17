@@ -522,6 +522,91 @@ def _implementer_completion_validator(value: Any) -> Any:
     return value
 
 
+def _implement_and_commit(
+    *,
+    prompt: str,
+    step_id: str,
+    repo: Path,
+    evidence_dir: Path,
+    ticket_id: str,
+    action_label: str,
+) -> dict[str, Any]:
+    completion = _run_json_contract_step(
+        agent=IMPLEMENTER,
+        prompt=prompt,
+        label="Implementer",
+        step_id=step_id,
+        repo=repo,
+        evidence_dir=evidence_dir,
+        validator=_implementer_completion_validator,
+    )
+    changed = _git(["status", "--porcelain", "--", "app"], cwd=repo)
+    if not changed.strip():
+        raise WorkflowContractError(f"{step_id} completed but left no changes under app/")
+    _git(["add", "--", "app"], cwd=repo)
+    task_list = ", ".join(completion.get("tasks_completed", [])) or "(no tasks reported)"
+    _git(["commit", "-m", f"[{ticket_id}] {action_label} (tasks: {task_list})"], cwd=repo)
+    return completion
+
+
+# Fixed, deterministic verification commands — no agent, no judgment. A
+# command's exit code and captured output IS the evidence; see the module
+# docstring / plan for why this is a trusted Python subprocess call rather
+# than something delegated to an agent with execute_bash.
+VERIFICATION_COMMANDS: list[list[str]] = [
+    ["python3", "-m", "compileall", "-q", "app"],
+    ["python3", "-m", "unittest", "discover", "-t", "app", "-s", "app/tests", "-v"],
+]
+VERIFICATION_TIMEOUT_SECONDS = 300
+
+
+def _run_verification(repo: Path, evidence_dir: Path, label: str) -> dict[str, Any]:
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    command_results: list[dict[str, Any]] = []
+    all_passed = True
+    for index, command in enumerate(VERIFICATION_COMMANDS, start=1):
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(repo),
+                capture_output=True,
+                text=True,
+                timeout=VERIFICATION_TIMEOUT_SECONDS,
+            )
+            returncode: int | None = completed.returncode
+            stdout, stderr = completed.stdout, completed.stderr
+        except subprocess.TimeoutExpired as exc:
+            returncode = None
+            stdout = exc.stdout or ""
+            stderr = f"{exc.stderr or ''}\n[timed out after {VERIFICATION_TIMEOUT_SECONDS}s]"
+        passed = returncode == 0
+        all_passed = all_passed and passed
+        command_results.append({"command": command, "returncode": returncode, "passed": passed})
+        _write_text(
+            evidence_dir / f"{label}-cmd{index}.log",
+            f"$ {' '.join(command)}\n\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n",
+        )
+    summary = {"passed": all_passed, "commands": command_results}
+    _write_json(evidence_dir / f"{label}.json", summary)
+    return summary
+
+
+def build_implementer_repair_prompt(
+    repo: Path, plan_path: Path, contract: Path, governance: Path, verification: dict[str, Any]
+) -> str:
+    failed = [c for c in verification["commands"] if not c["passed"]]
+    return f"""Your previous implementation attempt for repository {repo} did not pass verification.
+
+Approved Development Plan: {plan_path}
+Delivery workflow contract: {contract}
+Governance policy: {governance}
+
+Failed verification commands:
+{json.dumps(failed, indent=2)}
+
+Fix the implementation under app/ so verification passes. Do not weaken, skip, or delete any test assertion to make it pass — if a test looks wrong given the plan, say so in your output instead of changing the test. Keep changes scoped to fixing the failure; do not otherwise expand scope beyond the plan."""
+
+
 def main() -> None:
     inputs = get_inputs()
     ticket_id = _safe_component(_require_str(inputs["ticket_id"], "ticket_id"), "ticket_id")
@@ -566,23 +651,15 @@ def main() -> None:
     })
 
     # 2. IMPLEMENTING
-    completion = _run_json_contract_step(
-        agent=IMPLEMENTER,
+    completion = _implement_and_commit(
         prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
-        label="Implementer",
         step_id="implement-v1",
         repo=repo,
         evidence_dir=implementing_dir / "agent-output",
-        validator=_implementer_completion_validator,
+        ticket_id=ticket_id,
+        action_label="Implement approved plan",
     )
     _write_json(implementing_dir / "completion-v1.json", completion)
-
-    changed = _git(["status", "--porcelain", "--", "app"], cwd=repo)
-    if not changed.strip():
-        raise WorkflowContractError("sdlc_implementer completed but left no changes under app/")
-    _git(["add", "--", "app"], cwd=repo)
-    task_list = ", ".join(completion.get("tasks_completed", [])) or "(no tasks reported)"
-    _git(["commit", "-m", f"[{ticket_id}] Implement approved plan (tasks: {task_list})"], cwd=repo)
     commit_sha = _current_head_sha(repo)
 
     delivery_manifest = _read_json(delivery_manifest_path)
@@ -591,14 +668,52 @@ def main() -> None:
     delivery_manifest["implementer_summary"] = completion
     _write_json(delivery_manifest_path, delivery_manifest)
 
+    # 3. VERIFYING
+    verifying_dir = runtime_dir / "verification"
+    verification = _run_verification(repo, verifying_dir, "verify-v1")
+    repair_completion: dict[str, Any] | None = None
+    if not verification["passed"]:
+        repair_completion = _implement_and_commit(
+            prompt=build_implementer_repair_prompt(repo, plan_path, delivery_contract, governance, verification),
+            step_id="implement-v1-repair-1",
+            repo=repo,
+            evidence_dir=implementing_dir / "agent-output",
+            ticket_id=ticket_id,
+            action_label="Repair after verification failure",
+        )
+        _write_json(implementing_dir / "completion-v1-repair-1.json", repair_completion)
+        commit_sha = _current_head_sha(repo)
+        verification = _run_verification(repo, verifying_dir, "verify-v1-repair-1")
+
+    delivery_manifest = _read_json(delivery_manifest_path)
+    delivery_manifest["implementation_commit_sha"] = commit_sha
+    if repair_completion is not None:
+        delivery_manifest["implementer_repair_summary"] = repair_completion
+    delivery_manifest["verification"] = verification
+
+    if not verification["passed"]:
+        delivery_manifest["state"] = "BLOCKED"
+        _write_json(delivery_manifest_path, delivery_manifest)
+        emit_output({
+            "workflow_outcome": "BLOCKED",
+            "ticket_id": ticket_id,
+            "run_id": run_id,
+            "reason": "verification_failed_after_one_repair_attempt",
+            "delivery_manifest": str(delivery_manifest_path),
+        })
+        return
+
+    delivery_manifest["state"] = "VERIFIED"
+    _write_json(delivery_manifest_path, delivery_manifest)
+
     emit_output({
-        "workflow_outcome": "IMPLEMENTED",
+        "workflow_outcome": "VERIFIED",
         "ticket_id": ticket_id,
         "run_id": run_id,
         "delivery_branch": delivery_branch,
         "implementation_commit_sha": commit_sha,
         "delivery_manifest": str(delivery_manifest_path),
-        "next_action": "Extend deliver.py with VERIFYING (not yet implemented in this version).",
+        "next_action": "Extend deliver.py with PR_CREATED (not yet implemented in this version).",
     })
 
 
