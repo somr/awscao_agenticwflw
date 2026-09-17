@@ -3,13 +3,13 @@
   "delivery_branch": "sdlc/PAY-DEMO-001",
   "delivery_workflow": "deliver",
   "delivery_workflow_version": "1.0",
-  "implementation_commit_sha": "cefbb38096aabddfe35a64559f4b8833dd977283",
+  "implementation_commit_sha": "6587c28c86496b066da65591d6aa590f5f8f0773",
   "implementer_summary": {
     "assumptions": [
-      "T3 required no code change per the plan's own design; verified by inspection that CallbackController.handle() reads only result.payment_id (never result.fulfilled) across the claimed, completed-duplicate, and in-flight-rejected-duplicate paths, so callback_controller.py was left untouched.",
-      "Used sqlite3.connect(..., timeout=30.0) plus 'PRAGMA journal_mode=WAL' in PaymentRepository.__init__ as the busy-timeout/WAL hardening T1 calls for; the plan specifies the mechanism (busy timeout / WAL) but not exact parameter values, so a 30-second busy timeout was chosen as a generous, test-suite-safe default.",
-      "The plan's T5 'one-time development-time verification' step (manually removing the hardening and rerunning T5 in a loop to confirm flakiness, then restoring it) is described as a manual, non-automated, one-time developer action recorded as a commit/comment note \u2014 not a task this implementer role can perform, since it requires running tests and iterating live, which is outside this role's execution boundary. It was not performed; this is disclosed as a gap for the workflow's verification stage or a human developer to carry out, not silently skipped.",
-      "FR-2's test-verification technique (T4, per D6) reuses the same shared self.repository instance from setUp for the extra record_if_new() reclaim-probe call, consistent with the plan's stated exception for strictly-sequential same-test-method calls on a shared PaymentRepository (see plan 'Out of scope' on setUp's shared-instance pattern)."
+      "T3 required no code change: verified by inspection that CallbackController.handle() already reads only result.payment_id and never result.fulfilled, so the response shape is identical across claimed / completed-duplicate / in-flight-rejected-duplicate paths, per the plan's Proposed design.",
+      "T6 (running the full test suite) was not performed, since the implementer profile has no execution tool; verification is left to the workflow's independent deterministic verification step as instructed.",
+      "The one-time manual hardening-verification step described in the plan (temporarily removing the busy-timeout/WAL config and rerunning the concurrency test in a loop to confirm flakiness, then restoring it) is a development-time human action outside an implementer's scope and was not performed; the busy-timeout/WAL hardening itself is implemented in repository.py as specified.",
+      "In the FR-2 test (test_failed_fulfilment_releases_claim_for_successful_retry), reused the existing setUp-provided self.repository instance (sequential, non-concurrent calls only) consistent with the plan's explicit scope note permitting the shared-instance pattern for strictly sequential test calls."
     ],
     "deviations": [],
     "files_changed": [
@@ -26,11 +26,16 @@
     ]
   },
   "plan_sha256": "c3dc197c4443ed402579c39a8235a04f6a0a7d32acfa2fc4887f37b68caa1b3f",
+  "pr_body_path": ".agentic-sdlc/records/PAY-DEMO-001/pr-body.md",
+  "pr_diff_path": ".agentic-sdlc/records/PAY-DEMO-001/pr-diff.patch",
+  "pr_head_sha": "6587c28c86496b066da65591d6aa590f5f8f0773",
+  "pr_reference": null,
+  "pr_title_path": ".agentic-sdlc/records/PAY-DEMO-001/pr-title.txt",
   "provider": "claude_code",
   "repository_baseline_sha": "ea1b4af7e38140140ea24ff15f37b9c08ecca223",
   "repository_root": "/home/dad/AIProjects/awscao_learning",
   "schema_version": "1.0",
-  "state": "VERIFIED",
+  "state": "PR_CREATED",
   "ticket_id": "PAY-DEMO-001",
   "verification": {
     "commands": [
@@ -63,5 +68,5 @@
     ],
     "passed": true
   },
-  "workflow_run_id": "deliver-PAY-DEMO-001-3"
+  "workflow_run_id": "deliver-PAY-DEMO-001-4"
 }

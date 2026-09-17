@@ -607,6 +607,60 @@ Failed verification commands:
 Fix the implementation under app/ so verification passes. Do not weaken, skip, or delete any test assertion to make it pass — if a test looks wrong given the plan, say so in your output instead of changing the test. Keep changes scoped to fixing the failure; do not otherwise expand scope beyond the plan."""
 
 
+def _compute_delivery_diff(repo: Path, base_branch: str, delivery_branch: str) -> str:
+    return _git(["diff", f"{base_branch}...{delivery_branch}"], cwd=repo)
+
+
+def render_pr_title(ticket_id: str) -> str:
+    return f"[{ticket_id}] Implement approved development plan"
+
+
+def render_pr_body(
+    *,
+    ticket_id: str,
+    plan_path: Path,
+    plan_sha256: str,
+    completion: dict[str, Any],
+    verification: dict[str, Any],
+    pr_head_sha: str,
+) -> str:
+    """Pure Python templating — no agent involved, no judgment needed to
+    format already-known facts. Mirrors render_planning_context in
+    dev_plan.py: canonical data is JSON, this is one deterministic view of
+    it."""
+    tasks = ", ".join(completion.get("tasks_completed", [])) or "(none reported)"
+    files = "\n".join(f"- `{f}`" for f in completion.get("files_changed", [])) or "- (none reported)"
+    assumptions = "\n".join(f"- {a}" for a in completion.get("assumptions", [])) or "- (none)"
+    deviations = "\n".join(f"- {d}" for d in completion.get("deviations", [])) or "- (none)"
+    verification_lines = "\n".join(
+        f"- `{' '.join(c['command'])}` — {'PASS' if c['passed'] else 'FAIL'} (exit {c['returncode']})"
+        for c in verification.get("commands", [])
+    ) or "- (no verification evidence)"
+    return f"""## {ticket_id}
+
+Implements the approved Development Plan (`{plan_path.name}`, sha256 `{plan_sha256}`).
+
+**Tasks completed:** {tasks}
+
+**Files changed:**
+{files}
+
+**Assumptions:**
+{assumptions}
+
+**Deviations:**
+{deviations}
+
+**Verification:**
+{verification_lines}
+
+**PR HEAD SHA:** `{pr_head_sha}`
+
+---
+This PR was prepared by the agentic delivery workflow. Final approval must be granted by a human reviewer in source control, not by any agent.
+"""
+
+
 def main() -> None:
     inputs = get_inputs()
     ticket_id = _safe_component(_require_str(inputs["ticket_id"], "ticket_id"), "ticket_id")
@@ -706,14 +760,49 @@ def main() -> None:
     delivery_manifest["state"] = "VERIFIED"
     _write_json(delivery_manifest_path, delivery_manifest)
 
+    # 4. PR_CREATED — local/simulated only: no gh pr create, no push. This is
+    # the one seam a later phase swaps for real PR creation; everything else
+    # in this workflow is unaffected by that later change.
+    final_completion = repair_completion if repair_completion is not None else completion
+    pr_head_sha = commit_sha
+    diff_text = _compute_delivery_diff(repo, base_branch, delivery_branch)
+    pr_title = render_pr_title(ticket_id)
+    pr_body = render_pr_body(
+        ticket_id=ticket_id,
+        plan_path=plan_path,
+        plan_sha256=manifest["plan_sha256"],
+        completion=final_completion,
+        verification=verification,
+        pr_head_sha=pr_head_sha,
+    )
+    pr_title_path = records_dir / "pr-title.txt"
+    pr_body_path = records_dir / "pr-body.md"
+    pr_diff_path = records_dir / "pr-diff.patch"
+    _write_text(pr_title_path, pr_title)
+    _write_text(pr_body_path, pr_body)
+    pr_diff_path.parent.mkdir(parents=True, exist_ok=True)
+    pr_diff_path.write_text(diff_text, encoding="utf-8")
+
+    delivery_manifest = _read_json(delivery_manifest_path)
+    delivery_manifest["state"] = "PR_CREATED"
+    delivery_manifest["pr_reference"] = None
+    delivery_manifest["pr_head_sha"] = pr_head_sha
+    delivery_manifest["pr_title_path"] = str(pr_title_path.relative_to(repo))
+    delivery_manifest["pr_body_path"] = str(pr_body_path.relative_to(repo))
+    delivery_manifest["pr_diff_path"] = str(pr_diff_path.relative_to(repo))
+    _write_json(delivery_manifest_path, delivery_manifest)
+
     emit_output({
-        "workflow_outcome": "VERIFIED",
+        "workflow_outcome": "PR_CREATED",
         "ticket_id": ticket_id,
         "run_id": run_id,
         "delivery_branch": delivery_branch,
-        "implementation_commit_sha": commit_sha,
+        "pr_head_sha": pr_head_sha,
+        "pr_title_path": str(pr_title_path),
+        "pr_body_path": str(pr_body_path),
+        "pr_diff_path": str(pr_diff_path),
         "delivery_manifest": str(delivery_manifest_path),
-        "next_action": "Extend deliver.py with PR_CREATED (not yet implemented in this version).",
+        "next_action": "Extend deliver.py with AGENT_REVIEWING (not yet implemented in this version).",
     })
 
 

@@ -217,6 +217,91 @@ class GitBranchRootingTest(unittest.TestCase):
             self.assertEqual(before, after, "resuming an existing delivery branch must not discard its commits")
 
 
+class PrRenderingTest(unittest.TestCase):
+    def _completion(self, **overrides) -> dict:
+        base = {
+            "tasks_completed": ["T1", "T2"],
+            "files_changed": ["app/payment_service/payment_service.py"],
+            "assumptions": ["used a 30s busy timeout"],
+            "deviations": [],
+        }
+        base.update(overrides)
+        return base
+
+    def _verification(self) -> dict:
+        return {
+            "passed": True,
+            "commands": [
+                {"command": ["python3", "-m", "compileall", "-q", "app"], "passed": True, "returncode": 0},
+                {"command": ["python3", "-m", "unittest", "discover"], "passed": True, "returncode": 0},
+            ],
+        }
+
+    def test_pr_title_includes_ticket_id(self):
+        self.assertIn("PAY-DEMO-001", mod.render_pr_title("PAY-DEMO-001"))
+
+    def test_pr_body_includes_all_key_facts(self):
+        body = mod.render_pr_body(
+            ticket_id="PAY-DEMO-001",
+            plan_path=Path("development-plan.md"),
+            plan_sha256="abc123",
+            completion=self._completion(),
+            verification=self._verification(),
+            pr_head_sha="deadbeef",
+        )
+        for expected in ("PAY-DEMO-001", "T1", "T2", "abc123", "deadbeef", "payment_service.py", "busy timeout", "PASS"):
+            self.assertIn(expected, body)
+
+    def test_pr_body_handles_empty_lists_without_crashing(self):
+        body = mod.render_pr_body(
+            ticket_id="PAY-DEMO-001",
+            plan_path=Path("development-plan.md"),
+            plan_sha256="abc123",
+            completion=self._completion(files_changed=[], assumptions=[], deviations=[]),
+            verification={"passed": True, "commands": []},
+            pr_head_sha="deadbeef",
+        )
+        self.assertIn("(none reported)", body)
+        self.assertIn("(no verification evidence)", body)
+
+    def test_pr_body_shows_failing_commands_as_fail(self):
+        verification = self._verification()
+        verification["commands"][1]["passed"] = False
+        verification["commands"][1]["returncode"] = 1
+        body = mod.render_pr_body(
+            ticket_id="PAY-DEMO-001",
+            plan_path=Path("development-plan.md"),
+            plan_sha256="abc123",
+            completion=self._completion(),
+            verification=verification,
+            pr_head_sha="deadbeef",
+        )
+        self.assertIn("FAIL", body)
+
+
+class ComputeDeliveryDiffTest(unittest.TestCase):
+    def test_diff_shows_changes_on_the_delivery_branch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            _init_repo(repo)
+            mod._ensure_delivery_branch(repo, "sdlc/T-1", "main")
+            (repo / "app.py").write_text("print('hi')\n", encoding="utf-8")
+            _run(["add", "app.py"], repo)
+            _run(["commit", "-q", "-m", "add app.py"], repo)
+
+            diff = mod._compute_delivery_diff(repo, "main", "sdlc/T-1")
+            self.assertIn("app.py", diff)
+            self.assertIn("print('hi')", diff)
+
+    def test_diff_is_empty_when_branches_match(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            _init_repo(repo)
+            mod._ensure_delivery_branch(repo, "sdlc/T-1", "main")
+            diff = mod._compute_delivery_diff(repo, "main", "sdlc/T-1")
+            self.assertEqual(diff.strip(), "")
+
+
 class BaselineIsAncestorTest(unittest.TestCase):
     def test_true_when_baseline_is_an_ancestor(self):
         with tempfile.TemporaryDirectory() as temp:
