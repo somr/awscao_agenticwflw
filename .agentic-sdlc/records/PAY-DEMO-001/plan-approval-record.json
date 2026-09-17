@@ -1,0 +1,11 @@
+{
+  "approval_reference": "Approved for Workflow 2 DELIVER pipeline testing (run plan-PAY-DEMO-001-17, review PASS on round 3)",
+  "approved_at": "2026-09-17T21:33:10.284790Z",
+  "approved_by": "dad",
+  "decision": "APPROVED",
+  "plan_path": ".agentic-sdlc/records/PAY-DEMO-001/development-plan.md",
+  "plan_sha256": "c3dc197c4443ed402579c39a8235a04f6a0a7d32acfa2fc4887f37b68caa1b3f",
+  "repository_baseline_sha": "ea1b4af7e38140140ea24ff15f37b9c08ecca223",
+  "schema_version": "1.0",
+  "ticket_id": "PAY-DEMO-001"
+}
