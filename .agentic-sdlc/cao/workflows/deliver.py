@@ -49,12 +49,39 @@ INPUTS = {
 
 PROVIDER = "claude_code"
 IMPLEMENTER = "sdlc_implementer"
+PR_REVIEWER = "sdlc_pr_reviewer"
 STEP_TIMEOUT_SECONDS = 1800
 CAO_HTTP_TIMEOUT_SECONDS = 30.0
 COMPLETION_INITIAL_SETTLE_SECONDS = 5.0
 COMPLETION_POLL_SECONDS = 3.0
 COMPLETION_MAX_POLLS = 100
 COMPLETION_STABLE_POLLS = 2
+
+# PR review vocabulary — encodes .agentic-sdlc/policies/pr-review.md's finding
+# model and routing policy as executable constants. classify_pr_review()
+# recomputes automation_eligibility from these, never trusting the reviewer
+# agent's own claim (mirrors dev_plan.py's validate_review not trusting the
+# agent's self-reported review_status).
+PR_REVIEW_CATEGORIES = {
+    "ARCHITECTURE", "PUBLIC_API", "DB_SCHEMA", "AUTHN_AUTHZ", "CRYPTO_SECRETS",
+    "DATA_LOSS", "CONCURRENCY", "BUSINESS_RULES", "INFRA_TOPOLOGY", "DEPENDENCY",
+    "PLAN_DEVIATION", "CORRECTNESS", "TESTING", "STYLE", "DOCUMENTATION", "OTHER",
+}
+# "High-impact/protected areas include, at minimum: architecture changes;
+# public API/event contract changes; database/schema migrations;
+# authentication/authorization/IAM; cryptography/secrets handling;
+# data-loss/corruption risks; concurrency/transaction semantics; critical
+# financial/business rules; significant infrastructure topology changes;
+# major dependency changes; changes that contradict or materially extend the
+# approved plan." (pr-review.md) — always DEVELOPER_REQUIRED, any impact.
+PROTECTED_PR_REVIEW_CATEGORIES = {
+    "ARCHITECTURE", "PUBLIC_API", "DB_SCHEMA", "AUTHN_AUTHZ", "CRYPTO_SECRETS",
+    "DATA_LOSS", "CONCURRENCY", "BUSINESS_RULES", "INFRA_TOPOLOGY", "DEPENDENCY",
+    "PLAN_DEVIATION",
+}
+PR_REVIEW_IMPACTS = {"LOW", "MEDIUM", "HIGH"}
+PR_REVIEW_AUTOMATION = {"AUTO_FIX", "DEVELOPER_REQUIRED"}
+MEDIUM_AUTO_FIX_CONFIDENCE_THRESHOLD = 0.8
 
 
 class WorkflowContractError(ValueError):
@@ -661,6 +688,112 @@ This PR was prepared by the agentic delivery workflow. Final approval must be gr
 """
 
 
+def build_pr_reviewer_prompt(
+    *,
+    repo: Path,
+    plan_path: Path,
+    contract: Path,
+    governance: Path,
+    pr_review_policy: Path,
+    diff_text: str,
+    verification: dict[str, Any],
+    pr_head_sha: str,
+) -> str:
+    return f"""Independently review the candidate PR diff below for repository {repo}. You did not write this diff.
+
+Approved Development Plan: {plan_path}
+Delivery workflow contract: {contract}
+Governance policy: {governance}
+PR review and remediation policy: {pr_review_policy}
+PR HEAD SHA under review: {pr_head_sha}
+
+Verification evidence (already run independently by the workflow, not by you):
+{json.dumps(verification, indent=2)}
+
+Candidate diff (already computed by the workflow; do not run git yourself):
+```diff
+{diff_text}
+```
+
+Classify every finding per the PR review and remediation policy. Be honest about impact/category/confidence — the workflow independently enforces the policy's routing rules regardless of what you claim."""
+
+
+def classify_pr_review(value: Any, *, pr_head_sha: str) -> dict[str, Any]:
+    """Recompute automation_eligibility from the policy, never trust the
+    reviewer agent's own claim — same discipline as dev_plan.py's
+    validate_review not trusting the agent's self-reported review_status.
+    """
+    value = _require_dict(value, "PR review")
+    raw_findings = _require_list(value.get("findings", []), "findings")
+
+    findings: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_findings):
+        finding = _require_dict(raw, f"findings[{index}]")
+        path = f"findings[{index}]"
+        _require_str(finding.get("id"), f"{path}.id")
+        _require_str(finding.get("file"), f"{path}.file")
+        _require_str(finding.get("failure_scenario"), f"{path}.failure_scenario")
+        _require_str(finding.get("reason"), f"{path}.reason")
+
+        category = finding.get("category")
+        if category not in PR_REVIEW_CATEGORIES:
+            raise WorkflowContractError(f"{path}.category must be one of {sorted(PR_REVIEW_CATEGORIES)}")
+        impact = finding.get("impact")
+        if impact not in PR_REVIEW_IMPACTS:
+            raise WorkflowContractError(f"{path}.impact must be one of {sorted(PR_REVIEW_IMPACTS)}")
+        claimed_eligibility = finding.get("automation_eligibility")
+        if claimed_eligibility not in PR_REVIEW_AUTOMATION:
+            raise WorkflowContractError(f"{path}.automation_eligibility must be one of {sorted(PR_REVIEW_AUTOMATION)}")
+        confidence = finding.get("confidence")
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0.0 <= confidence <= 1.0:
+            raise WorkflowContractError(f"{path}.confidence must be a number in [0, 1]")
+        localized_and_bounded = bool(finding.get("localized_and_bounded", False))
+        deterministically_verifiable = bool(finding.get("deterministically_verifiable", False))
+
+        protected = category in PROTECTED_PR_REVIEW_CATEGORIES
+        if impact == "HIGH" or protected:
+            # pr-review.md: "High impact: Always DEVELOPER_REQUIRED" and
+            # protected areas are DEVELOPER_REQUIRED regardless of impact.
+            resolved_eligibility = "DEVELOPER_REQUIRED"
+        elif impact == "MEDIUM":
+            # pr-review.md's conjunctive MEDIUM conditions: confidence
+            # threshold, localized/bounded, not protected (checked above),
+            # deterministically verifiable. ("does not reinterpret an
+            # approved requirement" and "no material plan deviation" are
+            # enforced via the protected-category check on PLAN_DEVIATION.)
+            resolved_eligibility = (
+                "AUTO_FIX"
+                if (
+                    claimed_eligibility == "AUTO_FIX"
+                    and confidence >= MEDIUM_AUTO_FIX_CONFIDENCE_THRESHOLD
+                    and localized_and_bounded
+                    and deterministically_verifiable
+                )
+                else "DEVELOPER_REQUIRED"
+            )
+        else:  # LOW
+            # pr-review.md: "Normally eligible ... when deterministic and
+            # local." Honor the agent's own claim unless it already asked
+            # for DEVELOPER_REQUIRED itself.
+            resolved_eligibility = claimed_eligibility
+
+        findings.append({
+            **finding,
+            "automation_eligibility": resolved_eligibility,
+            "policy_overrode_agent_classification": resolved_eligibility != claimed_eligibility,
+            "pr_head_sha_reviewed": pr_head_sha,
+        })
+
+    summary = value.get("summary")
+    summary = summary if isinstance(summary, str) and summary.strip() else "(no summary provided)"
+    return {
+        "summary": summary,
+        "findings": findings,
+        "has_developer_required": any(f["automation_eligibility"] == "DEVELOPER_REQUIRED" for f in findings),
+        "has_auto_fix": any(f["automation_eligibility"] == "AUTO_FIX" for f in findings),
+    }
+
+
 def main() -> None:
     inputs = get_inputs()
     ticket_id = _safe_component(_require_str(inputs["ticket_id"], "ticket_id"), "ticket_id")
@@ -677,8 +810,9 @@ def main() -> None:
 
     delivery_contract = sdlc / "contracts" / "delivery-workflow.md"
     governance = sdlc / "policies" / "governance.md"
+    pr_review_policy = sdlc / "policies" / "pr-review.md"
     plan_path = records_dir / "development-plan.md"
-    for required in (delivery_contract, governance, plan_path):
+    for required in (delivery_contract, governance, pr_review_policy, plan_path):
         if not required.is_file():
             raise WorkflowContractError(f"required SDLC file is missing: {required}")
 
@@ -792,17 +926,52 @@ def main() -> None:
     delivery_manifest["pr_diff_path"] = str(pr_diff_path.relative_to(repo))
     _write_json(delivery_manifest_path, delivery_manifest)
 
+    # 5. AGENT_REVIEWING — one review round for now; the bounded
+    # AUTO_FIX-remediation loop (REMEDIATING) is a later increment.
+    review_round = 1
+    reviewing_dir = runtime_dir / "review"
+    review = _run_json_contract_step(
+        agent=PR_REVIEWER,
+        prompt=build_pr_reviewer_prompt(
+            repo=repo,
+            plan_path=plan_path,
+            contract=delivery_contract,
+            governance=governance,
+            pr_review_policy=pr_review_policy,
+            diff_text=diff_text,
+            verification=verification,
+            pr_head_sha=pr_head_sha,
+        ),
+        label="PR Reviewer",
+        step_id=f"pr-review-r{review_round}",
+        repo=repo,
+        evidence_dir=reviewing_dir / "agent-output",
+        validator=lambda value: classify_pr_review(value, pr_head_sha=pr_head_sha),
+    )
+    review_path = records_dir / f"pr-review-r{review_round}.json"
+    _write_json(review_path, review)
+
+    delivery_manifest = _read_json(delivery_manifest_path)
+    delivery_manifest["state"] = "AGENT_REVIEWING"
+    delivery_manifest["review_rounds"] = review_round
+    delivery_manifest["latest_review_path"] = str(review_path.relative_to(repo))
+    delivery_manifest["latest_review_has_developer_required"] = review["has_developer_required"]
+    delivery_manifest["latest_review_has_auto_fix"] = review["has_auto_fix"]
+    _write_json(delivery_manifest_path, delivery_manifest)
+
     emit_output({
-        "workflow_outcome": "PR_CREATED",
+        "workflow_outcome": "AGENT_REVIEWING",
         "ticket_id": ticket_id,
         "run_id": run_id,
         "delivery_branch": delivery_branch,
         "pr_head_sha": pr_head_sha,
-        "pr_title_path": str(pr_title_path),
-        "pr_body_path": str(pr_body_path),
-        "pr_diff_path": str(pr_diff_path),
+        "review_round": review_round,
+        "findings_count": len(review["findings"]),
+        "has_developer_required_findings": review["has_developer_required"],
+        "has_auto_fix_findings": review["has_auto_fix"],
+        "review_path": str(review_path),
         "delivery_manifest": str(delivery_manifest_path),
-        "next_action": "Extend deliver.py with AGENT_REVIEWING (not yet implemented in this version).",
+        "next_action": "Extend deliver.py with REMEDIATING (not yet implemented in this version).",
     })
 
 

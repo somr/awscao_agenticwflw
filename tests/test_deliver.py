@@ -217,6 +217,155 @@ class GitBranchRootingTest(unittest.TestCase):
             self.assertEqual(before, after, "resuming an existing delivery branch must not discard its commits")
 
 
+class ClassifyPrReviewTest(unittest.TestCase):
+    """Encodes .agentic-sdlc/policies/pr-review.md's routing rules as
+    executable expectations — this is the policy-as-code boundary, so it
+    gets the most thorough coverage in this file."""
+
+    def _finding(self, **overrides) -> dict:
+        base = {
+            "id": "PR-001",
+            "file": "app/payment_service/payment_service.py",
+            "location": "process_callback",
+            "category": "CORRECTNESS",
+            "impact": "LOW",
+            "confidence": 0.9,
+            "failure_scenario": "x happens",
+            "consequence": "y breaks",
+            "related_acceptance_criterion": "AC-1",
+            "remediation_direction": "do z",
+            "localized_and_bounded": True,
+            "deterministically_verifiable": True,
+            "automation_eligibility": "AUTO_FIX",
+            "reason": "small and local",
+        }
+        base.update(overrides)
+        return base
+
+    def test_high_impact_always_forced_to_developer_required(self):
+        result = mod.classify_pr_review(
+            {"summary": "s", "findings": [self._finding(impact="HIGH", automation_eligibility="AUTO_FIX")]},
+            pr_head_sha="sha1",
+        )
+        finding = result["findings"][0]
+        self.assertEqual(finding["automation_eligibility"], "DEVELOPER_REQUIRED")
+        self.assertTrue(finding["policy_overrode_agent_classification"])
+        self.assertTrue(result["has_developer_required"])
+        self.assertFalse(result["has_auto_fix"])
+
+    def test_protected_category_forced_regardless_of_low_impact(self):
+        result = mod.classify_pr_review(
+            {"summary": "s", "findings": [self._finding(impact="LOW", category="ARCHITECTURE", automation_eligibility="AUTO_FIX")]},
+            pr_head_sha="sha1",
+        )
+        self.assertEqual(result["findings"][0]["automation_eligibility"], "DEVELOPER_REQUIRED")
+
+    def test_medium_honored_as_auto_fix_when_all_conditions_met(self):
+        result = mod.classify_pr_review(
+            {"summary": "s", "findings": [self._finding(
+                impact="MEDIUM", confidence=0.95, localized_and_bounded=True,
+                deterministically_verifiable=True, automation_eligibility="AUTO_FIX",
+            )]},
+            pr_head_sha="sha1",
+        )
+        finding = result["findings"][0]
+        self.assertEqual(finding["automation_eligibility"], "AUTO_FIX")
+        self.assertFalse(finding["policy_overrode_agent_classification"])
+
+    def test_medium_forced_when_confidence_below_threshold(self):
+        result = mod.classify_pr_review(
+            {"summary": "s", "findings": [self._finding(
+                impact="MEDIUM", confidence=0.5, localized_and_bounded=True,
+                deterministically_verifiable=True, automation_eligibility="AUTO_FIX",
+            )]},
+            pr_head_sha="sha1",
+        )
+        self.assertEqual(result["findings"][0]["automation_eligibility"], "DEVELOPER_REQUIRED")
+
+    def test_medium_forced_when_not_localized(self):
+        result = mod.classify_pr_review(
+            {"summary": "s", "findings": [self._finding(
+                impact="MEDIUM", confidence=0.95, localized_and_bounded=False,
+                deterministically_verifiable=True, automation_eligibility="AUTO_FIX",
+            )]},
+            pr_head_sha="sha1",
+        )
+        self.assertEqual(result["findings"][0]["automation_eligibility"], "DEVELOPER_REQUIRED")
+
+    def test_medium_forced_when_not_deterministically_verifiable(self):
+        result = mod.classify_pr_review(
+            {"summary": "s", "findings": [self._finding(
+                impact="MEDIUM", confidence=0.95, localized_and_bounded=True,
+                deterministically_verifiable=False, automation_eligibility="AUTO_FIX",
+            )]},
+            pr_head_sha="sha1",
+        )
+        self.assertEqual(result["findings"][0]["automation_eligibility"], "DEVELOPER_REQUIRED")
+
+    def test_medium_protected_category_still_forced(self):
+        result = mod.classify_pr_review(
+            {"summary": "s", "findings": [self._finding(
+                impact="MEDIUM", category="CONCURRENCY", confidence=0.99,
+                localized_and_bounded=True, deterministically_verifiable=True,
+                automation_eligibility="AUTO_FIX",
+            )]},
+            pr_head_sha="sha1",
+        )
+        self.assertEqual(result["findings"][0]["automation_eligibility"], "DEVELOPER_REQUIRED")
+
+    def test_low_impact_honors_agents_auto_fix_claim(self):
+        result = mod.classify_pr_review(
+            {"summary": "s", "findings": [self._finding(impact="LOW", automation_eligibility="AUTO_FIX")]},
+            pr_head_sha="sha1",
+        )
+        self.assertEqual(result["findings"][0]["automation_eligibility"], "AUTO_FIX")
+        self.assertTrue(result["has_auto_fix"])
+
+    def test_low_impact_honors_agents_developer_required_claim(self):
+        result = mod.classify_pr_review(
+            {"summary": "s", "findings": [self._finding(impact="LOW", automation_eligibility="DEVELOPER_REQUIRED")]},
+            pr_head_sha="sha1",
+        )
+        self.assertEqual(result["findings"][0]["automation_eligibility"], "DEVELOPER_REQUIRED")
+
+    def test_pr_head_sha_is_always_overwritten_with_the_supplied_value(self):
+        finding = self._finding()
+        finding["pr_head_sha_reviewed"] = "something-the-agent-made-up"
+        result = mod.classify_pr_review({"summary": "s", "findings": [finding]}, pr_head_sha="real-sha")
+        self.assertEqual(result["findings"][0]["pr_head_sha_reviewed"], "real-sha")
+
+    def test_empty_findings_list_is_clean(self):
+        result = mod.classify_pr_review({"summary": "clean", "findings": []}, pr_head_sha="sha1")
+        self.assertEqual(result["findings"], [])
+        self.assertFalse(result["has_developer_required"])
+        self.assertFalse(result["has_auto_fix"])
+
+    def test_invalid_category_is_rejected(self):
+        with self.assertRaises(mod.WorkflowContractError):
+            mod.classify_pr_review(
+                {"summary": "s", "findings": [self._finding(category="NOT_A_REAL_CATEGORY")]},
+                pr_head_sha="sha1",
+            )
+
+    def test_invalid_impact_is_rejected(self):
+        with self.assertRaises(mod.WorkflowContractError):
+            mod.classify_pr_review(
+                {"summary": "s", "findings": [self._finding(impact="CRITICAL")]},
+                pr_head_sha="sha1",
+            )
+
+    def test_confidence_out_of_range_is_rejected(self):
+        with self.assertRaises(mod.WorkflowContractError):
+            mod.classify_pr_review(
+                {"summary": "s", "findings": [self._finding(confidence=1.5)]},
+                pr_head_sha="sha1",
+            )
+
+    def test_missing_summary_gets_a_placeholder(self):
+        result = mod.classify_pr_review({"findings": []}, pr_head_sha="sha1")
+        self.assertEqual(result["summary"], "(no summary provided)")
+
+
 class PrRenderingTest(unittest.TestCase):
     def _completion(self, **overrides) -> dict:
         base = {
