@@ -17,6 +17,7 @@ import json
 import os
 import re
 import threading
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -33,6 +34,17 @@ INPUTS = {
     "baseline_sha": {"type": "string", "required": True},
     "base_branch": {"type": "string", "required": False, "default": "main"},
     "max_review_rounds": {"type": "int", "required": False, "default": 3},
+    # "local_fixture" (default) reads pre-exported files named by
+    # source_dir/context.json, exactly as this workflow always has -
+    # deterministic and network-free, so it stays the default for tests and
+    # any environment without live Jira/Confluence access. "jira_confluence_live"
+    # fetches the same manifest's entries from real Jira/Confluence APIs; see
+    # retrieve_live_sources() below and JIRA_BASE_URL_ENV/CONFLUENCE_BASE_URL_ENV
+    # for the credentials it requires. Both adapters produce an identical
+    # retrieval.json/raw_dir["sources"] contract, so nothing downstream
+    # (context-normalizer, validate_planning_context, etc.) needs to know or
+    # care which one ran.
+    "source_adapter": {"type": "string", "required": False, "default": "local_fixture"},
 }
 
 PROVIDER = "claude_code"
@@ -830,6 +842,244 @@ def retrieval_blockers(retrieval: dict[str, Any]) -> list[str]:
     ]
 
 
+# --- Live Jira/Confluence adapter --------------------------------------
+#
+# Reads the SAME manifest shape retrieve_fixture_sources() does (a "ticket"
+# entry plus a "confluence" list, each with source_id/title/required), except
+# each entry names a remote id (ticket.jira_key / confluence[].page_id)
+# instead of a local file path. Both adapters write an identical
+# retrieval.json/raw_dir["sources"] shape, so this is a drop-in swap
+# selected by the source_adapter workflow input - see SOURCE_ADAPTERS below.
+#
+# Credentials are read from environment variables, never from the manifest
+# itself, so a per-ticket manifest can be safely committed to records/
+# without leaking a token. There is no live Jira/Confluence instance to test
+# this against in this environment, so it is covered by unit tests against a
+# fake local HTTP server (tests/test_dev_plan.py) rather than a live run -
+# same technique already used for .claude/hooks/restrict-write-scope.py's
+# CAO terminal-metadata calls. Treat this adapter as unverified against a
+# real Atlassian tenant until it has been.
+
+JIRA_BASE_URL_ENV = "JIRA_BASE_URL"
+JIRA_API_TOKEN_ENV = "JIRA_API_TOKEN"
+CONFLUENCE_BASE_URL_ENV = "CONFLUENCE_BASE_URL"
+CONFLUENCE_API_TOKEN_ENV = "CONFLUENCE_API_TOKEN"
+LIVE_HTTP_TIMEOUT_SECONDS = 15.0
+
+
+def _require_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise WorkflowContractError(
+            f"missing required environment variable: {name} (needed by the jira_confluence_live source adapter)"
+        )
+    return value
+
+
+def _adf_to_text(node: Any) -> str:
+    """Best-effort flattening of an Atlassian Document Format node (Jira
+    v3's `fields.description` shape) to plain text. Walks `content`
+    children and joins `text` nodes; not a full ADF renderer - tables,
+    panels, and inline mentions/emoji collapse to whatever plain text they
+    carry, nothing fancier. Good enough for an LLM reader, not for display."""
+    if isinstance(node, str):
+        return node
+    if not isinstance(node, dict):
+        return ""
+    if node.get("type") == "text":
+        return str(node.get("text", ""))
+    children = node.get("content", []) or []
+    joined = "".join(_adf_to_text(child) for child in children)
+    if node.get("type") in {"paragraph", "heading", "listItem", "codeBlock"}:
+        return joined + "\n\n"
+    return joined
+
+
+class _StorageFormatTextExtractor(HTMLParser):
+    """Strips Confluence storage-format XHTML down to plain text. Not a
+    full HTML-to-markdown converter (no stdlib dependency for that exists,
+    and this repo stays stdlib-only) - tables/macros/panels collapse to
+    their visible text only, losing structure but preserving content."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._chunks: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self._chunks.append(data)
+
+    def text(self) -> str:
+        return "".join(self._chunks)
+
+
+def _confluence_storage_to_text(storage_html: str) -> str:
+    parser = _StorageFormatTextExtractor()
+    parser.feed(storage_html)
+    return parser.text()
+
+
+def _live_http_get_json(url: str, *, token: str) -> dict[str, Any]:
+    request = Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=LIVE_HTTP_TIMEOUT_SECONDS) as response:
+            payload = response.read().decode("utf-8")
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise WorkflowContractError(f"GET {url} failed with HTTP {exc.code}: {body[:500]}") from exc
+    except URLError as exc:
+        raise WorkflowContractError(f"GET {url} failed: {exc}") from exc
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise WorkflowContractError(f"GET {url} returned invalid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise WorkflowContractError(f"GET {url} returned a non-object JSON payload")
+    return value
+
+
+def _fetch_jira_ticket(
+    *, base_url: str, token: str, jira_key: str, source_id: str, title: str, raw_dir: Path
+) -> dict[str, Any]:
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", source_id) + ".md"
+    copied_path = raw_dir / "sources" / safe_name
+    try:
+        payload = _live_http_get_json(
+            f"{base_url}/rest/api/3/issue/{jira_key}", token=token,
+        )
+        fields = _require_dict(payload.get("fields", {}), f"Jira {jira_key}.fields")
+        summary = str(fields.get("summary", ""))
+        description = _adf_to_text(fields.get("description")).strip()
+        text = f"# {summary}\n\n{description}\n"
+        data = text.encode("utf-8")
+        copied_path.write_bytes(data)
+        status = "RETRIEVED"
+        digest: str | None = _sha256_bytes(data)
+        runtime_path: str | None = str(copied_path)
+    except WorkflowContractError:
+        status = "UNAVAILABLE"
+        digest = None
+        runtime_path = None
+    return {
+        "source_id": source_id,
+        "title": title,
+        "type": "JIRA",
+        "required": True,
+        "status": status,
+        "content_digest": digest,
+        "path": runtime_path,
+        "original_relative_path": f"jira:{jira_key}",
+    }
+
+
+def _fetch_confluence_page(
+    *, base_url: str, token: str, page_id: str, source_id: str, title: str, required: bool, raw_dir: Path
+) -> dict[str, Any]:
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", source_id) + ".md"
+    copied_path = raw_dir / "sources" / safe_name
+    try:
+        payload = _live_http_get_json(
+            f"{base_url}/wiki/rest/api/content/{page_id}?expand=body.storage", token=token,
+        )
+        page_title = str(payload.get("title", title))
+        body = _require_dict(payload.get("body", {}), f"Confluence {page_id}.body")
+        storage = _require_dict(body.get("storage", {}), f"Confluence {page_id}.body.storage")
+        text = _confluence_storage_to_text(str(storage.get("value", ""))).strip()
+        data = f"# {page_title}\n\n{text}\n".encode("utf-8")
+        copied_path.write_bytes(data)
+        status = "RETRIEVED"
+        digest: str | None = _sha256_bytes(data)
+        runtime_path: str | None = str(copied_path)
+    except WorkflowContractError:
+        status = "UNAVAILABLE"
+        digest = None
+        runtime_path = None
+    return {
+        "source_id": source_id,
+        "title": title,
+        "type": "CONFLUENCE",
+        "required": required,
+        "status": status,
+        "content_digest": digest,
+        "path": runtime_path,
+        "original_relative_path": f"confluence:{page_id}",
+    }
+
+
+def retrieve_live_sources(source_dir: Path, raw_dir: Path, ticket_id: str) -> dict[str, Any]:
+    """Live adapter: fetches the manifest's ticket from Jira and each
+    confluence[] entry from Confluence by page_id, over real HTTP. See the
+    module comment above this section for the manifest shape and the
+    stdlib-only text-extraction caveats."""
+    manifest_path = source_dir / "context.json"
+    if not manifest_path.is_file():
+        raise WorkflowContractError(f"source manifest not found: {manifest_path}")
+    manifest = _require_dict(_read_json(manifest_path), "source manifest")
+    _require_keys(manifest, {"schema_version", "ticket", "confluence"}, "source manifest")
+    if manifest["schema_version"] != "1.0":
+        raise WorkflowContractError("source manifest schema_version must be '1.0'")
+
+    ticket = _require_dict(manifest["ticket"], "source manifest.ticket")
+    if ticket.get("id") != ticket_id:
+        raise WorkflowContractError("ticket id in source manifest does not match workflow input")
+    jira_key = _require_str(ticket.get("jira_key", ""), "source manifest.ticket.jira_key")
+    ticket_source_id = _require_str(ticket.get("source_id", f"JIRA:{jira_key}"), "source manifest.ticket.source_id")
+    ticket_title = _require_str(ticket.get("title", jira_key), "source manifest.ticket.title")
+
+    jira_base_url = _require_env(JIRA_BASE_URL_ENV).rstrip("/")
+    jira_token = _require_env(JIRA_API_TOKEN_ENV)
+    confluence_base_url = _require_env(CONFLUENCE_BASE_URL_ENV).rstrip("/")
+    confluence_token = _require_env(CONFLUENCE_API_TOKEN_ENV)
+
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "sources").mkdir(parents=True, exist_ok=True)
+    (raw_dir / "manifest.json").write_bytes(manifest_path.read_bytes())
+
+    entries: list[dict[str, Any]] = [
+        _fetch_jira_ticket(
+            base_url=jira_base_url, token=jira_token, jira_key=jira_key,
+            source_id=ticket_source_id, title=ticket_title, raw_dir=raw_dir,
+        )
+    ]
+
+    confluence_entries = _require_list(manifest["confluence"], "source manifest.confluence")
+    for index, entry_value in enumerate(confluence_entries):
+        entry = _require_dict(entry_value, f"source manifest.confluence[{index}]")
+        _require_keys(entry, {"source_id", "title", "page_id", "required"}, f"source manifest.confluence[{index}]")
+        entries.append(_fetch_confluence_page(
+            base_url=confluence_base_url, token=confluence_token,
+            page_id=_require_str(entry["page_id"], f"source manifest.confluence[{index}].page_id"),
+            source_id=_require_str(entry["source_id"], f"source manifest.confluence[{index}].source_id"),
+            title=_require_str(entry["title"], f"source manifest.confluence[{index}].title"),
+            required=_require_bool(entry["required"], f"source manifest.confluence[{index}].required"),
+            raw_dir=raw_dir,
+        ))
+
+    retrieval = {
+        "schema_version": "1.0",
+        "adapter": "jira_confluence_live",
+        "ticket_id": ticket_id,
+        "sources": entries,
+    }
+    _write_json(raw_dir / "retrieval.json", retrieval)
+    return retrieval
+
+
+SOURCE_ADAPTERS = {
+    "local_fixture": retrieve_fixture_sources,
+    "jira_confluence_live": retrieve_live_sources,
+}
+
+
+def retrieve_sources(adapter: str, source_dir: Path, raw_dir: Path, ticket_id: str) -> dict[str, Any]:
+    try:
+        adapter_fn = SOURCE_ADAPTERS[adapter]
+    except KeyError:
+        raise WorkflowContractError(
+            f"unknown source_adapter {adapter!r}; expected one of {sorted(SOURCE_ADAPTERS)}"
+        ) from None
+    return adapter_fn(source_dir, raw_dir, ticket_id)
+
+
 def build_normalizer_prompt(repo: Path, raw_dir: Path, schema: Path, contract: Path, previous: Path | None = None, review: Path | None = None) -> str:
     extras = ""
     if previous is not None:
@@ -917,6 +1167,7 @@ def main() -> None:
     source_dir = Path(inputs["source_dir"]).resolve()
     baseline_sha = _require_str(inputs["baseline_sha"], "baseline_sha")
     base_branch = _require_str(inputs.get("base_branch", "main"), "base_branch")
+    source_adapter = _require_str(inputs.get("source_adapter", "local_fixture"), "source_adapter")
     max_review_rounds = inputs.get("max_review_rounds", 3)
     if isinstance(max_review_rounds, bool) or not isinstance(max_review_rounds, int) or not 1 <= max_review_rounds <= 10:
         raise WorkflowContractError("max_review_rounds must be an integer from 1 to 10")
@@ -951,8 +1202,9 @@ def main() -> None:
                 f"an APPROVED plan already exists for {ticket_id}; do not overwrite an approved planning record"
             )
 
-    # 1. Deterministic retrieval adapter (fixture-based in v1).
-    retrieval = retrieve_fixture_sources(source_dir, raw_dir, ticket_id)
+    # 1. Deterministic retrieval adapter, selected by the source_adapter
+    # input (default local_fixture; jira_confluence_live for production).
+    retrieval = retrieve_sources(source_adapter, source_dir, raw_dir, ticket_id)
     source_blockers = retrieval_blockers(retrieval)
 
     # 2. Agentic semantic normalization.

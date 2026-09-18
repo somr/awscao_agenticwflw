@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -421,6 +424,209 @@ class WorkflowHelpersTest(unittest.TestCase):
                 self.assertEqual(calls, ["json-test"])
         finally:
             mod._run_stabilized_step = original_run
+
+
+class _FakeAtlassianServer:
+    """Serves canned Jira-issue / Confluence-page JSON on fixed paths,
+    standing in for a real Atlassian tenant for retrieve_live_sources()
+    tests. There is no live Jira/Confluence instance in this environment,
+    so this fake server (same technique as
+    tests/test_restrict_write_scope.py's _FakeTerminalServer) is the only
+    verification the live adapter gets short of real credentials — see
+    dev_plan.py's "Live Jira/Confluence adapter" module comment.
+    """
+
+    def __init__(self, routes: dict[str, tuple[int, dict | None]]):
+        self._routes = routes
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 (stdlib API name)
+                path = self.path.split("?", 1)[0]
+                match = outer._routes.get(path)
+                if match is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                status, payload = match
+                body = b"not json{{{" if payload is None else json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self._server = HTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def __enter__(self) -> int:
+        self._thread.start()
+        return self._server.server_address[1]
+
+    def __exit__(self, *exc: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def _live_manifest() -> dict:
+    return {
+        "schema_version": "1.0",
+        "ticket": {"id": "T-1", "source_id": "JIRA:T-1", "title": "Demo ticket", "jira_key": "PAY-1234", "required": True},
+        "confluence": [
+            {"source_id": "CONF:1", "title": "Feature spec", "page_id": "111", "required": True},
+        ],
+    }
+
+
+JIRA_ADF_DESCRIPTION = {
+    "type": "doc",
+    "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "Do the thing."}]},
+        {"type": "paragraph", "content": [{"type": "text", "text": "And the other thing."}]},
+    ],
+}
+
+
+class AdfToTextTest(unittest.TestCase):
+    def test_flattens_paragraphs_with_blank_line_between(self):
+        text = mod._adf_to_text(JIRA_ADF_DESCRIPTION)
+        self.assertEqual(text.strip(), "Do the thing.\n\nAnd the other thing.")
+
+    def test_non_dict_non_string_node_is_empty(self):
+        self.assertEqual(mod._adf_to_text(None), "")
+        self.assertEqual(mod._adf_to_text(42), "")
+
+
+class ConfluenceStorageToTextTest(unittest.TestCase):
+    def test_strips_tags_and_keeps_visible_text(self):
+        html = "<p>Some <strong>spec</strong> text.</p><ul><li>One</li><li>Two</li></ul>"
+        self.assertEqual(mod._confluence_storage_to_text(html), "Some spec text.OneTwo")
+
+
+class RetrieveLiveSourcesTest(unittest.TestCase):
+    def setUp(self):
+        self._saved_env = {
+            name: os.environ.get(name)
+            for name in (
+                mod.JIRA_BASE_URL_ENV, mod.JIRA_API_TOKEN_ENV,
+                mod.CONFLUENCE_BASE_URL_ENV, mod.CONFLUENCE_API_TOKEN_ENV,
+            )
+        }
+
+    def tearDown(self):
+        for name, value in self._saved_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def _set_env(self, port: int) -> None:
+        base = f"http://127.0.0.1:{port}"
+        os.environ[mod.JIRA_BASE_URL_ENV] = base
+        os.environ[mod.JIRA_API_TOKEN_ENV] = "fake-jira-token"
+        os.environ[mod.CONFLUENCE_BASE_URL_ENV] = base
+        os.environ[mod.CONFLUENCE_API_TOKEN_ENV] = "fake-confluence-token"
+
+    def test_happy_path_retrieves_ticket_and_confluence_page(self):
+        routes = {
+            "/rest/api/3/issue/PAY-1234": (200, {
+                "fields": {"summary": "Make callbacks idempotent", "description": JIRA_ADF_DESCRIPTION},
+            }),
+            "/wiki/rest/api/content/111": (200, {
+                "title": "Feature spec", "body": {"storage": {"value": "<p>Idempotency rules.</p>"}},
+            }),
+        }
+        with _FakeAtlassianServer(routes) as port:
+            self._set_env(port)
+            with tempfile.TemporaryDirectory() as temp:
+                base = Path(temp)
+                source = base / "input"
+                raw = base / "raw"
+                source.mkdir()
+                (source / "context.json").write_text(json.dumps(_live_manifest()), encoding="utf-8")
+
+                retrieval = mod.retrieve_live_sources(source, raw, "T-1")
+
+                self.assertEqual(retrieval["adapter"], "jira_confluence_live")
+                self.assertEqual(mod.retrieval_blockers(retrieval), [])
+                by_id = {s["source_id"]: s for s in retrieval["sources"]}
+                self.assertEqual(by_id["JIRA:T-1"]["status"], "RETRIEVED")
+                self.assertEqual(by_id["JIRA:T-1"]["type"], "JIRA")
+                jira_text = Path(by_id["JIRA:T-1"]["path"]).read_text(encoding="utf-8")
+                self.assertIn("Make callbacks idempotent", jira_text)
+                self.assertIn("Do the thing.", jira_text)
+                self.assertEqual(by_id["CONF:1"]["status"], "RETRIEVED")
+                self.assertEqual(by_id["CONF:1"]["type"], "CONFLUENCE")
+                confluence_text = Path(by_id["CONF:1"]["path"]).read_text(encoding="utf-8")
+                self.assertIn("Idempotency rules.", confluence_text)
+
+    def test_missing_env_var_is_a_contract_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            source = base / "input"
+            source.mkdir()
+            (source / "context.json").write_text(json.dumps(_live_manifest()), encoding="utf-8")
+            with self.assertRaises(mod.WorkflowContractError):
+                mod.retrieve_live_sources(source, base / "raw", "T-1")
+
+    def test_http_error_marks_required_source_unavailable(self):
+        routes = {
+            "/rest/api/3/issue/PAY-1234": (404, {"errorMessages": ["not found"]}),
+            "/wiki/rest/api/content/111": (200, {
+                "title": "Feature spec", "body": {"storage": {"value": "<p>Idempotency rules.</p>"}},
+            }),
+        }
+        with _FakeAtlassianServer(routes) as port:
+            self._set_env(port)
+            with tempfile.TemporaryDirectory() as temp:
+                base = Path(temp)
+                source = base / "input"
+                source.mkdir()
+                (source / "context.json").write_text(json.dumps(_live_manifest()), encoding="utf-8")
+
+                retrieval = mod.retrieve_live_sources(source, base / "raw", "T-1")
+
+                self.assertEqual(
+                    mod.retrieval_blockers(retrieval), ["required source unavailable: JIRA:T-1"]
+                )
+
+    def test_ticket_id_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            source = base / "input"
+            source.mkdir()
+            (source / "context.json").write_text(json.dumps(_live_manifest()), encoding="utf-8")
+            with self.assertRaises(mod.WorkflowContractError):
+                mod.retrieve_live_sources(source, base / "raw", "some-other-ticket")
+
+
+class RetrieveSourcesDispatchTest(unittest.TestCase):
+    def test_default_source_adapter_input_is_local_fixture(self):
+        self.assertEqual(mod.INPUTS["source_adapter"]["default"], "local_fixture")
+
+    def test_dispatches_to_local_fixture_by_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            source = base / "input"
+            raw = base / "raw"
+            source.mkdir()
+            (source / "jira.md").write_text("ticket", encoding="utf-8")
+            (source / "context.json").write_text(json.dumps({
+                "schema_version": "1.0",
+                "ticket": {"id": "T-1", "source_id": "JIRA:T-1", "title": "T", "file": "jira.md", "required": True},
+                "confluence": [],
+            }), encoding="utf-8")
+            retrieval = mod.retrieve_sources("local_fixture", source, raw, "T-1")
+            self.assertEqual(retrieval["adapter"], "local_fixture")
+
+    def test_unknown_adapter_name_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            with self.assertRaises(mod.WorkflowContractError):
+                mod.retrieve_sources("not_a_real_adapter", base / "input", base / "raw", "T-1")
 
 
 if __name__ == "__main__":

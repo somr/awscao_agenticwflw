@@ -1,4 +1,4 @@
-# Planning Workflow 1 — CAO Python workflow (v1.4)
+# Planning Workflow 1 — CAO Python workflow (v1.5)
 
 `dev_plan.py` orchestrates the planning phase using deterministic macro-orchestration and effectively-read-only Claude Code specialists.
 
@@ -48,13 +48,51 @@ This section is the authoritative writeup for a security-relevant design decisio
 - Narrowing or removing the `PreToolUse` hook in `.claude/settings.json` reopens the write-scope gap described above. Keep an equivalent restriction in place.
 - Do not rely on `permissions.allow`/`deny` rules as a substitute — they are bypassed for these workers.
 
+## Source adapters: `local_fixture` vs `jira_confluence_live`
+
+Retrieval is a deterministic Python function, never an agent — see `retrieve_sources()` in `dev_plan.py`. Which adapter it dispatches to is chosen by the `source_adapter` input:
+
+- **`local_fixture` (default)** — `retrieve_fixture_sources()` copies files named in `source_dir/context.json` verbatim. Deterministic, network-free; this is what every test and this repo's PAY-DEMO-001 example use.
+- **`jira_confluence_live`** — `retrieve_live_sources()` reads the *same* `context.json` shape but each entry names a remote id instead of a local file, and fetches it over real HTTP:
+
+```json
+{
+  "schema_version": "1.0",
+  "ticket": { "id": "PAY-DEMO-001", "source_id": "JIRA:PAY-1234", "title": "...", "jira_key": "PAY-1234", "required": true },
+  "confluence": [
+    { "source_id": "CONF:123456789", "title": "Feature Spec", "page_id": "123456789", "required": true }
+  ]
+}
+```
+
+`ticket.id` stays the workflow's internal `ticket_id` (drives `records/<ticket_id>/`, `runtime/<ticket_id>/`); `ticket.jira_key` is the real external Jira issue key, looked up separately so the two are never conflated. A manifest can list extra Confluence pages that aren't formally linked on the Jira ticket (e.g. an incident RCA, a related design doc) — this is deliberate: it lets a human curate context Jira itself doesn't capture, reviewably, before a run.
+
+Both adapters write an identical `retrieval.json`/`raw_dir/sources/*` shape (`source_id`, `title`, `type`, `required`, `status`, `content_digest`, `path`), so nothing downstream — context-normalizer, `validate_planning_context`, the analyst/author/reviewer steps — needs to know or care which one ran.
+
+**Credentials are environment variables, never manifest fields**, so a per-ticket manifest can be safely committed under `records/<ticket>/` without leaking a token:
+
+| Env var | Purpose |
+|---|---|
+| `JIRA_BASE_URL` | e.g. `https://your-domain.atlassian.net` |
+| `JIRA_API_TOKEN` | sent as `Authorization: Bearer ...` |
+| `CONFLUENCE_BASE_URL` | e.g. `https://your-domain.atlassian.net` |
+| `CONFLUENCE_API_TOKEN` | sent as `Authorization: Bearer ...` |
+
+A missing env var raises `WorkflowContractError` immediately (fail fast, never a silent skip); an HTTP failure for one source marks *that* source `UNAVAILABLE` and lets `retrieval_blockers()`/the normal required-source-missing path handle it, same as the fixture adapter does for a missing local file.
+
+**Known, disclosed simplifications** (stdlib-only, no live Atlassian tenant available to verify against in this environment — see the module comment above `retrieve_live_sources()` in `dev_plan.py`):
+- Jira v3's ADF description format is flattened to plain text by `_adf_to_text()` (paragraphs/headings/list items joined with blank lines); this is not a full ADF renderer — tables, panels and inline formatting collapse to whatever plain text they carry.
+- Confluence storage-format XHTML is stripped to plain text by `_confluence_storage_to_text()` (stdlib `html.parser`, no markdown conversion) — structure is lost, content is kept.
+- Covered by `tests/test_dev_plan.py`'s `RetrieveLiveSourcesTest`/`AdfToTextTest`/`ConfluenceStorageToTextTest` against a fake local HTTP server (same technique as `tests/test_restrict_write_scope.py`'s `_FakeTerminalServer`), not against a real Jira/Confluence tenant. Treat the live HTTP calls themselves as unverified against production Atlassian until they have been.
+
 ## Inputs
 
 - `ticket_id` — Jira-style ticket identifier, e.g. `PAY-DEMO-001`.
 - `repository_root` — absolute path to the repository under analysis.
-- `source_dir` — directory containing the mocked Jira/Confluence package.
+- `source_dir` — directory containing the Jira/Confluence source package (shape depends on `source_adapter`, see above).
 - `baseline_sha` — Git commit SHA that the human is asking the workflow to plan against.
 - `base_branch` — defaults to `main`.
+- `source_adapter` — `local_fixture` (default) or `jira_confluence_live`; see above.
 - `max_review_rounds` — defaults to 3; valid range 1–10.
 
 `baseline_sha` remains an explicit workflow input so CAO replay cannot silently shift the repository planning baseline.

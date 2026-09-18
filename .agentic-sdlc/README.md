@@ -7,7 +7,7 @@ This directory is the repository-local, version-controlled contract and implemen
 Planning Workflow 1 is executable:
 
 ```text
-local Jira/Confluence retrieval adapter
+Jira/Confluence retrieval adapter (local_fixture default, jira_confluence_live for production — see cao/workflows/README.md "Source adapters")
         ↓
 Context Normalizer (Claude)
         ↓
