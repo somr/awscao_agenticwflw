@@ -995,7 +995,7 @@ def main() -> None:
     _write_json(delivery_manifest_path, {
         "schema_version": "1.0",
         "ticket_id": ticket_id,
-        "delivery_workflow": "deliver",
+        "delivery_workflow": "sdlc_deliver",
         "delivery_workflow_version": "1.0",
         "workflow_run_id": run_id,
         "provider": PROVIDER,

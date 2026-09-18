@@ -1380,7 +1380,7 @@ def main() -> None:
     execution_manifest = {
         "schema_version": "1.0",
         "ticket_id": ticket_id,
-        "planning_workflow": "dev_plan",
+        "planning_workflow": "sdlc_dev_plan",
         "planning_workflow_version": "1.3",
         "workflow_run_id": run_id,
         "provider": PROVIDER,

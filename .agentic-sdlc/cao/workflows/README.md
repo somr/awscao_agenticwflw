@@ -111,7 +111,7 @@ Then, from the application repository root:
 .agentic-sdlc/cao/workflows/install.sh
 ```
 
-The installer stages the Python workflow inside CAO's permitted workflow directory before server-side validation because CAO intentionally rejects validation paths outside that directory.
+The installer stages the Python workflow inside CAO's permitted workflow directory before server-side validation because CAO intentionally rejects validation paths outside that directory. It installs under the name `sdlc_dev_plan`, not the source file's own name (`dev_plan.py`) — CAO's workflow/profile registry is one directory shared machine-wide across every project (`~/.aws/cli-agent-orchestrator/`), so an unprefixed, generically-named workflow could silently collide with another project's own install there. Every profile already used this same `sdlc_` prefix; workflows now do too. Run it as `cao workflow run sdlc_dev_plan`, not `dev_plan`.
 
 Ensure the four profiles are installed:
 
@@ -130,7 +130,7 @@ Use a new run ID after each workflow-source change:
 RUN_ID=plan-PAY-DEMO-001-7
 BASELINE_SHA=$(git rev-parse --verify HEAD)
 
-cao workflow run dev_plan \
+cao workflow run sdlc_dev_plan \
   --run-id "$RUN_ID" \
   --input ticket_id=PAY-DEMO-001 \
   --input repository_root="$(pwd)" \

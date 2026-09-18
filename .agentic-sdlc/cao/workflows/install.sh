@@ -11,9 +11,16 @@ set -euo pipefail
 REPO_ROOT="${1:-$(pwd)}"
 SOURCE="$REPO_ROOT/.agentic-sdlc/cao/workflows/dev_plan.py"
 WORKFLOW_DIR="${CAO_WORKFLOW_DIR:-$HOME/.aws/cli-agent-orchestrator/workflows}"
-TARGET="$WORKFLOW_DIR/dev_plan.py"
-STAGED="$WORKFLOW_DIR/dev_plan_candidate.py"
-COLLISION="$WORKFLOW_DIR/dev_plan.yaml"
+# Installed under an sdlc_-prefixed name, not the source file's own name
+# (dev_plan.py) — CAO's workflow/profile registry is a single directory
+# shared machine-wide across every project (~/.aws/cli-agent-orchestrator/),
+# confirmed live: an unrelated project's own "deliver"/"dev_plan"-style
+# generically-named workflow would silently collide/overwrite here. Every
+# profile in this repo already uses this same sdlc_ prefix for exactly this
+# reason (see cao/profiles/README.md); workflows previously did not.
+TARGET="$WORKFLOW_DIR/sdlc_dev_plan.py"
+STAGED="$WORKFLOW_DIR/sdlc_dev_plan_candidate.py"
+COLLISION="$WORKFLOW_DIR/sdlc_dev_plan.yaml"
 
 if [[ ! -f "$SOURCE" ]]; then
   echo "Workflow source not found: $SOURCE" >&2
@@ -47,7 +54,7 @@ fi
 mkdir -p "$WORKFLOW_DIR"
 
 if [[ -e "$COLLISION" ]]; then
-  echo "Refusing install: $COLLISION collides with Python workflow dev_plan.py" >&2
+  echo "Refusing install: $COLLISION collides with Python workflow sdlc_dev_plan.py" >&2
   exit 1
 fi
 

@@ -16,9 +16,16 @@ set -euo pipefail
 REPO_ROOT="${1:-$(pwd)}"
 SOURCE="$REPO_ROOT/.agentic-sdlc/cao/workflows/deliver.py"
 WORKFLOW_DIR="${CAO_WORKFLOW_DIR:-$HOME/.aws/cli-agent-orchestrator/workflows}"
-TARGET="$WORKFLOW_DIR/deliver.py"
-STAGED="$WORKFLOW_DIR/deliver_candidate.py"
-COLLISION="$WORKFLOW_DIR/deliver.yaml"
+# Installed under an sdlc_-prefixed name, not the source file's own name
+# (deliver.py) — CAO's workflow/profile registry is a single directory
+# shared machine-wide across every project (~/.aws/cli-agent-orchestrator/),
+# confirmed live: an unrelated project's own generically-named "deliver"
+# workflow would silently collide/overwrite here. Every profile in this
+# repo already uses this same sdlc_ prefix for exactly this reason (see
+# cao/profiles/README.md); workflows previously did not.
+TARGET="$WORKFLOW_DIR/sdlc_deliver.py"
+STAGED="$WORKFLOW_DIR/sdlc_deliver_candidate.py"
+COLLISION="$WORKFLOW_DIR/sdlc_deliver.yaml"
 
 if [[ ! -f "$SOURCE" ]]; then
   echo "Workflow source not found: $SOURCE" >&2
@@ -52,7 +59,7 @@ fi
 mkdir -p "$WORKFLOW_DIR"
 
 if [[ -e "$COLLISION" ]]; then
-  echo "Refusing install: $COLLISION collides with Python workflow deliver.py" >&2
+  echo "Refusing install: $COLLISION collides with Python workflow sdlc_deliver.py" >&2
   exit 1
 fi
 

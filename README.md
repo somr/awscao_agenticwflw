@@ -94,7 +94,7 @@ From the application repository root in another terminal:
 The repository copy remains canonical. The installer syntax-checks it locally, stages it inside CAO's permitted workflow directory, validates it through the running server, and atomically installs it as:
 
 ```text
-~/.aws/cli-agent-orchestrator/workflows/dev_plan.py
+~/.aws/cli-agent-orchestrator/workflows/sdlc_dev_plan.py
 ```
 
 ## 4. Run the synthetic example
@@ -105,7 +105,7 @@ Use a fresh run ID after changing workflow source:
 RUN_ID=plan-PAY-DEMO-001-7
 BASELINE_SHA=$(git rev-parse --verify HEAD)
 
-cao workflow run dev_plan \
+cao workflow run sdlc_dev_plan \
   --run-id "$RUN_ID" \
   --input ticket_id=PAY-DEMO-001 \
   --input repository_root="$(pwd)" \
