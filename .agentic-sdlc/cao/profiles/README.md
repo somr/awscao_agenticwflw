@@ -52,3 +52,12 @@ cao profile show sdlc_plan_reviewer
 Do not launch these profiles with `--yolo`: that overrides their tool restrictions.
 
 These profiles intentionally omit `@cao-mcp-server`; they are workers, not orchestrators. Current CAO enforces `assign` and `handoff` permissions at the MCP boundary using the caller's effective `allowedTools` policy.
+
+## Source Review Workflow 3 profiles
+
+Workflow 3 adds five separate reviewer profiles: `sdlc_source_mapper`,
+`sdlc_source_correctness`, `sdlc_source_security`, `sdlc_source_validator` and
+`sdlc_source_feedback`. They have file read/list/write tools only, with writes limited
+by a generated hook in each isolated run workspace. They do not use or widen the
+existing repository hook. Install them with Workflow 3's dedicated installer, described
+in the [source-review guide](../workflows/source-review.md).

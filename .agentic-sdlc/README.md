@@ -26,7 +26,14 @@ reviewed Development Plan
 HUMAN APPROVAL
 ```
 
-The Delivery workflow contract is present but is not implemented yet.
+[Delivery Workflow 2](cao/workflows/deliver.py) implements approved plans and manages
+verification, review and remediation.
+
+[Source Review Workflow 3](cao/workflows/source-review.md) reviews an existing GitHub
+PR independently of planning/delivery. Five agents map source, review correctness and
+security, validate findings and author feedback. A deterministic gate routes findings
+to `AUTO_FIX` or `HUMAN_REQUIRED`. The guide covers installation, running, publication,
+isolation and development-agent handoff.
 
 ## Layout
 
