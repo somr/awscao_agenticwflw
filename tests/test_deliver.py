@@ -217,6 +217,46 @@ class GitBranchRootingTest(unittest.TestCase):
             self.assertEqual(before, after, "resuming an existing delivery branch must not discard its commits")
 
 
+class RemediatorCompletionValidatorTest(unittest.TestCase):
+    def test_valid_shape_passes(self):
+        value = {
+            "findings_addressed": ["PR-002"],
+            "files_changed": ["app/x.py"],
+            "assumptions": [],
+            "deviations": [],
+        }
+        self.assertEqual(mod._remediator_completion_validator(value), value)
+
+    def test_missing_key_is_rejected(self):
+        with self.assertRaises(mod.WorkflowContractError):
+            mod._remediator_completion_validator({"findings_addressed": []})
+
+    def test_non_string_item_is_rejected(self):
+        with self.assertRaises(mod.WorkflowContractError):
+            mod._remediator_completion_validator({
+                "findings_addressed": [1],
+                "files_changed": [],
+                "assumptions": [],
+                "deviations": [],
+            })
+
+
+class BuildRemediatorPromptTest(unittest.TestCase):
+    def test_prompt_embeds_findings_and_paths(self):
+        prompt = mod.build_remediator_prompt(
+            Path("/repo"),
+            Path("/repo/plan.md"),
+            Path("/repo/contract.md"),
+            Path("/repo/pr-review.md"),
+            Path("/repo/governance.md"),
+            [{"id": "PR-002", "category": "CORRECTNESS"}],
+        )
+        self.assertIn("PR-002", prompt)
+        self.assertIn(str(Path("/repo/plan.md")), prompt)
+        self.assertIn("AUTO_FIX-eligible only", prompt)
+        self.assertIn("Do not weaken, skip, or delete", prompt)
+
+
 class ClassifyPrReviewTest(unittest.TestCase):
     """Encodes .agentic-sdlc/policies/pr-review.md's routing rules as
     executable expectations — this is the policy-as-code boundary, so it

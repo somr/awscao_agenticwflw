@@ -50,6 +50,9 @@ INPUTS = {
 PROVIDER = "claude_code"
 IMPLEMENTER = "sdlc_implementer"
 PR_REVIEWER = "sdlc_pr_reviewer"
+REMEDIATOR = "sdlc_remediator"
+# pr-review.md: "Default maximum autonomous remediation rounds: 3."
+MAX_REMEDIATION_ROUNDS = 3
 STEP_TIMEOUT_SECONDS = 1800
 CAO_HTTP_TIMEOUT_SECONDS = 30.0
 COMPLETION_INITIAL_SETTLE_SECONDS = 5.0
@@ -794,6 +797,37 @@ def classify_pr_review(value: Any, *, pr_head_sha: str) -> dict[str, Any]:
     }
 
 
+def build_remediator_prompt(
+    repo: Path,
+    plan_path: Path,
+    contract: Path,
+    pr_review_policy: Path,
+    governance: Path,
+    findings_to_fix: list[dict[str, Any]],
+) -> str:
+    return f"""Apply fixes for exactly the findings listed below in repository {repo}. Do not touch anything else.
+
+Approved Development Plan: {plan_path}
+Delivery workflow contract: {contract}
+PR review and remediation policy: {pr_review_policy}
+Governance policy: {governance}
+
+Findings to fix (already filtered to AUTO_FIX-eligible only by the workflow):
+{json.dumps(findings_to_fix, indent=2)}
+
+Fix exactly these findings. Do not weaken, skip, or delete any test assertion to make a finding go away — if a finding cannot legitimately be fixed, say so in your output as a deviation instead. Do not touch files or code unrelated to these findings."""
+
+
+def _remediator_completion_validator(value: Any) -> Any:
+    value = _require_dict(value, "remediator completion summary")
+    for key in ("findings_addressed", "files_changed", "assumptions", "deviations"):
+        items = _require_list(value.get(key), key)
+        for index, item in enumerate(items):
+            if not isinstance(item, str):
+                raise WorkflowContractError(f"{key}[{index}] must be a string")
+    return value
+
+
 def main() -> None:
     inputs = get_inputs()
     ticket_id = _safe_component(_require_str(inputs["ticket_id"], "ticket_id"), "ticket_id")
@@ -926,37 +960,116 @@ def main() -> None:
     delivery_manifest["pr_diff_path"] = str(pr_diff_path.relative_to(repo))
     _write_json(delivery_manifest_path, delivery_manifest)
 
-    # 5. AGENT_REVIEWING — one review round for now; the bounded
-    # AUTO_FIX-remediation loop (REMEDIATING) is a later increment.
+    # 5. AGENT_REVIEWING
     review_round = 1
     reviewing_dir = runtime_dir / "review"
-    review = _run_json_contract_step(
-        agent=PR_REVIEWER,
-        prompt=build_pr_reviewer_prompt(
+
+    def _review(round_no: int, sha: str, diff: str, verif: dict[str, Any]) -> dict[str, Any]:
+        result = _run_json_contract_step(
+            agent=PR_REVIEWER,
+            prompt=build_pr_reviewer_prompt(
+                repo=repo,
+                plan_path=plan_path,
+                contract=delivery_contract,
+                governance=governance,
+                pr_review_policy=pr_review_policy,
+                diff_text=diff,
+                verification=verif,
+                pr_head_sha=sha,
+            ),
+            label="PR Reviewer",
+            step_id=f"pr-review-r{round_no}",
             repo=repo,
-            plan_path=plan_path,
-            contract=delivery_contract,
-            governance=governance,
-            pr_review_policy=pr_review_policy,
-            diff_text=diff_text,
-            verification=verification,
-            pr_head_sha=pr_head_sha,
-        ),
-        label="PR Reviewer",
-        step_id=f"pr-review-r{review_round}",
-        repo=repo,
-        evidence_dir=reviewing_dir / "agent-output",
-        validator=lambda value: classify_pr_review(value, pr_head_sha=pr_head_sha),
-    )
-    review_path = records_dir / f"pr-review-r{review_round}.json"
-    _write_json(review_path, review)
+            evidence_dir=reviewing_dir / "agent-output",
+            validator=lambda value, sha=sha: classify_pr_review(value, pr_head_sha=sha),
+        )
+        _write_json(records_dir / f"pr-review-r{round_no}.json", result)
+        return result
+
+    review = _review(review_round, pr_head_sha, diff_text, verification)
+
+    # 6. REMEDIATING — bounded loop, max MAX_REMEDIATION_ROUNDS (pr-review.md
+    # default: 3). Only findings the workflow itself classified AUTO_FIX are
+    # ever handed to the remediator — never a DEVELOPER_REQUIRED finding
+    # (governance #6/#7). Every remediation batch is followed by independent
+    # re-verification (governance #8) and a fresh review of the new HEAD
+    # (governance #9/#10) — the remediator's own completion claim is never
+    # trusted as proof a finding is actually fixed.
+    remediating_dir = runtime_dir / "remediation"
+    remediation_history: list[dict[str, Any]] = []
+    blocked_reason: str | None = None
+
+    while review["has_auto_fix"] and review_round < MAX_REMEDIATION_ROUNDS:
+        auto_fix_findings = [f for f in review["findings"] if f["automation_eligibility"] == "AUTO_FIX"]
+        remediation_step_id = f"remediate-r{review_round}"
+        remediation_completion = _run_json_contract_step(
+            agent=REMEDIATOR,
+            prompt=build_remediator_prompt(repo, plan_path, delivery_contract, pr_review_policy, governance, auto_fix_findings),
+            label="Remediator",
+            step_id=remediation_step_id,
+            repo=repo,
+            evidence_dir=remediating_dir / "agent-output",
+            validator=_remediator_completion_validator,
+        )
+        _write_json(remediating_dir / f"{remediation_step_id}-completion.json", remediation_completion)
+
+        changed = _git(["status", "--porcelain", "--", "app"], cwd=repo)
+        if not changed.strip():
+            raise WorkflowContractError(f"{remediation_step_id} completed but left no changes under app/")
+        _git(["add", "--", "app"], cwd=repo)
+        addressed = ", ".join(remediation_completion.get("findings_addressed", [])) or "(none reported)"
+        _git(["commit", "-m", f"[{ticket_id}] Remediate findings ({addressed})"], cwd=repo)
+        commit_sha = _current_head_sha(repo)
+        pr_head_sha = commit_sha
+
+        # Governance #8: verify after every remediation batch. A remediation
+        # that breaks verification is escalation-worthy, not something to
+        # retry blindly — stop the loop rather than looping on a regression.
+        verification = _run_verification(repo, verifying_dir, f"verify-remediate-r{review_round}")
+        diff_text = _compute_delivery_diff(repo, base_branch, delivery_branch)
+
+        remediation_history.append({
+            "round": review_round,
+            "remediation_step_id": remediation_step_id,
+            "findings_addressed": remediation_completion.get("findings_addressed", []),
+            "commit_sha": commit_sha,
+            "verification_passed": verification["passed"],
+        })
+
+        if not verification["passed"]:
+            blocked_reason = "verification_failed_after_remediation"
+            break
+
+        review_round += 1
+        # Governance #9: fresh review evidence for the new HEAD — never
+        # trust the remediator's own claim that a finding is resolved.
+        review = _review(review_round, pr_head_sha, diff_text, verification)
+
+    convergence_limit_reached = review_round >= MAX_REMEDIATION_ROUNDS and review["has_auto_fix"]
 
     delivery_manifest = _read_json(delivery_manifest_path)
-    delivery_manifest["state"] = "AGENT_REVIEWING"
+    delivery_manifest["implementation_commit_sha"] = commit_sha
+    delivery_manifest["pr_head_sha"] = pr_head_sha
     delivery_manifest["review_rounds"] = review_round
-    delivery_manifest["latest_review_path"] = str(review_path.relative_to(repo))
+    delivery_manifest["latest_review_path"] = str((records_dir / f"pr-review-r{review_round}.json").relative_to(repo))
     delivery_manifest["latest_review_has_developer_required"] = review["has_developer_required"]
     delivery_manifest["latest_review_has_auto_fix"] = review["has_auto_fix"]
+    delivery_manifest["remediation_history"] = remediation_history
+    delivery_manifest["convergence_limit_reached"] = convergence_limit_reached
+
+    if blocked_reason is not None:
+        delivery_manifest["state"] = "BLOCKED"
+        _write_json(delivery_manifest_path, delivery_manifest)
+        emit_output({
+            "workflow_outcome": "BLOCKED",
+            "ticket_id": ticket_id,
+            "run_id": run_id,
+            "reason": blocked_reason,
+            "delivery_manifest": str(delivery_manifest_path),
+        })
+        return
+
+    delivery_manifest["state"] = "AGENT_REVIEWING"
     _write_json(delivery_manifest_path, delivery_manifest)
 
     emit_output({
@@ -969,9 +1082,10 @@ def main() -> None:
         "findings_count": len(review["findings"]),
         "has_developer_required_findings": review["has_developer_required"],
         "has_auto_fix_findings": review["has_auto_fix"],
-        "review_path": str(review_path),
+        "convergence_limit_reached": convergence_limit_reached,
+        "remediation_rounds": len(remediation_history),
         "delivery_manifest": str(delivery_manifest_path),
-        "next_action": "Extend deliver.py with REMEDIATING (not yet implemented in this version).",
+        "next_action": "Extend deliver.py with the Human Review Brief + AWAITING_HUMAN_REVIEW (not yet implemented in this version).",
     })
 
 

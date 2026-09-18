@@ -1,23 +1,21 @@
 diff --git a/app/payment_service/payment_service.py b/app/payment_service/payment_service.py
-index cd6cda6..a92c472 100644
+index cd6cda6..c0eaa6f 100644
 --- a/app/payment_service/payment_service.py
 +++ b/app/payment_service/payment_service.py
-@@ -1,8 +1,11 @@
+@@ -1,8 +1,9 @@
  """Orchestrates persistence + fulfilment for a payment provider callback.
  
 -Known gap (tracked by PAY-DEMO-001): a duplicate callback for the same
 -provider_event_id currently triggers fulfilment again instead of being
 -recognized as already processed.
-+Idempotency (PAY-DEMO-001): fulfilment is gated on the persistence-layer
-+claim (record_if_new()). A duplicate callback for an already-completed or
-+currently in-flight provider_event_id is recognized and never re-fulfilled.
-+If fulfilment fails after the event is claimed, the claim is released so a
-+later retry with the same provider_event_id can re-claim and attempt
-+fulfilment again.
++Idempotency (PAY-DEMO-001): record_if_new()'s return value gates fulfilment.
++A duplicate (already-completed or currently in-flight) is rejected without
++side effects. If fulfilment fails after the claim is taken, the claim is
++released so a later retry with the same provider_event_id can re-claim it.
  """
  from __future__ import annotations
  
-@@ -21,7 +24,22 @@ class PaymentService:
+@@ -21,7 +22,23 @@ class PaymentService:
          self._fulfilment_service = fulfilment_service
  
      def process_callback(self, event: CallbackEvent) -> ProcessingResult:
@@ -26,7 +24,8 @@ index cd6cda6..a92c472 100644
 +        claimed = self._repository.record_if_new(event.provider_event_id, event.payment_id)
 +        if not claimed:
 +            logger.info(
-+                "duplicate callback ignored for provider_event_id=%s", event.provider_event_id
++                "duplicate callback ignored for provider_event_id=%s",
++                event.provider_event_id,
 +            )
 +            return ProcessingResult(payment_id=event.payment_id, fulfilled=False)
 +
@@ -34,7 +33,7 @@ index cd6cda6..a92c472 100644
 +            self._fulfilment_service.fulfil(event.payment_id)
 +        except Exception:
 +            self._repository.release_for_retry(event.provider_event_id)
-+            logger.error(
++            logger.info(
 +                "fulfilment failed for provider_event_id=%s; claim released for retry",
 +                event.provider_event_id,
 +            )
@@ -43,47 +42,40 @@ index cd6cda6..a92c472 100644
          logger.info("callback processed for provider_event_id=%s", event.provider_event_id)
          return ProcessingResult(payment_id=event.payment_id, fulfilled=True)
 diff --git a/app/payment_service/repository.py b/app/payment_service/repository.py
-index 11e4a7d..d06ddc6 100644
+index 11e4a7d..87c1b8e 100644
 --- a/app/payment_service/repository.py
 +++ b/app/payment_service/repository.py
-@@ -15,8 +15,25 @@ from pathlib import Path
+@@ -15,8 +15,21 @@ from pathlib import Path
  
  
  class PaymentRepository:
-+    """A fresh instance (and thus a fresh sqlite3 connection) must be
-+    constructed per incoming callback request; never share a single
-+    long-lived instance across concurrent requests, so that concurrent
-+    inserts genuinely race at the persistence layer rather than being
-+    serialized in-process. sqlite3 connections also default to
-+    check_same_thread=True, so a connection must be constructed inside the
-+    thread that will use it.
-+    """
-+
-+    _BUSY_TIMEOUT_SECONDS = 30
++    """Must be constructed once per incoming callback request (a fresh
++    connection to the same store), never shared as a single long-lived
++    instance across concurrent requests — sharing one instance would
++    serialize inserts in-process instead of letting them genuinely race at
++    the persistence layer, defeating the point of the PRIMARY KEY-based
++    concurrency test (C-5)."""
 +
      def __init__(self, db_path: str | Path):
 -        self._conn = sqlite3.connect(str(db_path))
-+        # An explicit busy timeout plus WAL mode lets two genuinely
-+        # concurrent INSERTs against the same on-disk file resolve cleanly
-+        # via the PRIMARY KEY constraint (one succeeds, one raises
-+        # IntegrityError) instead of intermittently surfacing
++        # Explicit busy timeout (also mapped to PRAGMA busy_timeout by
++        # sqlite3) plus WAL mode so two genuinely concurrent INSERTs against
++        # the same on-disk file resolve cleanly to one success + one
++        # IntegrityError instead of intermittently raising
 +        # sqlite3.OperationalError: database is locked.
-+        self._conn = sqlite3.connect(str(db_path), timeout=self._BUSY_TIMEOUT_SECONDS)
++        self._conn = sqlite3.connect(str(db_path), timeout=30.0)
 +        self._conn.execute("PRAGMA journal_mode=WAL")
          self._conn.execute(
              """
              CREATE TABLE IF NOT EXISTS processed_callbacks (
-@@ -39,5 +56,18 @@ class PaymentRepository:
+@@ -39,5 +52,15 @@ class PaymentRepository:
          except sqlite3.IntegrityError:
              return False
  
 +    def release_for_retry(self, provider_event_id: str) -> None:
-+        """Delete the claim row for provider_event_id, freeing it for a
-+        later record_if_new() call to re-claim. Idempotent: a no-op if the
-+        row is already gone. This is the release half of the
-+        delete-then-reinsert pattern; the reinsert half is simply a later,
-+        ordinary call to record_if_new() for the same ID.
-+        """
++        """Delete the claim row for provider_event_id so a later retry can
++        re-claim it via the same record_if_new() PRIMARY KEY constraint.
++        Idempotent: a no-op if the row is already gone."""
 +        self._conn.execute(
 +            "DELETE FROM processed_callbacks WHERE provider_event_id = ?",
 +            (provider_event_id,),
@@ -93,7 +85,7 @@ index 11e4a7d..d06ddc6 100644
      def close(self) -> None:
          self._conn.close()
 diff --git a/app/tests/test_payment_service.py b/app/tests/test_payment_service.py
-index b72da68..98cd0bc 100644
+index b72da68..426c100 100644
 --- a/app/tests/test_payment_service.py
 +++ b/app/tests/test_payment_service.py
 @@ -1,5 +1,7 @@
@@ -104,22 +96,23 @@ index b72da68..98cd0bc 100644
  import unittest
  from pathlib import Path
  
-@@ -9,6 +11,22 @@ from payment_service.payment_service import PaymentService
+@@ -9,11 +11,28 @@ from payment_service.payment_service import PaymentService
  from payment_service.repository import PaymentRepository
  
  
 +class _FailOnceFulfilmentService(FulfilmentService):
-+    """Test-only fulfilment stub: raises on the first fulfil() call for a
-+    given payment_id, then behaves normally on every subsequent call. Used
-+    to simulate "claimed, then failed, then retried" for FR-2 coverage."""
++    """Test-only stub: raises on its first fulfil() call, then behaves
++    like a normal FulfilmentService on every subsequent call. Simulates
++    a fulfilment failure after the callback has already been claimed
++    (FR-2)."""
 +
 +    def __init__(self) -> None:
 +        super().__init__()
-+        self._already_raised_for: set[str] = set()
++        self._should_fail = True
 +
 +    def fulfil(self, payment_id: str) -> None:
-+        if payment_id not in self._already_raised_for:
-+            self._already_raised_for.add(payment_id)
++        if self._should_fail:
++            self._should_fail = False
 +            raise RuntimeError("simulated fulfilment failure")
 +        super().fulfil(payment_id)
 +
@@ -127,90 +120,99 @@ index b72da68..98cd0bc 100644
  class PaymentServiceTest(unittest.TestCase):
      def setUp(self):
          self._tmpdir = tempfile.TemporaryDirectory()
-@@ -49,6 +67,88 @@ class PaymentServiceTest(unittest.TestCase):
+-        db_path = Path(self._tmpdir.name) / "payments.db"
+-        self.repository = PaymentRepository(db_path)
++        self.db_path = Path(self._tmpdir.name) / "payments.db"
++        self.repository = PaymentRepository(self.db_path)
+         self.fulfilment_service = FulfilmentService()
+         self.payment_service = PaymentService(self.repository, self.fulfilment_service)
+         self.controller = CallbackController(self.payment_service)
+@@ -49,6 +68,90 @@ class PaymentServiceTest(unittest.TestCase):
          joined = "\n".join(captured.output)
          self.assertIn("duplicate", joined.lower())
  
-+    def test_completed_event_duplicate_does_not_refulfil(self):
-+        # FR-1: a duplicate arriving after the event has already completed
-+        # business processing must not execute fulfilment again.
-+        self.controller.handle({"provider_event_id": "evt-4", "payment_id": "pay-4"})
-+        self.controller.handle({"provider_event_id": "evt-4", "payment_id": "pay-4"})
-+        self.controller.handle({"provider_event_id": "evt-4", "payment_id": "pay-4"})
-+        self.assertEqual(self.fulfilment_service.fulfilment_count("pay-4"), 1)
++    def test_duplicate_after_completed_event_does_not_refulfil(self):
++        self.controller.handle({"provider_event_id": "evt-fr1", "payment_id": "pay-fr1"})
++        self.controller.handle({"provider_event_id": "evt-fr1", "payment_id": "pay-fr1"})
++        self.controller.handle({"provider_event_id": "evt-fr1", "payment_id": "pay-fr1"})
++        self.assertEqual(
++            self.fulfilment_service.fulfilment_count("pay-fr1"),
++            1,
++            "an event that already completed must never be re-fulfilled by a later duplicate",
++        )
 +
-+    def test_fulfilment_failure_releases_claim_for_retry(self):
-+        # FR-2/C-4: a failure after claim but before completion must release
-+        # the claim so a retry with the same provider_event_id can re-claim
-+        # and attempt fulfilment again.
-+        fulfilment_service = _FailOnceFulfilmentService()
-+        payment_service = PaymentService(self.repository, fulfilment_service)
++    def test_failure_after_claim_releases_claim_for_retry(self):
++        failing_fulfilment = _FailOnceFulfilmentService()
++        payment_service = PaymentService(self.repository, failing_fulfilment)
 +        controller = CallbackController(payment_service)
 +
 +        with self.assertRaises(RuntimeError):
-+            controller.handle({"provider_event_id": "evt-5", "payment_id": "pay-5"})
++            controller.handle({"provider_event_id": "evt-fr2", "payment_id": "pay-fr2"})
 +
-+        response = controller.handle({"provider_event_id": "evt-5", "payment_id": "pay-5"})
-+        self.assertEqual(response, {"status": "ok", "payment_id": "pay-5"})
-+        self.assertEqual(fulfilment_service.fulfilment_count("pay-5"), 1)
++        response = controller.handle({"provider_event_id": "evt-fr2", "payment_id": "pay-fr2"})
++        self.assertEqual(response, {"status": "ok", "payment_id": "pay-fr2"})
++        self.assertEqual(
++            failing_fulfilment.fulfilment_count("pay-fr2"),
++            1,
++            "fulfilment must run exactly once across the failed attempt and the successful retry",
++        )
 +
-+        # D6: no row-count/read method exists on PaymentRepository, so prove
-+        # exactly one row is present post-retry indirectly: record_if_new()
-+        # can only return False when a row for this ID is present, and the
-+        # PRIMARY KEY constraint guarantees at most one such row.
++        # D6: no row-count/existence read method exists on PaymentRepository,
++        # so row presence post-retry is proven indirectly. record_if_new()
++        # returning False here is only possible if a row for evt-fr2 is
++        # present, and the PRIMARY KEY on provider_event_id guarantees at
++        # most one such row, so this is conclusive proof of exactly one row.
 +        self.assertFalse(
-+            self.repository.record_if_new("evt-5", "pay-5"),
-+            "a claim row must still be present for evt-5 after the successful retry",
++            self.repository.record_if_new("evt-fr2", "pay-fr2"),
++            "record_if_new must reject a third claim, proving exactly one row exists post-retry",
 +        )
 +
 +    def test_concurrent_duplicate_callbacks_do_not_double_fulfil(self):
-+        # FR-3/FR-4/C-5: two genuinely independent PaymentRepository
-+        # instances against the same on-disk file, synchronized with a
-+        # barrier so both INSERT attempts genuinely overlap.
-+        db_path = Path(self._tmpdir.name) / "concurrent.db"
-+        PaymentRepository(db_path).close()  # pre-create schema
-+
 +        fulfilment_service = FulfilmentService()
 +        barrier = threading.Barrier(2)
-+        responses: dict[str, dict] = {}
++        results: dict[str, dict] = {}
 +        intervals: dict[str, tuple[float, float]] = {}
-+        errors: list[Exception] = []
 +
 +        def worker(name: str) -> None:
++            # Each thread constructs its own PaymentRepository against the
++            # shared on-disk file, inside its own thread function (C-5):
++            # sqlite3 connections default to check_same_thread=True.
++            repository = PaymentRepository(self.db_path)
 +            try:
-+                repository = PaymentRepository(db_path)
-+                try:
-+                    payment_service = PaymentService(repository, fulfilment_service)
-+                    controller = CallbackController(payment_service)
-+                    barrier.wait()
-+                    start = time.monotonic()
-+                    response = controller.handle(
-+                        {"provider_event_id": "evt-concurrent", "payment_id": "pay-concurrent"}
-+                    )
-+                    end = time.monotonic()
-+                    responses[name] = response
-+                    intervals[name] = (start, end)
-+                finally:
-+                    repository.close()
-+            except Exception as exc:  # pragma: no cover - surfaced via errors list
-+                errors.append(exc)
++                payment_service = PaymentService(repository, fulfilment_service)
++                controller = CallbackController(payment_service)
++                barrier.wait()
++                start = time.monotonic()
++                response = controller.handle(
++                    {"provider_event_id": "evt-fr3", "payment_id": "pay-fr3"}
++                )
++                end = time.monotonic()
++                results[name] = response
++                intervals[name] = (start, end)
++            finally:
++                repository.close()
 +
 +        threads = [threading.Thread(target=worker, args=(name,)) for name in ("a", "b")]
-+        for thread in threads:
-+            thread.start()
-+        for thread in threads:
-+            thread.join()
++        for t in threads:
++            t.start()
++        for t in threads:
++            t.join()
 +
-+        self.assertEqual(errors, [])
-+        self.assertEqual(fulfilment_service.fulfilment_count("pay-concurrent"), 1)
-+        self.assertEqual(responses["a"], {"status": "ok", "payment_id": "pay-concurrent"})
-+        self.assertEqual(responses["b"], {"status": "ok", "payment_id": "pay-concurrent"})
++        self.assertEqual(
++            fulfilment_service.fulfilment_count("pay-fr3"),
++            1,
++            "exactly one of the two racing callbacks must trigger fulfilment",
++        )
++        expected = {"status": "ok", "payment_id": "pay-fr3"}
++        self.assertEqual(results["a"], expected)
++        self.assertEqual(results["b"], expected)
 +
 +        start_a, end_a = intervals["a"]
 +        start_b, end_b = intervals["b"]
 +        self.assertTrue(
 +            start_a <= end_b and start_b <= end_a,
-+            "the two threads' handle() calls must overlap in wall-clock time",
++            "expected the two threads' handle() calls to overlap in wall-clock time "
++            "(corroborating evidence; the barrier is the load-bearing overlap guarantee)",
 +        )
 +
  
