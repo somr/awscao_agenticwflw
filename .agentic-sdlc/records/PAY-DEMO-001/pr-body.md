@@ -10,20 +10,19 @@ Implements the approved Development Plan (`development-plan.md`, sha256 `c3dc197
 - `app/tests/test_payment_service.py`
 
 **Assumptions:**
-- T3 required no code change per the plan's own design (CallbackController.handle() already reads only result.payment_id, never result.fulfilled); verified by inspection only, no edit made to app/payment_service/callback_controller.py or app/payment_service/models.py or app/payment_service/fulfilment_service.py.
-- D3 (log wording): used 'duplicate callback ignored for provider_event_id=%s' (INFO) for the duplicate path and 'callback processed for provider_event_id=%s' (INFO, unchanged) for the claimed/success path, satisfying the existing tests' 'duplicate' substring floor at INFO level on logger payment_service.payment_service.
-- D5 (failure log level): the fulfilment-failure log line ('fulfilment failed for provider_event_id=%s; claim released for retry') was emitted at INFO, consistent with the rest of this module's logging and with the plan's silence on a required level; the plan only specifies content, not level, for this line.
-- T1 busy-timeout hardening: used sqlite3.connect(..., timeout=30.0) (which sqlite3 maps to PRAGMA busy_timeout) plus an explicit 'PRAGMA journal_mode=WAL' statement, per the plan's 'explicit busy-timeout and PRAGMA journal_mode=WAL' description; no specific timeout value was specified by the plan, so 30 seconds was chosen as a generous, clearly-non-production-relevant test/demo value.
-- T5's one-time manual hardening-verification step (temporarily removing the WAL/timeout hardening and rerunning the concurrency test in a loop to confirm flakiness) is explicitly a human/developer-performed, non-automated step per the plan's own 'Proposed design' and 'Out of scope' sections; it was not performed by this agent (no execution tool available) and is not part of the code changes — flagging per the plan's own instruction that it be 'recorded as a one-time development-time confirmation,' which is a task for whoever runs the suite, not a code change.
+- T1's 'explicit busy-timeout' was implemented via sqlite3.connect(str(db_path), timeout=30) plus 'PRAGMA journal_mode=WAL', per the plan's stated mitigation for concurrent-writer contention under SQLite; no other hardening mechanism was specified by the plan.
+- The failure-path log message emitted in payment_service.py's except branch ('fulfilment failed for provider_event_id=%s, claim released for retry') is new wording not given verbatim by the plan; D3 states log wording is non-blocking as long as the existing tests' 'duplicate' substring/INFO-level floor is met, which the duplicate-branch message satisfies unchanged from the plan's suggested text.
+- T3 required no code change, confirmed by inspection: CallbackController.handle() only reads result.payment_id and is unaffected by the new ProcessingResult(fulfilled=False) path added in T2, exactly as the plan's design describes.
 
 **Deviations:**
-- (none)
+- T6 ('run the full suite ... confirm all existing and new tests pass') was not executed by this agent: the implementer profile has no test/build execution tool, and per the delivery workflow contract, verification is performed independently by the workflow after implementation, not claimed here.
+- The Proposed design's one-time manual hardening-verification step (temporarily removing T1's busy-timeout/WAL config and rerunning the T5 concurrency test in a 20-50 iteration loop to confirm it becomes flaky, then restoring the hardening) was not performed, since it requires repeated test execution and this agent has no execution tool; the hardening itself (busy timeout + WAL) was implemented in T1 as specified, but its manual empirical confirmation is left for the workflow/developer to perform and record separately, as the plan describes it as a development-time step outside the automated/CI test path.
 
 **Verification:**
 - `python3 -m compileall -q app` — PASS (exit 0)
 - `python3 -m unittest discover -t app -s app/tests -v` — PASS (exit 0)
 
-**PR HEAD SHA:** `09bfb861b6a5ac4c69cab86943f099d46d597432`
+**PR HEAD SHA:** `3260103e04fc4b3ca4e5ed79eab0342eae20c215`
 
 ---
 This PR was prepared by the agentic delivery workflow. Final approval must be granted by a human reviewer in source control, not by any agent.

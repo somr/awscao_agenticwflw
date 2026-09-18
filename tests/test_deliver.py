@@ -217,6 +217,132 @@ class GitBranchRootingTest(unittest.TestCase):
             self.assertEqual(before, after, "resuming an existing delivery branch must not discard its commits")
 
 
+class RenderHumanReviewBriefTest(unittest.TestCase):
+    def _review(self, findings: list[dict]) -> dict:
+        has_dev = any(f["automation_eligibility"] == "DEVELOPER_REQUIRED" for f in findings)
+        has_auto = any(f["automation_eligibility"] == "AUTO_FIX" for f in findings)
+        return {"summary": "s", "findings": findings, "has_developer_required": has_dev, "has_auto_fix": has_auto}
+
+    def _finding(self, **overrides) -> dict:
+        base = {
+            "id": "PR-001",
+            "file": "app/x.py",
+            "location": "somewhere",
+            "category": "CORRECTNESS",
+            "impact": "MEDIUM",
+            "confidence": 0.5,
+            "failure_scenario": "bad thing happens",
+            "consequence": "breaks",
+            "related_acceptance_criterion": "AC-1",
+            "remediation_direction": "fix it",
+            "automation_eligibility": "DEVELOPER_REQUIRED",
+            "reason": "risky",
+            "pr_head_sha_reviewed": "deadbeef",
+        }
+        base.update(overrides)
+        return base
+
+    def _verification(self) -> dict:
+        return {
+            "passed": True,
+            "commands": [
+                {"command": ["python3", "-m", "compileall", "-q", "app"], "passed": True, "returncode": 0},
+                {"command": ["python3", "-m", "unittest", "discover"], "passed": True, "returncode": 0},
+            ],
+        }
+
+    def test_clean_review_has_no_attention_items(self):
+        brief = mod.render_human_review_brief(
+            ticket_id="T-1",
+            pr_reference=None,
+            pr_head_sha="deadbeef",
+            plan_sha256="abc",
+            final_completion={"tasks_completed": ["T1"], "files_changed": ["app/x.py"], "assumptions": [], "deviations": []},
+            review=self._review([]),
+            remediation_history=[],
+            verification=self._verification(),
+            convergence_limit_reached=False,
+        )
+        self.assertIn("No DEVELOPER_REQUIRED findings remain", brief)
+        self.assertIn("Findings detected: 0", brief)
+        self.assertIn("(local, not yet created)", brief)
+
+    def test_developer_required_finding_appears_in_attention_section(self):
+        brief = mod.render_human_review_brief(
+            ticket_id="T-1",
+            pr_reference="123",
+            pr_head_sha="deadbeef",
+            plan_sha256="abc",
+            final_completion={"tasks_completed": [], "files_changed": [], "assumptions": [], "deviations": []},
+            review=self._review([self._finding(impact="HIGH")]),
+            remediation_history=[],
+            verification=self._verification(),
+            convergence_limit_reached=False,
+        )
+        self.assertIn("PR-001", brief)
+        self.assertIn("Remaining/escalated: 1", brief)
+        self.assertIn("### 1. PR-001", brief)
+
+    def test_remediation_history_counts_toward_auto_remediated(self):
+        brief = mod.render_human_review_brief(
+            ticket_id="T-1",
+            pr_reference=None,
+            pr_head_sha="deadbeef",
+            plan_sha256="abc",
+            final_completion={"tasks_completed": [], "files_changed": [], "assumptions": [], "deviations": []},
+            review=self._review([]),
+            remediation_history=[{"round": 1, "findings_addressed": ["PR-005", "PR-006"]}],
+            verification=self._verification(),
+            convergence_limit_reached=False,
+        )
+        self.assertIn("Automatically remediated: 2", brief)
+        self.assertIn("Autonomous remediation rounds: 1", brief)
+        self.assertIn("Findings detected: 2", brief)
+
+    def test_convergence_limit_reached_appears_in_residual_risks(self):
+        brief = mod.render_human_review_brief(
+            ticket_id="T-1",
+            pr_reference=None,
+            pr_head_sha="deadbeef",
+            plan_sha256="abc",
+            final_completion={"tasks_completed": [], "files_changed": [], "assumptions": [], "deviations": []},
+            review=self._review([self._finding(automation_eligibility="AUTO_FIX", impact="LOW")]),
+            remediation_history=[],
+            verification=self._verification(),
+            convergence_limit_reached=True,
+        )
+        self.assertIn("round limit", brief.lower())
+
+    def test_verification_commands_mapped_to_build_and_tests_lines(self):
+        brief = mod.render_human_review_brief(
+            ticket_id="T-1",
+            pr_reference=None,
+            pr_head_sha="deadbeef",
+            plan_sha256="abc",
+            final_completion={"tasks_completed": [], "files_changed": [], "assumptions": [], "deviations": []},
+            review=self._review([]),
+            remediation_history=[],
+            verification=self._verification(),
+            convergence_limit_reached=False,
+        )
+        self.assertIn("Build: `python3 -m compileall -q app` — PASS", brief)
+        self.assertIn("Tests: `python3 -m unittest discover` — PASS", brief)
+
+    def test_deviations_appear_as_residual_risks(self):
+        brief = mod.render_human_review_brief(
+            ticket_id="T-1",
+            pr_reference=None,
+            pr_head_sha="deadbeef",
+            plan_sha256="abc",
+            final_completion={"tasks_completed": [], "files_changed": [], "assumptions": [], "deviations": ["could not fix X"]},
+            review=self._review([]),
+            remediation_history=[],
+            verification=self._verification(),
+            convergence_limit_reached=False,
+        )
+        self.assertIn("could not fix X", brief)
+
+
 class RemediatorCompletionValidatorTest(unittest.TestCase):
     def test_valid_shape_passes(self):
         value = {

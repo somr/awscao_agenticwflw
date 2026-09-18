@@ -2,24 +2,42 @@
   "findings": [
     {
       "automation_eligibility": "DEVELOPER_REQUIRED",
-      "category": "TESTING",
+      "category": "CONCURRENCY",
       "confidence": 0.45,
-      "consequence": "The concurrency-safety claim underpinning FR-3/C-5 (that WAL+busy_timeout is load-bearing, not redundant) ships without the corroborating evidence the plan itself specified as part of T5's scope, so a future accidental removal of the hardening has no documented baseline to catch the regression against, and reviewers have to take the mitigation's necessity on faith.",
+      "consequence": "A caller/observer sees a different exception type than the one that actually caused the failure (violating Design Decision D5's stated intent to 're-raise the original exception unchanged'), loses the diagnostic log line documenting the release attempt, and \u2014 in the worst case \u2014 the event is left claimed forever with no observability into why, silently converting a transient release failure into the same unrecoverable-stuck-payment state the plan already accepts as an out-of-scope limitation, but now via an unlogged path.",
       "deterministically_verifiable": false,
-      "failure_scenario": "A future change to PaymentRepository.__init__ weakens or removes the timeout=30.0 / PRAGMA journal_mode=WAL hardening. Because this mitigation is deliberately not exercised by an automated/CI toggle (per the plan's own out-of-scope note) and there is no comment, commit note, or other evidence in this PR that the one-time manual flakiness check (run T5 20-50 times without the hardening and confirm sqlite3.OperationalError: database is locked) was ever actually performed, nobody reviewing this PR or a later regression PR can tell whether the hardening was proven necessary or is just defensive boilerplate.",
-      "file": "app/payment_service/repository.py",
+      "failure_scenario": "fulfil(event.payment_id) raises (e.g. RuntimeError), entering the except block; before the bare `raise` executes, self._repository.release_for_retry(event.provider_event_id) itself raises (e.g. sqlite3.OperationalError if the on-disk store is locked beyond the 30s busy-timeout, or any other I/O error). The new exception propagates instead of the original fulfilment exception, the 'claim released for retry' log line never runs, and \u2014 depending on whether release_for_retry's DELETE committed before failing \u2014 the claim row may remain in place, permanently blocking any future retry for that provider_event_id with no evidence in the logs that release was attempted or failed.",
+      "file": "app/payment_service/payment_service.py",
       "id": "PR-001",
       "impact": "MEDIUM",
-      "localized_and_bounded": true,
-      "location": "PaymentRepository.__init__ \u2014 WAL/busy_timeout hardening comment (lines ~25-32)",
+      "localized_and_bounded": false,
+      "location": "process_callback(), except Exception block (lines 32-40)",
       "policy_overrode_agent_classification": false,
-      "pr_head_sha_reviewed": "09bfb861b6a5ac4c69cab86943f099d46d597432",
-      "reason": "Confirming and interpreting a flakiness demonstration across many iterations requires human judgment rather than a deterministic pass/fail check, and the underlying change is in the concurrency/transaction-semantics area the PR review policy always routes to a developer regardless of confidence.",
+      "pr_head_sha_reviewed": "b5d765edd0a93888df13505ebbccb9d77efa5ced",
+      "reason": "This is an untested corner case in the exception-handling/transaction-recovery path (concurrency/transaction semantics is a protected category per pr-review.md), and fixing it requires an interpretive decision (how should a release failure be surfaced/logged, and should the original exception be preserved via chaining or something stronger) rather than a mechanical, deterministically-verifiable local patch \u2014 no existing test pins down the desired behavior for this branch.",
+      "related_acceptance_criterion": "FR-2",
+      "remediation_direction": "Wrap the release_for_retry() call in its own try/except inside the failure branch (or otherwise guarantee the original exception is what propagates and that release-failure is itself logged), and add a targeted test that makes release_for_retry() fail during the except-block handling to pin down the intended behavior."
+    },
+    {
+      "automation_eligibility": "AUTO_FIX",
+      "category": "CORRECTNESS",
+      "confidence": 0.4,
+      "consequence": "Operationally, a genuine fulfilment failure that triggered a claim release could be missed by monitoring that filters on WARNING/ERROR, delaying detection of a stuck-payment scenario the plan already flags as a known limitation requiring visibility.",
+      "deterministically_verifiable": true,
+      "failure_scenario": "A real fulfilment failure (e.g. a downstream error worth paging on) is logged at INFO level with the same severity as routine duplicate-callback notices, making it indistinguishable from benign traffic in any log-level-based alerting or filtering that treats INFO as non-actionable.",
+      "file": "app/payment_service/payment_service.py",
+      "id": "PR-002",
+      "impact": "LOW",
+      "localized_and_bounded": true,
+      "location": "process_callback(), except Exception block, logger.info call for the fulfilment-failure message",
+      "policy_overrode_agent_classification": false,
+      "pr_head_sha_reviewed": "b5d765edd0a93888df13505ebbccb9d77efa5ced",
+      "reason": "This is a one-line, local logging-level change with no behavioral or API impact, no interaction with protected categories, and existing tests (which only assert on the 'duplicate' substring at INFO on a different code path) would still pass after the change, so correctness can be established deterministically.",
       "related_acceptance_criterion": null,
-      "remediation_direction": "Perform the one-time manual hardening-verification step from the plan's Proposed design: temporarily remove PRAGMA journal_mode=WAL and timeout=30.0, rerun test_concurrent_duplicate_callbacks_do_not_double_fulfil in a loop (~20-50 iterations) to confirm it becomes flaky with sqlite3.OperationalError: database is locked, restore the hardening, and add the one-line comment/commit note recording that confirmation next to the hardening code in repository.py, per plan Task T5."
+      "remediation_direction": "Log the fulfilment-failure branch at WARNING or ERROR level (e.g. logger.warning or logger.exception) instead of INFO, while keeping the duplicate-callback message at INFO."
     }
   ],
-  "has_auto_fix": false,
+  "has_auto_fix": true,
   "has_developer_required": true,
-  "summary": "The diff at HEAD 09bfb86 implements the approved plan's idempotency mechanism faithfully: process_callback() gates fulfilment on record_if_new()'s claim result, releases the claim on fulfilment failure via a new release_for_retry() delete-then-reinsert method, emits a distinguishable duplicate log line, and the new/extended tests exercise FR-1 (completed-duplicate), FR-2 (fail-then-retry, verified indirectly per D6 without adding a new read method), and FR-3/FR-4/C-5 (barrier-synchronized concurrent duplicate across independently constructed PaymentRepository instances). CallbackController and the response contract are untouched, matching AC-2/FR-4 and T3's verification-only scope. No schema change, no lock/coordination primitive, and no new dependency were introduced, consistent with C-1/C-2/C-3. Code-level review found no correctness defects in the claim/release/duplicate logic, the WAL+busy_timeout connection hardening, or the test assertions. One gap was identified: the plan's Task T5 explicitly includes a one-time manual verification (temporarily remove the WAL/busy-timeout hardening, confirm the concurrency test becomes flaky, restore it, and record the confirmation as a comment/commit note next to the hardening code) that has no visible evidence in this diff."
+  "summary": "The diff closely implements the approved plan's T1/T2/T4/T5 tasks: fulfilment is now gated on record_if_new()'s claim result, a release_for_retry() delete-then-reinsert mechanism restores FR-2 retry capability, the duplicate-vs-first log distinction satisfies AC-3, the controller is correctly left unchanged (AC-2/FR-4), and WAL/busy-timeout hardening plus a barrier-synchronized two-thread test exercise genuine persistence-layer contention for FR-3/C-5. Verification evidence (compileall + full unittest discovery) passed. Two narrow, non-blocking issues were found: an untested edge case where a failure inside release_for_retry() itself would mask the original fulfilment exception and skip the release log, and a minor log-severity choice for the fulfilment-failure path. Neither contradicts the approved plan or its acceptance criteria."
 }

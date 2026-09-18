@@ -828,6 +828,141 @@ def _remediator_completion_validator(value: Any) -> Any:
     return value
 
 
+def render_human_review_brief(
+    *,
+    ticket_id: str,
+    pr_reference: str | None,
+    pr_head_sha: str,
+    plan_sha256: str,
+    final_completion: dict[str, Any],
+    review: dict[str, Any],
+    remediation_history: list[dict[str, Any]],
+    verification: dict[str, Any],
+    convergence_limit_reached: bool,
+) -> str:
+    """Deterministic Python rendering of templates/human-review-brief.md from
+    canonical JSON — same pattern as render_planning_context in dev_plan.py:
+    Claude never authors this document, it only produces the structured data
+    Python renders from."""
+    findings = review["findings"]
+    developer_required = [f for f in findings if f["automation_eligibility"] == "DEVELOPER_REQUIRED"]
+    auto_remediated_count = sum(len(h["findings_addressed"]) for h in remediation_history)
+    remaining_count = len(developer_required)
+    findings_detected = auto_remediated_count + remaining_count
+
+    tasks = ", ".join(final_completion.get("tasks_completed", [])) or "(none reported)"
+    files = ", ".join(final_completion.get("files_changed", [])) or "(none reported)"
+    implementation_summary = f"Implements the approved Development Plan (tasks: {tasks}). Files changed: {files}."
+    if remediation_history:
+        implementation_summary += (
+            f" {len(remediation_history)} autonomous remediation round(s) applied additional fixes"
+            " for findings the workflow classified as auto-eligible."
+        )
+
+    if developer_required:
+        attention_text = "\n\n".join(
+            f"""### {index}. {finding['id']}: {finding['location']}
+
+- Location: `{finding['file']}`
+- Impact: `{finding['impact']}`
+- Why human attention is required: {finding['reason']}
+- Requirement/plan reference: {finding.get('related_acceptance_criterion') or '(none cited)'}
+- Original finding: {finding['failure_scenario']} — {finding['consequence']}
+- Developer response: (pending — awaiting human review)
+- Verification evidence: see "Verification evidence" below (reviewed at PR HEAD `{finding['pr_head_sha_reviewed']}`)
+- Reviewer recommendation: {finding['remediation_direction']}"""
+            for index, finding in enumerate(developer_required, start=1)
+        )
+    else:
+        attention_text = "### (none)\n\nNo DEVELOPER_REQUIRED findings remain."
+
+    def _bucket(impact: str, pool: list[dict[str, Any]]) -> str:
+        lines = [f"- {f['id']}: {f['location']}" for f in pool if f["impact"] == impact]
+        return "\n".join(lines) or "- (none)"
+
+    high_text = _bucket("HIGH", developer_required)
+    medium_text = _bucket("MEDIUM", developer_required)
+    low_text = _bucket("LOW", findings)
+
+    build_line = "(not run)"
+    tests_line = "(not run)"
+    other_lines: list[str] = []
+    for command in verification.get("commands", []):
+        cmd_str = " ".join(command["command"])
+        status = "PASS" if command["passed"] else "FAIL"
+        rendered = f"`{cmd_str}` — {status} (exit {command['returncode']})"
+        if "compileall" in cmd_str:
+            build_line = rendered
+        elif "unittest" in cmd_str:
+            tests_line = rendered
+        else:
+            other_lines.append(f"- {rendered}")
+    other_text = "\n".join(other_lines) or "- (none)"
+
+    residual = list(final_completion.get("deviations", []))
+    if convergence_limit_reached:
+        residual.append(
+            f"Remediation round limit ({MAX_REMEDIATION_ROUNDS}) was reached with unresolved "
+            "AUTO_FIX-eligible findings still outstanding — review the remaining findings directly."
+        )
+    residual_text = "\n".join(f"- {r}" for r in residual) or "- (none disclosed)"
+
+    pr_display = pr_reference or "(local, not yet created)"
+
+    return f"""# Human Review Brief — {ticket_id} / PR {pr_display}
+
+## Review target
+
+- Jira ticket: `{ticket_id}`
+- Pull request: `{pr_display}`
+- Current PR HEAD SHA: `{pr_head_sha}`
+- Approved plan digest: `{plan_sha256}`
+
+## Implementation summary
+
+{implementation_summary}
+
+## Automated review summary
+
+- Findings detected: {findings_detected}
+- Automatically remediated: {auto_remediated_count}
+- Developer-remediated: 0
+- Remaining/escalated: {remaining_count}
+- Autonomous remediation rounds: {len(remediation_history)}
+
+## Human attention required
+
+{attention_text}
+
+## Recommended review priority
+
+### High attention
+{high_text}
+
+### Medium attention
+{medium_text}
+
+### Low-risk / mechanically verified areas
+{low_text}
+
+## Verification evidence
+
+- Build: {build_line}
+- Static/lint checks: (not run — no separate lint step configured in this version)
+- Tests: {tests_line}
+- Other checks:
+{other_text}
+
+## Residual risks / known limitations
+
+{residual_text}
+
+## Reviewer decision
+
+Final PR approval must be performed by a human in the source-control system.
+"""
+
+
 def main() -> None:
     inputs = get_inputs()
     ticket_id = _safe_component(_require_str(inputs["ticket_id"], "ticket_id"), "ticket_id")
@@ -1069,11 +1204,47 @@ def main() -> None:
         })
         return
 
-    delivery_manifest["state"] = "AGENT_REVIEWING"
+    # Re-render the PR artifacts against the final post-remediation HEAD/diff
+    # before producing the brief. Live-testing surfaced this concretely: the
+    # PR reviewer itself flagged a stale PR HEAD SHA and a "Deviations: none"
+    # claim left over from before remediation as its own LOW finding — the
+    # PR package must reflect what a human is actually about to review, not
+    # what existed right after IMPLEMENTING.
+    pr_body = render_pr_body(
+        ticket_id=ticket_id,
+        plan_path=plan_path,
+        plan_sha256=manifest["plan_sha256"],
+        completion=final_completion,
+        verification=verification,
+        pr_head_sha=pr_head_sha,
+    )
+    _write_text(pr_title_path, render_pr_title(ticket_id))
+    _write_text(pr_body_path, pr_body)
+    pr_diff_path.write_text(diff_text, encoding="utf-8")
+
+    # 7. AWAITING_HUMAN_REVIEW — render the brief and stop; main() never
+    # blocks waiting for the human, same shape as dev_plan.py's
+    # AWAITING_HUMAN_APPROVAL ending.
+    brief_text = render_human_review_brief(
+        ticket_id=ticket_id,
+        pr_reference=delivery_manifest.get("pr_reference"),
+        pr_head_sha=pr_head_sha,
+        plan_sha256=manifest["plan_sha256"],
+        final_completion=final_completion,
+        review=review,
+        remediation_history=remediation_history,
+        verification=verification,
+        convergence_limit_reached=convergence_limit_reached,
+    )
+    brief_path = records_dir / "human-review-brief.md"
+    _write_text(brief_path, brief_text)
+
+    delivery_manifest["state"] = "AWAITING_HUMAN_REVIEW"
+    delivery_manifest["human_review_brief_path"] = str(brief_path.relative_to(repo))
     _write_json(delivery_manifest_path, delivery_manifest)
 
     emit_output({
-        "workflow_outcome": "AGENT_REVIEWING",
+        "workflow_outcome": "AWAITING_HUMAN_REVIEW",
         "ticket_id": ticket_id,
         "run_id": run_id,
         "delivery_branch": delivery_branch,
@@ -1084,8 +1255,9 @@ def main() -> None:
         "has_auto_fix_findings": review["has_auto_fix"],
         "convergence_limit_reached": convergence_limit_reached,
         "remediation_rounds": len(remediation_history),
+        "human_review_brief": str(brief_path),
         "delivery_manifest": str(delivery_manifest_path),
-        "next_action": "Extend deliver.py with the Human Review Brief + AWAITING_HUMAN_REVIEW (not yet implemented in this version).",
+        "next_action": "Human reviews human-review-brief.md and records HUMAN_APPROVED or REJECTED with record_pr_approval.py.",
     })
 
 
