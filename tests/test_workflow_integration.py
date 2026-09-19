@@ -119,7 +119,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
         self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_APPROVAL')
         self.assertEqual(output['review_rounds'], 2)
         self.assertIn((planning.CONTEXT_NORMALIZER, 'context-normalize-v1-repair-1'), calls)
-        records = repo / '.agentic-sdlc/records/T-1'
+        records = repo / 'sdlc-records/T-1'
         review = json.loads((records / 'plan-review.json').read_text())
         self.assertEqual(review['reviewed_plan_sha256'], output['plan_sha256'])
         # This is synthetic approval in an isolated test repo, not a user approval.

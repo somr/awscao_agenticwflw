@@ -5,6 +5,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+# Durable workflow records live in the host project, outside the embeddable
+# .agentic-sdlc/ tooling directory, so upgrading the tooling cannot touch them.
+# Keep in sync with scripts/approve_plan.py, scripts/record_pr_approval.py and
+# the write-scope hook (.claude/hooks/restrict-write-scope.py).
+RECORDS_DIR = "sdlc-records"
+
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PreToolUse hook: restrict CAO worker writes to their allowed root(s).
 
-SECURITY DESIGN — full writeup in .agentic-sdlc/cao/workflows/README.md under
+SECURITY DESIGN — full writeup in docs/workflows/planning.md under
 "Answer file delivery & the write-scope hook". Summary: CAO agent profiles
 are granted fs_write (Claude Code's Write/Edit/NotebookEdit tools) so each
 step can deliver its answer as a file instead of via unreliable
@@ -60,7 +60,7 @@ DENY_ALWAYS_ROOTS = [
     ".agentic-sdlc/contracts",
     ".agentic-sdlc/templates",
     ".agentic-sdlc/schemas",
-    ".agentic-sdlc/records",
+    "sdlc-records",  # durable workflow records; outside the embeddable .agentic-sdlc/
 ]
 
 # Additional roots a given agent_profile may write under, on top of
@@ -139,7 +139,7 @@ def main() -> int:
     return _deny(
         f"CAO worker writes are restricted to {ALWAYS_ALLOWED_ROOT}/**"
         + (f" (plus {', '.join(widened_roots)}/** for profile {profile!r})" if widened_roots else "")
-        + " in this project. See .agentic-sdlc/cao/workflows/README.md, "
+        + " in this project. See docs/workflows/planning.md, "
         "'Answer file delivery & the write-scope hook'."
     )
 

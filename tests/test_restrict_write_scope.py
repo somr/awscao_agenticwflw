@@ -2,7 +2,7 @@
 
 This hook (.claude/hooks/restrict-write-scope.py) is the actual enforcement
 for restricting CAO-spawned agent writes to .agentic-sdlc/runtime/** — see
-.agentic-sdlc/cao/workflows/README.md, "Answer file delivery & the
+docs/workflows/planning.md, "Answer file delivery & the
 write-scope hook", for why Claude Code's own permissions.allow/deny rules do
 not apply here (CAO always launches workers with --dangerously-skip-permissions,
 which bypasses that layer but not PreToolUse hooks).
@@ -205,7 +205,7 @@ class WriteScopeHookTest(unittest.TestCase):
                 ".claude/hooks/restrict-write-scope.py",
                 ".claude/settings.json",
                 ".agentic-sdlc/policies/governance.md",
-                ".agentic-sdlc/records/PAY-DEMO-001/execution-manifest.json",
+                "sdlc-records/PAY-DEMO-001/execution-manifest.json",
                 ".agentic-sdlc/cao/profiles/implementer.md",
             ):
                 with self.subTest(path=path):

@@ -1,11 +1,11 @@
-# Planning Workflow 1 — CAO Python workflow (v1.5)
+# Planning Workflow 1 — CAO Python workflow (current v1.5)
 
 `dev_plan.py` is the local entry point for planning. Its implementation is in
-`../sdlc_workflows/planning.py`; shared execution support is in `../sdlc_workflows/runtime.py`.
+`../../.agentic-sdlc/cao/sdlc_workflows/planning.py`; shared execution support is in `../../.agentic-sdlc/cao/sdlc_workflows/runtime.py`.
 The installer builds a standalone CAO script from those modules. See the
-[modular source and deployment guide](../README.md) before editing or deploying workflows.
+[modular source and deployment guide](../build-and-install.md) before editing or deploying workflows.
 
-## v1.4 answer-file delivery (replaces v1.3 terminal-text stabilization)
+## Historical transport change in v1.4
 
 CAO 2.5.0 can transiently report a Claude Code worker as `COMPLETED` while the interactive TUI is still working, so every agent step still runs with:
 
@@ -34,7 +34,7 @@ No CAO source or installed package is modified.
 
 ## Answer file delivery & the write-scope hook
 
-This section is the authoritative writeup for a security-relevant design decision — keep it in sync with `../sdlc_workflows/runtime.py`'s module documentation and `_wait_for_answer_file`, which points back here.
+This section is the authoritative writeup for a security-relevant design decision — keep it in sync with `../../.agentic-sdlc/cao/sdlc_workflows/runtime.py`'s module documentation and `_wait_for_answer_file`, which points back here.
 
 **Why an agent writes at all.** These profiles were originally strictly read-only (`allowedTools: ["@builtin", "fs_read", "fs_list"]`). Delivering an answer through a file requires granting `fs_write`, which CAO maps to Claude Code's native `Edit`, `Write` and `NotebookEdit` tools as a whole category (`cli_agent_orchestrator/utils/tool_mapping.py`) — there is no CAO-level mechanism to scope `fs_write` to a single path.
 
@@ -53,7 +53,7 @@ This section is the authoritative writeup for a security-relevant design decisio
 
 ## Source adapters: `local_fixture` vs `jira_confluence_live`
 
-Retrieval is a deterministic Python function, never an agent — see `retrieve_sources()` in `../sdlc_workflows/planning.py`. Which adapter it dispatches to is chosen by the `source_adapter` input:
+Retrieval is a deterministic Python function, never an agent — see `retrieve_sources()` in `../../.agentic-sdlc/cao/sdlc_workflows/planning.py`. Which adapter it dispatches to is chosen by the `source_adapter` input:
 
 - **`local_fixture` (default)** — `retrieve_fixture_sources()` copies files named in `source_dir/context.json` verbatim. Deterministic, network-free; this is what every test and this repo's PAY-DEMO-001 example use.
 - **`jira_confluence_live`** — `retrieve_live_sources()` reads the *same* `context.json` shape but each entry names a remote id instead of a local file, and fetches it over real HTTP:
@@ -68,11 +68,11 @@ Retrieval is a deterministic Python function, never an agent — see `retrieve_s
 }
 ```
 
-`ticket.id` stays the workflow's internal `ticket_id` (drives `records/<ticket_id>/`, `runtime/<ticket_id>/`); `ticket.jira_key` is the real external Jira issue key, looked up separately so the two are never conflated. A manifest can list extra Confluence pages that aren't formally linked on the Jira ticket (e.g. an incident RCA, a related design doc) — this is deliberate: it lets a human curate context Jira itself doesn't capture, reviewably, before a run.
+`ticket.id` stays the workflow's internal `ticket_id` (drives `sdlc-records/<ticket_id>/`, `.agentic-sdlc/runtime/<ticket_id>/`); `ticket.jira_key` is the real external Jira issue key, looked up separately so the two are never conflated. A manifest can list extra Confluence pages that aren't formally linked on the Jira ticket (e.g. an incident RCA, a related design doc) — this is deliberate: it lets a human curate context Jira itself doesn't capture, reviewably, before a run.
 
 Both adapters write an identical `retrieval.json`/`raw_dir/sources/*` shape (`source_id`, `title`, `type`, `required`, `status`, `content_digest`, `path`), so nothing downstream — context-normalizer, `validate_planning_context`, the analyst/author/reviewer steps — needs to know or care which one ran.
 
-**Credentials are environment variables, never manifest fields**, so a per-ticket manifest can be safely committed under `records/<ticket>/` without leaking a token:
+**Credentials are environment variables, never manifest fields**, so a per-ticket manifest can be safely committed under `sdlc-records/<ticket>/` without leaking a token:
 
 | Env var | Purpose |
 |---|---|
@@ -83,7 +83,7 @@ Both adapters write an identical `retrieval.json`/`raw_dir/sources/*` shape (`so
 
 A missing env var raises `WorkflowContractError` immediately (fail fast, never a silent skip); an HTTP failure for one source marks *that* source `UNAVAILABLE` and lets `retrieval_blockers()`/the normal required-source-missing path handle it, same as the fixture adapter does for a missing local file.
 
-**Known, disclosed simplifications** (stdlib-only, no live Atlassian tenant available to verify against in this environment — see the module comment above `retrieve_live_sources()` in `../sdlc_workflows/planning.py`):
+**Known, disclosed simplifications** (stdlib-only, no live Atlassian tenant available to verify against in this environment — see the module comment above `retrieve_live_sources()` in `../../.agentic-sdlc/cao/sdlc_workflows/planning.py`):
 - Jira v3's ADF description format is flattened to plain text by `_adf_to_text()` (paragraphs/headings/list items joined with blank lines); this is not a full ADF renderer — tables, panels and inline formatting collapse to whatever plain text they carry.
 - Confluence storage-format XHTML is stripped to plain text by `_confluence_storage_to_text()` (stdlib `html.parser`, no markdown conversion) — structure is lost, content is kept.
 - Covered by `tests/test_dev_plan.py`'s `RetrieveLiveSourcesTest`/`AdfToTextTest`/`ConfluenceStorageToTextTest` against a fake local HTTP server (same technique as `tests/test_restrict_write_scope.py`'s `_FakeTerminalServer`), not against a real Jira/Confluence tenant. Treat the live HTTP calls themselves as unverified against production Atlassian until they have been.
@@ -137,7 +137,7 @@ cao workflow run sdlc_dev_plan \
   --run-id "$RUN_ID" \
   --input ticket_id=PAY-DEMO-001 \
   --input repository_root="$(pwd)" \
-  --input source_dir="$(pwd)/.agentic-sdlc/examples/PAY-DEMO-001" \
+  --input source_dir="$(pwd)/examples/PAY-DEMO-001" \
   --input baseline_sha="$BASELINE_SHA" \
   --input base_branch=main \
   --input max_review_rounds=3
@@ -182,7 +182,7 @@ Agent-output directories contain `.answer.json` (the file the agent itself wrote
 A successful planning run publishes:
 
 ```text
-.agentic-sdlc/records/<ticket>/
+sdlc-records/<ticket>/
     development-plan.md
     plan-review.json
     execution-manifest.json

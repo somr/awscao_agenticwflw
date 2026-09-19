@@ -20,6 +20,7 @@ from .errors import (
     WorkflowContractError,
 )
 from .artifacts import (
+    RECORDS_DIR,
     _read_json,
     _write_json,
     _write_text,
@@ -757,7 +758,7 @@ def main() -> None:
     normalized_dir = runtime_dir / "context" / "normalized"
     analysis_dir = runtime_dir / "analysis"
     planning_dir = runtime_dir / "planning"
-    records_dir = sdlc / "records" / ticket_id
+    records_dir = repo / RECORDS_DIR / ticket_id
 
     schema = sdlc / "schemas" / "planning-context.schema.json"
     context_contract = sdlc / "contracts" / "context-package.md"

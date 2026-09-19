@@ -16,7 +16,7 @@ class ApprovalHelperTest(unittest.TestCase):
     def test_approval_binds_to_exact_plan_hash(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
-            records = repo / ".agentic-sdlc" / "records" / "T-1"
+            records = repo / "sdlc-records" / "T-1"
             records.mkdir(parents=True)
             plan = records / "development-plan.md"
             plan.write_text("# Plan\n", encoding="utf-8")
@@ -40,7 +40,7 @@ class ApprovalHelperTest(unittest.TestCase):
     def test_modified_plan_is_refused(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
-            records = repo / ".agentic-sdlc" / "records" / "T-1"
+            records = repo / "sdlc-records" / "T-1"
             records.mkdir(parents=True)
             plan = records / "development-plan.md"
             plan.write_text("# Original\n", encoding="utf-8")
