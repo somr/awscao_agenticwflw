@@ -1,6 +1,9 @@
 # Planning Workflow 1 — CAO Python workflow (v1.5)
 
-`dev_plan.py` orchestrates the planning phase using deterministic macro-orchestration and effectively-read-only Claude Code specialists.
+`dev_plan.py` is the local entry point for planning. Its implementation is in
+`../sdlc_workflows/planning.py`; shared execution support is in `../sdlc_workflows/runtime.py`.
+The installer builds a standalone CAO script from those modules. See the
+[modular source and deployment guide](../README.md) before editing or deploying workflows.
 
 ## v1.4 answer-file delivery (replaces v1.3 terminal-text stabilization)
 
@@ -31,7 +34,7 @@ No CAO source or installed package is modified.
 
 ## Answer file delivery & the write-scope hook
 
-This section is the authoritative writeup for a security-relevant design decision — keep it in sync with `dev_plan.py`'s own module-level comment above `_wait_for_answer_file`, which points back here.
+This section is the authoritative writeup for a security-relevant design decision — keep it in sync with `../sdlc_workflows/runtime.py`'s module documentation and `_wait_for_answer_file`, which points back here.
 
 **Why an agent writes at all.** These profiles were originally strictly read-only (`allowedTools: ["@builtin", "fs_read", "fs_list"]`). Delivering an answer through a file requires granting `fs_write`, which CAO maps to Claude Code's native `Edit`, `Write` and `NotebookEdit` tools as a whole category (`cli_agent_orchestrator/utils/tool_mapping.py`) — there is no CAO-level mechanism to scope `fs_write` to a single path.
 
@@ -50,7 +53,7 @@ This section is the authoritative writeup for a security-relevant design decisio
 
 ## Source adapters: `local_fixture` vs `jira_confluence_live`
 
-Retrieval is a deterministic Python function, never an agent — see `retrieve_sources()` in `dev_plan.py`. Which adapter it dispatches to is chosen by the `source_adapter` input:
+Retrieval is a deterministic Python function, never an agent — see `retrieve_sources()` in `../sdlc_workflows/planning.py`. Which adapter it dispatches to is chosen by the `source_adapter` input:
 
 - **`local_fixture` (default)** — `retrieve_fixture_sources()` copies files named in `source_dir/context.json` verbatim. Deterministic, network-free; this is what every test and this repo's PAY-DEMO-001 example use.
 - **`jira_confluence_live`** — `retrieve_live_sources()` reads the *same* `context.json` shape but each entry names a remote id instead of a local file, and fetches it over real HTTP:
@@ -80,7 +83,7 @@ Both adapters write an identical `retrieval.json`/`raw_dir/sources/*` shape (`so
 
 A missing env var raises `WorkflowContractError` immediately (fail fast, never a silent skip); an HTTP failure for one source marks *that* source `UNAVAILABLE` and lets `retrieval_blockers()`/the normal required-source-missing path handle it, same as the fixture adapter does for a missing local file.
 
-**Known, disclosed simplifications** (stdlib-only, no live Atlassian tenant available to verify against in this environment — see the module comment above `retrieve_live_sources()` in `dev_plan.py`):
+**Known, disclosed simplifications** (stdlib-only, no live Atlassian tenant available to verify against in this environment — see the module comment above `retrieve_live_sources()` in `../sdlc_workflows/planning.py`):
 - Jira v3's ADF description format is flattened to plain text by `_adf_to_text()` (paragraphs/headings/list items joined with blank lines); this is not a full ADF renderer — tables, panels and inline formatting collapse to whatever plain text they carry.
 - Confluence storage-format XHTML is stripped to plain text by `_confluence_storage_to_text()` (stdlib `html.parser`, no markdown conversion) — structure is lost, content is kept.
 - Covered by `tests/test_dev_plan.py`'s `RetrieveLiveSourcesTest`/`AdfToTextTest`/`ConfluenceStorageToTextTest` against a fake local HTTP server (same technique as `tests/test_restrict_write_scope.py`'s `_FakeTerminalServer`), not against a real Jira/Confluence tenant. Treat the live HTTP calls themselves as unverified against production Atlassian until they have been.
@@ -111,7 +114,7 @@ Then, from the application repository root:
 .agentic-sdlc/cao/workflows/install.sh
 ```
 
-The installer stages the Python workflow inside CAO's permitted workflow directory before server-side validation because CAO intentionally rejects validation paths outside that directory. It installs under the name `sdlc_dev_plan`, not the source file's own name (`dev_plan.py`) — CAO's workflow/profile registry is one directory shared machine-wide across every project (`~/.aws/cli-agent-orchestrator/`), so an unprefixed, generically-named workflow could silently collide with another project's own install there. Every profile already used this same `sdlc_` prefix; workflows now do too. Run it as `cao workflow run sdlc_dev_plan`, not `dev_plan`.
+The installer bundles the modules into a self-contained Python workflow and stages it inside CAO's permitted workflow directory before server-side validation because CAO intentionally rejects validation paths outside that directory. It installs under the name `sdlc_dev_plan`, not the source file's own name (`dev_plan.py`) — CAO's workflow/profile registry is one directory shared machine-wide across every project (`~/.aws/cli-agent-orchestrator/`), so an unprefixed, generically-named workflow could silently collide with another project's own install there. Every profile already used this same `sdlc_` prefix; workflows now do too. Run it as `cao workflow run sdlc_dev_plan`, not `dev_plan`.
 
 Ensure the four profiles are installed:
 

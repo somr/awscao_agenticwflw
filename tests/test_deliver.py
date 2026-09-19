@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -28,10 +29,15 @@ stub.get_inputs = lambda: {}
 stub.step = lambda *args, **kwargs: None
 sys.modules.setdefault("cao_workflow", stub)
 
-spec = importlib.util.spec_from_file_location("deliver", WORKFLOW)
-assert spec and spec.loader
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+# Exercise the exact standalone artifact installed into CAO, not a second
+# compatibility implementation of the extracted helpers.
+sys.path.insert(0, str(ROOT / ".agentic-sdlc" / "cao"))
+from build_workflow import build_source
+if os.environ.get("SDLC_TEST_SOURCE") == "1":
+    mod = importlib.import_module("sdlc_workflows.delivery")
+else:
+    mod = types.ModuleType("deliver_bundle")
+    exec(compile(build_source("deliver"), "<bundled:deliver>", "exec"), mod.__dict__)
 
 
 def _run(args: list[str], cwd: Path) -> None:

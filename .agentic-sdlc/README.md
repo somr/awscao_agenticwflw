@@ -42,7 +42,9 @@ isolation and development-agent handoff.
 - `schemas/` — machine-readable Planning Context schema.
 - `templates/` — durable artifact templates.
 - `cao/profiles/` — repository-owned CAO agent profiles.
-- `cao/workflows/dev_plan.py` — Planning Workflow 1 Python orchestration.
+- `cao/workflows/` — local workflow entry points and installer commands.
+- `cao/sdlc_workflows/` — workflow implementations and shared execution modules.
+- `cao/build_workflow.py` — deterministic standalone CAO deployment builder; see [the deployment guide](cao/README.md).
 - `scripts/approve_plan.py` — deterministic human approval recorder.
 - `examples/` — synthetic Jira/Confluence fixtures.
 - `records/<ticket>/` — durable planning evidence intended for Git.

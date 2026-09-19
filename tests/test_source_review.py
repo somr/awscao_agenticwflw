@@ -17,9 +17,16 @@ stub.emit_output = lambda value: None
 stub.get_inputs = lambda: {}
 stub.step = lambda *args, **kwargs: None
 sys.modules.setdefault('cao_workflow', stub)
-spec = importlib.util.spec_from_file_location('source_review', ROOT / '.agentic-sdlc/cao/workflows/source_review.py')
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+# Exercise the exact standalone artifact installed into CAO, not a second
+# compatibility implementation of the extracted helpers.
+sys.path.insert(0, str(ROOT / ".agentic-sdlc" / "cao"))
+from build_workflow import build_source
+if os.environ.get("SDLC_TEST_SOURCE") == "1":
+    mod = importlib.import_module("sdlc_workflows.source_review")
+else:
+    mod = types.ModuleType("source_review_bundle")
+    exec(compile(build_source("source_review"), "<bundled:source_review>", "exec"), mod.__dict__)
+execution_error = importlib.import_module("sdlc_workflows.errors").IncompleteAgentExecutionError if os.environ.get("SDLC_TEST_SOURCE") == "1" else mod.IncompleteAgentExecutionError
 spec2 = importlib.util.spec_from_file_location('publish_source_review', ROOT / '.agentic-sdlc/scripts/publish_source_review.py')
 publisher = importlib.util.module_from_spec(spec2)
 spec2.loader.exec_module(publisher)
@@ -278,8 +285,8 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(emit.call_args.args[0]['coverage_status'], 'INCOMPLETE')
 
     def test_failed_agent_records_failure_not_clean_review(self):
-        with patch.dict(os.environ, {'CAO_WORKFLOW_RUN_ID': 'test-failure'}), patch.object(mod, 'get_inputs', return_value=self.inputs), patch.object(mod, 'run_agents', side_effect=mod.IncompleteAgentExecutionError('missing answer')):
-            with self.assertRaises(mod.IncompleteAgentExecutionError):
+        with patch.dict(os.environ, {'CAO_WORKFLOW_RUN_ID': 'test-failure'}), patch.object(mod, 'get_inputs', return_value=self.inputs), patch.object(mod, 'run_agents', side_effect=execution_error('missing answer')):
+            with self.assertRaisesRegex(execution_error, 'missing answer'):
                 mod.main()
         run = self.root / '.agentic-sdlc/runtime/source-review/test-failure'
         self.assertFalse((run / 'code-review.json').exists())

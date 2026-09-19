@@ -20,10 +20,15 @@ stub.get_inputs = lambda: {}
 stub.step = lambda *args, **kwargs: None
 sys.modules.setdefault("cao_workflow", stub)
 
-spec = importlib.util.spec_from_file_location("dev_plan", WORKFLOW)
-assert spec and spec.loader
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+# Exercise the exact standalone artifact installed into CAO, not a second
+# compatibility implementation of the extracted helpers.
+sys.path.insert(0, str(ROOT / ".agentic-sdlc" / "cao"))
+from build_workflow import build_source
+if os.environ.get("SDLC_TEST_SOURCE") == "1":
+    mod = importlib.import_module("sdlc_workflows.planning")
+else:
+    mod = types.ModuleType("dev_plan_bundle")
+    exec(compile(build_source("dev_plan"), "<bundled:dev_plan>", "exec"), mod.__dict__)
 
 
 def valid_context() -> dict:
@@ -109,8 +114,15 @@ class WorkflowHelpersTest(unittest.TestCase):
             retrieval = mod.retrieve_fixture_sources(source, raw, "T-1")
             self.assertEqual(mod.retrieval_blockers(retrieval), ["required source unavailable: CONF:1"])
 
+
+
+# The same lifecycle assertions run against the shared module and the installed bundle.
+runtime_mod = importlib.import_module("sdlc_workflows.runtime") if os.environ.get("SDLC_TEST_SOURCE") == "1" else mod
+
+
+class CommonRuntimeTest(unittest.TestCase):
     def test_json_fence_tolerance(self):
-        self.assertEqual(mod._parse_json_output('```json\n{"a": 1}\n```', "x"), {"a": 1})
+        self.assertEqual(runtime_mod._parse_json_output('```json\n{"a": 1}\n```', "x"), {"a": 1})
 
 
     def test_run_delivered_step_uses_answer_suffix_and_appends_instructions(self):
@@ -123,12 +135,12 @@ class WorkflowHelpersTest(unittest.TestCase):
             seen.update(kwargs)
             return "the answer"
 
-        original_run = mod._run_stabilized_step
-        mod._run_stabilized_step = fake_run
+        original_run = runtime_mod._run_stabilized_step
+        runtime_mod._run_stabilized_step = fake_run
         try:
             with tempfile.TemporaryDirectory() as temp:
                 evidence_dir = Path(temp) / "evidence"
-                result = mod._run_delivered_step(
+                result = runtime_mod._run_delivered_step(
                     agent="test-agent",
                     prompt="Write the analysis",
                     step_id="planning-analysis-v1",
@@ -141,7 +153,7 @@ class WorkflowHelpersTest(unittest.TestCase):
                 self.assertIn(str(seen["answer_path"]), seen["prompt"])
                 self.assertIn("OUTPUT DELIVERY", seen["prompt"])
         finally:
-            mod._run_stabilized_step = original_run
+            runtime_mod._run_stabilized_step = original_run
 
     def test_run_stabilized_step_keeps_terminal_alive_until_wrapper_cleanup(self):
         calls = {}
@@ -159,16 +171,16 @@ class WorkflowHelpersTest(unittest.TestCase):
         def fake_cleanup(*args, **kwargs):
             calls["cleanup"] = (args, kwargs)
 
-        original_step = mod.step
-        original_wait_for_answer_file = mod._wait_for_answer_file
-        original_cleanup = mod._cleanup_step_terminal
-        mod.step = fake_step
-        mod._wait_for_answer_file = fake_wait_for_answer_file
-        mod._cleanup_step_terminal = fake_cleanup
+        original_step = runtime_mod.step
+        original_wait_for_answer_file = runtime_mod._wait_for_answer_file
+        original_cleanup = runtime_mod._cleanup_step_terminal
+        runtime_mod.step = fake_step
+        runtime_mod._wait_for_answer_file = fake_wait_for_answer_file
+        runtime_mod._cleanup_step_terminal = fake_cleanup
         try:
             with tempfile.TemporaryDirectory() as temp:
                 answer_path = Path(temp) / "evidence" / "stable-step.answer.json"
-                result = mod._run_stabilized_step(
+                result = runtime_mod._run_stabilized_step(
                     agent="test-agent",
                     prompt="do it",
                     step_id="stable-step",
@@ -182,23 +194,23 @@ class WorkflowHelpersTest(unittest.TestCase):
             self.assertEqual(calls["wait_for_answer_file"]["answer_path"], answer_path)
             self.assertIn("cleanup", calls)
         finally:
-            mod.step = original_step
-            mod._wait_for_answer_file = original_wait_for_answer_file
-            mod._cleanup_step_terminal = original_cleanup
+            runtime_mod.step = original_step
+            runtime_mod._wait_for_answer_file = original_wait_for_answer_file
+            runtime_mod._cleanup_step_terminal = original_cleanup
 
     def test_run_stabilized_step_replay_reads_answer_file_from_disk(self):
         def fake_step(*args, **kwargs):
             return types.SimpleNamespace(output="stale terminal text", terminal_id="dead", replayed=True)
 
-        original_step = mod.step
-        mod.step = fake_step
+        original_step = runtime_mod.step
+        runtime_mod.step = fake_step
         try:
             with tempfile.TemporaryDirectory() as temp:
                 evidence_dir = Path(temp) / "evidence"
                 evidence_dir.mkdir()
                 answer_path = evidence_dir / "s1.answer.json"
                 answer_path.write_text('{"ok": true}', encoding="utf-8")
-                result = mod._run_stabilized_step(
+                result = runtime_mod._run_stabilized_step(
                     agent="test-agent",
                     prompt="do it",
                     step_id="s1",
@@ -208,19 +220,19 @@ class WorkflowHelpersTest(unittest.TestCase):
                 )
                 self.assertEqual(result, '{"ok": true}')
         finally:
-            mod.step = original_step
+            runtime_mod.step = original_step
 
     def test_run_stabilized_step_replay_without_answer_file_raises(self):
         def fake_step(*args, **kwargs):
             return types.SimpleNamespace(output="stale terminal text", terminal_id="dead", replayed=True)
 
-        original_step = mod.step
-        mod.step = fake_step
+        original_step = runtime_mod.step
+        runtime_mod.step = fake_step
         try:
             with tempfile.TemporaryDirectory() as temp:
                 evidence_dir = Path(temp) / "evidence"
-                with self.assertRaises(mod.IncompleteAgentExecutionError):
-                    mod._run_stabilized_step(
+                with self.assertRaises(runtime_mod.IncompleteAgentExecutionError):
+                    runtime_mod._run_stabilized_step(
                         agent="test-agent",
                         prompt="do it",
                         step_id="s1",
@@ -229,19 +241,19 @@ class WorkflowHelpersTest(unittest.TestCase):
                         answer_path=evidence_dir / "s1.answer.json",
                     )
         finally:
-            mod.step = original_step
+            runtime_mod.step = original_step
 
     def test_answer_file_delivery_instructions_embed_path_and_forbid_chat_json(self):
         path = Path("/tmp/evidence/s1.answer.json")
-        text = mod._answer_file_delivery_instructions(path)
+        text = runtime_mod._answer_file_delivery_instructions(path)
         self.assertIn(str(path), text)
         self.assertIn("Do not print the answer", text)
 
     def test_wait_for_answer_file_returns_content_once_stable(self):
-        original_status = mod._cao_terminal_status
-        original_wait = mod._wait
-        mod._cao_terminal_status = lambda terminal_id: "completed"
-        mod._wait = lambda seconds: None
+        original_status = runtime_mod._cao_terminal_status
+        original_wait = runtime_mod._wait
+        runtime_mod._cao_terminal_status = lambda terminal_id: "completed"
+        runtime_mod._wait = lambda seconds: None
         try:
             with tempfile.TemporaryDirectory() as temp:
                 evidence_dir = Path(temp) / "evidence"
@@ -249,7 +261,7 @@ class WorkflowHelpersTest(unittest.TestCase):
                 answer_path = evidence_dir / "s1.answer.json"
                 answer_path.write_text('{"ok": true}', encoding="utf-8")
 
-                result = mod._wait_for_answer_file(
+                result = runtime_mod._wait_for_answer_file(
                     terminal_id="term-1",
                     answer_path=answer_path,
                     step_id="s1",
@@ -260,40 +272,40 @@ class WorkflowHelpersTest(unittest.TestCase):
                 self.assertTrue(evidence["stabilized"])
                 self.assertEqual(len(evidence["polls"]), 2)
         finally:
-            mod._cao_terminal_status = original_status
-            mod._wait = original_wait
+            runtime_mod._cao_terminal_status = original_status
+            runtime_mod._wait = original_wait
 
     def test_wait_for_answer_file_raises_on_terminal_error_status(self):
-        original_status = mod._cao_terminal_status
-        original_wait = mod._wait
-        mod._cao_terminal_status = lambda terminal_id: "error"
-        mod._wait = lambda seconds: None
+        original_status = runtime_mod._cao_terminal_status
+        original_wait = runtime_mod._wait
+        runtime_mod._cao_terminal_status = lambda terminal_id: "error"
+        runtime_mod._wait = lambda seconds: None
         try:
             with tempfile.TemporaryDirectory() as temp:
                 evidence_dir = Path(temp) / "evidence"
-                with self.assertRaises(mod.IncompleteAgentExecutionError):
-                    mod._wait_for_answer_file(
+                with self.assertRaises(runtime_mod.IncompleteAgentExecutionError):
+                    runtime_mod._wait_for_answer_file(
                         terminal_id="term-1",
                         answer_path=evidence_dir / "s1.answer.json",
                         step_id="s1",
                         evidence_dir=evidence_dir,
                     )
         finally:
-            mod._cao_terminal_status = original_status
-            mod._wait = original_wait
+            runtime_mod._cao_terminal_status = original_status
+            runtime_mod._wait = original_wait
 
     def test_wait_for_answer_file_times_out_if_never_written(self):
-        original_status = mod._cao_terminal_status
-        original_wait = mod._wait
-        original_max_polls = mod.COMPLETION_MAX_POLLS
-        mod._cao_terminal_status = lambda terminal_id: "completed"
-        mod._wait = lambda seconds: None
-        mod.COMPLETION_MAX_POLLS = 2
+        original_status = runtime_mod._cao_terminal_status
+        original_wait = runtime_mod._wait
+        original_max_polls = runtime_mod.COMPLETION_MAX_POLLS
+        runtime_mod._cao_terminal_status = lambda terminal_id: "completed"
+        runtime_mod._wait = lambda seconds: None
+        runtime_mod.COMPLETION_MAX_POLLS = 2
         try:
             with tempfile.TemporaryDirectory() as temp:
                 evidence_dir = Path(temp) / "evidence"
-                with self.assertRaises(mod.IncompleteAgentExecutionError):
-                    mod._wait_for_answer_file(
+                with self.assertRaises(runtime_mod.IncompleteAgentExecutionError):
+                    runtime_mod._wait_for_answer_file(
                         terminal_id="term-1",
                         answer_path=evidence_dir / "s1.answer.json",
                         step_id="s1",
@@ -302,9 +314,9 @@ class WorkflowHelpersTest(unittest.TestCase):
                 evidence = json.loads((evidence_dir / "s1.stabilization.json").read_text())
                 self.assertFalse(evidence["stabilized"])
         finally:
-            mod._cao_terminal_status = original_status
-            mod._wait = original_wait
-            mod.COMPLETION_MAX_POLLS = original_max_polls
+            runtime_mod._cao_terminal_status = original_status
+            runtime_mod._wait = original_wait
+            runtime_mod.COMPLETION_MAX_POLLS = original_max_polls
 
     def test_json_contract_step_uses_per_attempt_answer_path_and_delivery_instructions(self):
         seen = []
@@ -314,11 +326,11 @@ class WorkflowHelpersTest(unittest.TestCase):
             seen.append(kwargs)
             return next(outputs)
 
-        original_run = mod._run_stabilized_step
-        mod._run_stabilized_step = fake_run
+        original_run = runtime_mod._run_stabilized_step
+        runtime_mod._run_stabilized_step = fake_run
         try:
             with tempfile.TemporaryDirectory() as temp:
-                mod._run_json_contract_step(
+                runtime_mod._run_json_contract_step(
                     agent="test-agent",
                     prompt="Return JSON",
                     label="test",
@@ -334,7 +346,7 @@ class WorkflowHelpersTest(unittest.TestCase):
             self.assertIn(str(seen[0]["answer_path"]), seen[0]["prompt"])
             self.assertIn("OUTPUT DELIVERY", seen[0]["prompt"])
         finally:
-            mod._run_stabilized_step = original_run
+            runtime_mod._run_stabilized_step = original_run
 
     def test_json_contract_step_repairs_malformed_completed_response_once(self):
         calls = []
@@ -347,11 +359,11 @@ class WorkflowHelpersTest(unittest.TestCase):
             calls.append(kwargs["step_id"])
             return next(outputs)
 
-        original_run = mod._run_stabilized_step
-        mod._run_stabilized_step = fake_run
+        original_run = runtime_mod._run_stabilized_step
+        runtime_mod._run_stabilized_step = fake_run
         try:
             with tempfile.TemporaryDirectory() as temp:
-                value = mod._run_json_contract_step(
+                value = runtime_mod._run_json_contract_step(
                     agent="test-agent",
                     prompt="Return JSON",
                     label="test",
@@ -365,7 +377,7 @@ class WorkflowHelpersTest(unittest.TestCase):
                 self.assertTrue((Path(temp) / "evidence" / "json-test.raw.txt").is_file())
                 self.assertTrue((Path(temp) / "evidence" / "json-test-repair-1.raw.txt").is_file())
         finally:
-            mod._run_stabilized_step = original_run
+            runtime_mod._run_stabilized_step = original_run
 
     def test_json_contract_step_repairs_validator_failure(self):
         calls = []
@@ -380,14 +392,14 @@ class WorkflowHelpersTest(unittest.TestCase):
 
         def validator(value):
             if value.get("foo") != "right":
-                raise mod.WorkflowContractError("foo must be right")
+                raise runtime_mod.WorkflowContractError("foo must be right")
             return value
 
-        original_run = mod._run_stabilized_step
-        mod._run_stabilized_step = fake_run
+        original_run = runtime_mod._run_stabilized_step
+        runtime_mod._run_stabilized_step = fake_run
         try:
             with tempfile.TemporaryDirectory() as temp:
-                value = mod._run_json_contract_step(
+                value = runtime_mod._run_json_contract_step(
                     agent="test-agent",
                     prompt="Return JSON",
                     label="test",
@@ -399,21 +411,21 @@ class WorkflowHelpersTest(unittest.TestCase):
                 self.assertEqual(value, {"foo": "right"})
                 self.assertEqual(calls, ["shape-test", "shape-test-repair-1"])
         finally:
-            mod._run_stabilized_step = original_run
+            runtime_mod._run_stabilized_step = original_run
 
     def test_incomplete_execution_never_enters_json_repair(self):
         calls = []
 
         def fake_run(**kwargs):
             calls.append(kwargs["step_id"])
-            raise mod.IncompleteAgentExecutionError("worker still processing")
+            raise runtime_mod.IncompleteAgentExecutionError("worker still processing")
 
-        original_run = mod._run_stabilized_step
-        mod._run_stabilized_step = fake_run
+        original_run = runtime_mod._run_stabilized_step
+        runtime_mod._run_stabilized_step = fake_run
         try:
             with tempfile.TemporaryDirectory() as temp:
-                with self.assertRaises(mod.IncompleteAgentExecutionError):
-                    mod._run_json_contract_step(
+                with self.assertRaises(runtime_mod.IncompleteAgentExecutionError):
+                    runtime_mod._run_json_contract_step(
                         agent="test-agent",
                         prompt="Return JSON",
                         label="test",
@@ -423,7 +435,7 @@ class WorkflowHelpersTest(unittest.TestCase):
                     )
                 self.assertEqual(calls, ["json-test"])
         finally:
-            mod._run_stabilized_step = original_run
+            runtime_mod._run_stabilized_step = original_run
 
 
 class _FakeAtlassianServer:

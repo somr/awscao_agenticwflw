@@ -8,6 +8,10 @@ It reads source; it does not fix code, execute tests, assess requirements compli
 check deployment readiness, approve a PR or merge it. GitHub publication is a separate,
 explicit operation. The default workflow writes local artifacts only.
 
+See the [modular source and deployment guide](../README.md) for shared modules,
+bundling, validation-only commands and source/bundle tests. Do not install the local
+`workflows/source_review.py` entry point by copying it directly.
+
 ## Agent stages
 
 ```mermaid
@@ -102,7 +106,8 @@ From this branch/worktree's root:
 bash .agentic-sdlc/cao/workflows/install_source_review.sh "$PWD"
 ```
 
-The installer validates and adds only:
+The installer builds `sdlc_workflows/source_review.py` and its shared dependencies
+into a standalone artifact, then validates and adds only:
 
 - `~/.aws/cli-agent-orchestrator/workflows/source_review.py`
 - `sdlc_source_mapper`, `sdlc_source_correctness`, `sdlc_source_security`,

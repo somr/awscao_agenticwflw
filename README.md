@@ -2,6 +2,9 @@
 > validate source findings, and route them to automatic fixing or human handling.
 > [Installation, usage, routing and development-agent handoff](.agentic-sdlc/cao/workflows/source-review.md).
 
+> **Shared workflow implementation:** All three workflows now use common Python modules,
+> bundled into standalone scripts at installation. [Development and deployment guide](.agentic-sdlc/cao/README.md).
+
 # Agentic SDLC — Planning Workflow 1 v1.4
 
 ## What changed in v1.4
@@ -10,7 +13,7 @@ v1.3 added a workflow-local workaround for a Claude Code completion race observe
 
 **Live testing against a running `cao-server` showed that text-parsing approach was fundamentally unreliable** — not just for the original race, but for three separate, independently reproducible failures (Claude Code's post-completion ghost-text suggestion, CAO's `mode=last` flagging *any* idle prompt as `"[NO RESPONSE"`, and `mode=full` being an un-renderable raw cursor-addressed byte stream). v1.4 replaces terminal-text parsing entirely: **each agent now writes its final answer to a file**, and the workflow polls for that file plus the CAO-reported terminal *status* (not its screen text).
 
-This required granting the profiles a scoped write capability (`fs_write`), which is a security-relevant change given these agents process untrusted external content (Jira/Confluence text). **The full rationale, the write-scope enforcement mechanism (a `PreToolUse` hook, not Claude Code's permission rules — which are bypassed for these workers), and what not to change without preserving it are documented in `.agentic-sdlc/cao/workflows/README.md` under "Answer file delivery & the write-scope hook." Read that section before touching profile tool permissions, `.claude/settings.json`, or the delivery/stabilization code in `dev_plan.py`.**
+This required granting the profiles a scoped write capability (`fs_write`), which is a security-relevant change given these agents process untrusted external content (Jira/Confluence text). **The full rationale, the write-scope enforcement mechanism (a `PreToolUse` hook, not Claude Code's permission rules — which are bypassed for these workers), and what not to change without preserving it are documented in `.agentic-sdlc/cao/workflows/README.md` under "Answer file delivery & the write-scope hook." Read that section before touching profile tool permissions, `.claude/settings.json`, or the delivery/stabilization code in `cao/sdlc_workflows/runtime.py`.**
 
 v1.3's lifecycle (worker kept alive, polled, terminal-text stabilized) is unchanged in shape but polls a file instead of screen text:
 
@@ -95,7 +98,7 @@ From the application repository root in another terminal:
 .agentic-sdlc/cao/workflows/install.sh
 ```
 
-The repository copy remains canonical. The installer syntax-checks it locally, stages it inside CAO's permitted workflow directory, validates it through the running server, and atomically installs it as:
+The repository modules remain canonical. The installer builds a standalone bundle, stages it inside CAO's permitted workflow directory, validates it through the running server, and atomically installs it as:
 
 ```text
 ~/.aws/cli-agent-orchestrator/workflows/sdlc_dev_plan.py
