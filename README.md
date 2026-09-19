@@ -1,3 +1,7 @@
+> **Workflow 3 — source code review:** Review an existing GitHub PR, independently
+> validate source findings, and route them to automatic fixing or human handling.
+> [Installation, usage, routing and development-agent handoff](.agentic-sdlc/cao/workflows/source-review.md).
+
 # Agentic SDLC — Planning Workflow 1 v1.4
 
 ## What changed in v1.4
