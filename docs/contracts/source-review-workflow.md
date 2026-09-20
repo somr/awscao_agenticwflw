@@ -39,4 +39,4 @@ Automatic eligibility permits a bounded attempt; the development workflow owns f
 verification and escalation. `HUMAN_REQUIRED` findings remain human work. New commits
 require new review runs. Cross-run ID matching is best-effort; absence is not resolution.
 
-See [installation and usage](../cao/workflows/source-review.md).
+See [installation and usage](../workflows/source-review.md).

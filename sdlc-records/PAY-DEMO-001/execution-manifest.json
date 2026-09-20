@@ -1,0 +1,26 @@
+{
+  "base_branch": "main",
+  "context_versions": 1,
+  "guidance_sha256": "d5fbae0283d1b573a3a6f87a0bb10938fa85059d2f02fb24a5269840b9144af7",
+  "plan_path": "sdlc-records/PAY-DEMO-001/development-plan.md",
+  "plan_sha256": "4cdc24a4e52c54f0ef448c47d43a76ca8c414a5c16cbcec04053908c91453f45",
+  "planning_context_sha256": "809299f06cad507d62571a07a1d073f394093683a3d2d1ed437e4a1677d2d65a",
+  "planning_workflow": "sdlc_dev_plan",
+  "planning_workflow_version": "1.3",
+  "provider": "claude_code",
+  "repository_baseline_sha": "a806a98e5a4b024ef5000d29a3458f7c219bc068",
+  "repository_root": "/home/dad/AIProjects/awscao_learning",
+  "resumed_from": {
+    "candidate_dir": "sdlc-records/PAY-DEMO-001/candidates/plan-PAY-DEMO-001-21",
+    "candidate_manifest_sha256": "01cec46cccaf2d7d70110ae90e17ec008f0fd1f0956703d0c9ad295c53ef6737",
+    "prior_guidance_sha256": null,
+    "prior_review_rounds": 1,
+    "run_id": "plan-PAY-DEMO-001-21"
+  },
+  "review_rounds": 1,
+  "schema_version": "1.0",
+  "state": "AWAITING_HUMAN_APPROVAL",
+  "ticket_id": "PAY-DEMO-001",
+  "total_review_rounds": 2,
+  "workflow_run_id": "plan-PAY-DEMO-001-22"
+}

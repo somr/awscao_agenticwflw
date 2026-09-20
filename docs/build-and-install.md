@@ -162,4 +162,4 @@ JSON repair and plan revision, digest-bound approval, delivery verification repa
 automatic remediation, protected findings, re-review and human handoff.
 
 A live source-review fixture additionally exercises the real CAO server and provider.
-See the [refactor validation record](modularity-verification.md) for results and limits.
+See the [refactor validation record](verification/modularity-verification.md) for results and limits.

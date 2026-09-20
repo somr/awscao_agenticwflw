@@ -17,6 +17,7 @@ from .errors import (
     WorkflowContractError,
 )
 from .artifacts import (
+    RECORDS_DIR,
     _read_json,
     _write_json,
     _write_text,
@@ -466,7 +467,7 @@ def render_human_review_brief(
     verification: dict[str, Any],
     convergence_limit_reached: bool,
 ) -> str:
-    """Deterministic Python rendering of templates/human-review-brief.md from
+    """Deterministic Python rendering of the human-review-brief template from
     canonical JSON — same pattern as render_planning_context in dev_plan.py:
     Claude never authors this document, it only produces the structured data
     Python renders from."""
@@ -599,7 +600,7 @@ def main() -> None:
 
     run_id = _safe_component(os.environ.get("CAO_WORKFLOW_RUN_ID", "unknown-run"), "CAO_WORKFLOW_RUN_ID")
     sdlc = repo / ".agentic-sdlc"
-    records_dir = sdlc / "records" / ticket_id
+    records_dir = repo / RECORDS_DIR / ticket_id
     runtime_dir = sdlc / "runtime" / ticket_id / run_id
     implementing_dir = runtime_dir / "implementation"
 

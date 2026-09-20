@@ -1,11 +1,11 @@
-# Planning Workflow 1 — CAO Python workflow (v1.5)
+# Planning Workflow 1 — CAO Python workflow (current v1.5)
 
 `dev_plan.py` is the local entry point for planning. Its implementation is in
-`../sdlc_workflows/planning.py`; shared execution support is in `../sdlc_workflows/runtime.py`.
+`../../.agentic-sdlc/cao/sdlc_workflows/planning.py`; shared execution support is in `../../.agentic-sdlc/cao/sdlc_workflows/runtime.py`.
 The installer builds a standalone CAO script from those modules. See the
-[modular source and deployment guide](../README.md) before editing or deploying workflows.
+[modular source and deployment guide](../build-and-install.md) before editing or deploying workflows.
 
-## v1.4 answer-file delivery (replaces v1.3 terminal-text stabilization)
+## Historical transport change in v1.4
 
 CAO 2.5.0 can transiently report a Claude Code worker as `COMPLETED` while the interactive TUI is still working, so every agent step still runs with:
 
@@ -34,7 +34,7 @@ No CAO source or installed package is modified.
 
 ## Answer file delivery & the write-scope hook
 
-This section is the authoritative writeup for a security-relevant design decision — keep it in sync with `../sdlc_workflows/runtime.py`'s module documentation and `_wait_for_answer_file`, which points back here.
+This section is the authoritative writeup for a security-relevant design decision — keep it in sync with `../../.agentic-sdlc/cao/sdlc_workflows/runtime.py`'s module documentation and `_wait_for_answer_file`, which points back here.
 
 **Why an agent writes at all.** These profiles were originally strictly read-only (`allowedTools: ["@builtin", "fs_read", "fs_list"]`). Delivering an answer through a file requires granting `fs_write`, which CAO maps to Claude Code's native `Edit`, `Write` and `NotebookEdit` tools as a whole category (`cli_agent_orchestrator/utils/tool_mapping.py`) — there is no CAO-level mechanism to scope `fs_write` to a single path.
 
@@ -53,7 +53,7 @@ This section is the authoritative writeup for a security-relevant design decisio
 
 ## Source adapters: `local_fixture` vs `jira_confluence_live`
 
-Retrieval is a deterministic Python function, never an agent — see `retrieve_sources()` in `../sdlc_workflows/planning.py`. Which adapter it dispatches to is chosen by the `source_adapter` input:
+Retrieval is a deterministic Python function, never an agent — see `retrieve_sources()` in `../../.agentic-sdlc/cao/sdlc_workflows/planning.py`. Which adapter it dispatches to is chosen by the `source_adapter` input:
 
 - **`local_fixture` (default)** — `retrieve_fixture_sources()` copies files named in `source_dir/context.json` verbatim. Deterministic, network-free; this is what every test and this repo's PAY-DEMO-001 example use.
 - **`jira_confluence_live`** — `retrieve_live_sources()` reads the *same* `context.json` shape but each entry names a remote id instead of a local file, and fetches it over real HTTP:
@@ -68,11 +68,11 @@ Retrieval is a deterministic Python function, never an agent — see `retrieve_s
 }
 ```
 
-`ticket.id` stays the workflow's internal `ticket_id` (drives `records/<ticket_id>/`, `runtime/<ticket_id>/`); `ticket.jira_key` is the real external Jira issue key, looked up separately so the two are never conflated. A manifest can list extra Confluence pages that aren't formally linked on the Jira ticket (e.g. an incident RCA, a related design doc) — this is deliberate: it lets a human curate context Jira itself doesn't capture, reviewably, before a run.
+`ticket.id` stays the workflow's internal `ticket_id` (drives `sdlc-records/<ticket_id>/`, `.agentic-sdlc/runtime/<ticket_id>/`); `ticket.jira_key` is the real external Jira issue key, looked up separately so the two are never conflated. A manifest can list extra Confluence pages that aren't formally linked on the Jira ticket (e.g. an incident RCA, a related design doc) — this is deliberate: it lets a human curate context Jira itself doesn't capture, reviewably, before a run.
 
 Both adapters write an identical `retrieval.json`/`raw_dir/sources/*` shape (`source_id`, `title`, `type`, `required`, `status`, `content_digest`, `path`), so nothing downstream — context-normalizer, `validate_planning_context`, the analyst/author/reviewer steps — needs to know or care which one ran.
 
-**Credentials are environment variables, never manifest fields**, so a per-ticket manifest can be safely committed under `records/<ticket>/` without leaking a token:
+**Credentials are environment variables, never manifest fields**, so a per-ticket manifest can be safely committed under `sdlc-records/<ticket>/` without leaking a token:
 
 | Env var | Purpose |
 |---|---|
@@ -83,7 +83,7 @@ Both adapters write an identical `retrieval.json`/`raw_dir/sources/*` shape (`so
 
 A missing env var raises `WorkflowContractError` immediately (fail fast, never a silent skip); an HTTP failure for one source marks *that* source `UNAVAILABLE` and lets `retrieval_blockers()`/the normal required-source-missing path handle it, same as the fixture adapter does for a missing local file.
 
-**Known, disclosed simplifications** (stdlib-only, no live Atlassian tenant available to verify against in this environment — see the module comment above `retrieve_live_sources()` in `../sdlc_workflows/planning.py`):
+**Known, disclosed simplifications** (stdlib-only, no live Atlassian tenant available to verify against in this environment — see the module comment above `retrieve_live_sources()` in `../../.agentic-sdlc/cao/sdlc_workflows/planning.py`):
 - Jira v3's ADF description format is flattened to plain text by `_adf_to_text()` (paragraphs/headings/list items joined with blank lines); this is not a full ADF renderer — tables, panels and inline formatting collapse to whatever plain text they carry.
 - Confluence storage-format XHTML is stripped to plain text by `_confluence_storage_to_text()` (stdlib `html.parser`, no markdown conversion) — structure is lost, content is kept.
 - Covered by `tests/test_dev_plan.py`'s `RetrieveLiveSourcesTest`/`AdfToTextTest`/`ConfluenceStorageToTextTest` against a fake local HTTP server (same technique as `tests/test_restrict_write_scope.py`'s `_FakeTerminalServer`), not against a real Jira/Confluence tenant. Treat the live HTTP calls themselves as unverified against production Atlassian until they have been.
@@ -96,7 +96,9 @@ A missing env var raises `WorkflowContractError` immediately (fail fast, never a
 - `baseline_sha` — Git commit SHA that the human is asking the workflow to plan against.
 - `base_branch` — defaults to `main`.
 - `source_adapter` — `local_fixture` (default) or `jira_confluence_live`; see above.
-- `max_review_rounds` — defaults to 3; valid range 1–10.
+- `max_review_rounds` — defaults to 3; valid range 1–10. It is a cap: the loop stops at the first `PASS`.
+- `resume_from` — optional candidate directory for a warm start; see "Warm start" below.
+- `guidance_file` — optional path (absolute or relative to `repository_root`) to developer guidance; see "Developer guidance" below.
 
 `baseline_sha` remains an explicit workflow input so CAO replay cannot silently shift the repository planning baseline.
 
@@ -137,11 +139,13 @@ cao workflow run sdlc_dev_plan \
   --run-id "$RUN_ID" \
   --input ticket_id=PAY-DEMO-001 \
   --input repository_root="$(pwd)" \
-  --input source_dir="$(pwd)/.agentic-sdlc/examples/PAY-DEMO-001" \
+  --input source_dir="$(pwd)/examples/PAY-DEMO-001" \
   --input baseline_sha="$BASELINE_SHA" \
   --input base_branch=main \
   --input max_review_rounds=3
 ```
+
+Use `--wait --json` to see the workflow's final output (including the blockers of a run that needs a human). The default follow mode prints only the run id and state, and CAO does not retain the output afterwards.
 
 Useful run commands:
 
@@ -182,10 +186,75 @@ Agent-output directories contain `.answer.json` (the file the agent itself wrote
 A successful planning run publishes:
 
 ```text
-.agentic-sdlc/records/<ticket>/
+sdlc-records/<ticket>/
     development-plan.md
     plan-review.json
     execution-manifest.json
+    plan-guidance.md          only when guidance_file was supplied
 ```
 
-The business outcome is `AWAITING_HUMAN_APPROVAL`; the workflow itself never approves the plan.
+The business outcome is `AWAITING_HUMAN_APPROVAL`; the workflow itself never approves the plan. Only a plan whose independent review returned `PASS` is published. `approve_plan.py` verifies the plan hash and, when present, the guidance digest, and records both in the approval.
+
+## Reviewer history
+
+The reviewer is not stateless across rounds. From the second review of a plan onward it receives the earlier reviews (`r1`, `r2`, ...) and must account, in `prior_findings`, for every blocking finding of the most recent previous review, using refs `r<index>:<finding id>` (ids such as `PLAN-001` repeat across reviews). Statuses are `RESOLVED`, `RESOLVED_BY_GUIDANCE` (only with developer guidance), `UNRESOLVED` and `NOT_APPLICABLE`. The workflow checks this deterministically: every listed ref exactly once, no unknown refs, and `PASS` is refused while any prior finding is `UNRESOLVED`. A response that fails the check gets the usual single repair turn. The reviewer stays independent: it re-verifies each finding and may raise new evidence-based ones.
+
+## When planning does not converge
+
+If the independent review does not return `PASS`, nothing approvable is published. The run still ends `completed` in CAO, with outcome `AWAITING_HUMAN_CLARIFICATION`, and leaves a durable snapshot:
+
+```text
+sdlc-records/<ticket>/candidates/<run-id>/
+    candidate-manifest.json   state NOT_CONVERGED, stop cause, digests of every file, sources_sha256, guidance_sha256
+    human-needed.json         blockers, the blocking findings (id, impact, section, required action), next steps
+    candidate-plan.md         last plan (absent when no plan was written yet)
+    reviews/<k>-review-r<N>-c<V>.json   k = position in the review history; matches the refs r<k>:<id>
+    planning-context.json, planning-analysis.md, sources.json
+    guidance.md               the guidance used, if any
+```
+
+Stop causes: `review_convergence_limit_reached`, `plan_review_requires_human_decision`, `renormalized_context_not_ready`, `context_not_ready`. A candidate cannot be approved or delivered: `approve_plan.py` and the delivery workflow read only `sdlc-records/<ticket>/development-plan.md`.
+
+What the developer can do: read `human-needed.json`, then either fix the blocker at its source, raise `max_review_rounds`, or record decisions as developer guidance and start a new run (below). The same run id cannot be reused.
+
+## Warm start
+
+A non-converged candidate can be continued instead of re-running everything:
+
+```bash
+cao workflow run sdlc_dev_plan --wait --json --run-id plan-PAY-DEMO-001-22 \
+  --input ticket_id=PAY-DEMO-001 --input repository_root="$(pwd)" \
+  --input source_dir="$(pwd)/examples/PAY-DEMO-001" --input baseline_sha="$BASELINE_SHA" \
+  --input resume_from="$(pwd)/sdlc-records/PAY-DEMO-001/candidates/<run-id>" \
+  --input guidance_file=sdlc-records/PAY-DEMO-001/guidance.md
+```
+
+The run skips normalization, validation and repository analysis (it reuses the candidate's), starts with a revision round from the candidate's last plan and reviews, then runs the normal review loop with its own `max_review_rounds` budget. The reviewer receives the candidate's reviews as history. The published `execution-manifest.json` records `resumed_from` (candidate run id, the SHA-256 of its manifest, prior review count, prior guidance digest) and `total_review_rounds`.
+
+It fails closed, before any agent runs, and the developer must start a cold run instead when any of these is true:
+
+- `resume_from` is not a `NOT_CONVERGED` candidate directory of this ticket, or a recorded file is missing, unsafe or modified since it was written;
+- the stop cause is not `review_convergence_limit_reached` or `plan_review_requires_human_decision` (a context that was never ready needs a cold run);
+- `baseline_sha` differs from the candidate's (its repository analysis would be stale) or the freshly retrieved sources differ (its context would be stale);
+- the candidate stopped for a human decision and `guidance_file` is missing or unchanged since the candidate.
+
+For a round-limit stop, no guidance is required: it can simply continue with a new round budget.
+
+## Developer guidance
+
+A re-run alone gives no guarantee of a different outcome. `guidance_file` lets the developer give the planners information they lacked:
+
+```bash
+cao workflow run sdlc_dev_plan --wait --json --run-id plan-PAY-DEMO-001-21 \
+  --input ticket_id=PAY-DEMO-001 --input repository_root="$(pwd)" \
+  --input source_dir="$(pwd)/examples/PAY-DEMO-001" --input baseline_sha="$BASELINE_SHA" \
+  --input guidance_file=sdlc-records/PAY-DEMO-001/guidance.md
+```
+
+Use [the template](../templates/developer-guidance.md). Rules:
+
+- The file must be a non-empty UTF-8 regular file of at most 64 KiB, resolved inside `repository_root` (symlinks that leave it are refused) and outside `.agentic-sdlc/runtime/`.
+- It reaches the Planning Analyst, Plan Author and Plan Reviewer, not the Context Normalizer, so normalized requirements stay source-faithful. Each run works on a frozen copy (`runtime/<ticket>/<run-id>/guidance/developer-guidance.md`).
+- **Authority.** Guidance may resolve ambiguity, choose between options the sources allow, narrow scope or constrain the design. It cannot relax a source requirement or the governance policy: the reviewer reports a conflict as `HUMAN_DECISION_REQUIRED`, so the source gets corrected. The plan cites each applied item.
+- **Trust.** Guidance is trusted because it is human-authored and stored where no agent can write (the write-scope hook denies `sdlc-records/`, and the runtime directory is refused as a location). Its SHA-256 is recorded in `execution-manifest.json` and in any candidate manifest, and the exact file is published as `plan-guidance.md`, so human approval covers it (governance invariant 16).
+- Guidance never approves anything. A `PASS` review is required (invariant 17) and a human still runs `approve_plan.py`.

@@ -16,6 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# Durable records live outside .agentic-sdlc/. Keep in sync with sdlc_workflows/artifacts.py.
+RECORDS_DIR = "sdlc-records"
+
 
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -45,7 +48,7 @@ def main() -> int:
     args = parser.parse_args()
 
     repo = Path(args.repository_root).resolve()
-    records = repo / ".agentic-sdlc" / "records" / args.ticket_id
+    records = repo / RECORDS_DIR / args.ticket_id
     manifest_path = records / "delivery-manifest.json"
     approval_path = records / "pr-approval-record.json"
     if not manifest_path.is_file():

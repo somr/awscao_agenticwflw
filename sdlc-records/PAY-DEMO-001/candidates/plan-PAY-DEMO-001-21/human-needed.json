@@ -1,0 +1,28 @@
+{
+  "blockers": [
+    "PLAN-001: The plan says any exception from record_if_new other than sqlite3.IntegrityError propagates (FR-4), and it leaves record_if_new unchanged, so False means duplicate. But record_if_new maps every sqlite3.IntegrityError to False, and the table has payment_id TEXT NOT NULL as well as the PRIMARY KEY. A callback with a null payment_id (CallbackController does body[\"payment_id\"] with no validation) raises a NOT NULL IntegrityError. After the change the service would log it as 'duplicate callback ignored', skip fulfilment and return the normal ok response. At baseline the same input reaches fulfil(). This is a persistence write failing for a reason other than a duplicate, which FR-4 says must not be treated as a duplicate. It would also pollute the AC-3 signal. T5(c) only tests a non-IntegrityError sqlite3 error, so the gap is untested. The Python runtime appears to be 3.10 (the __pycache__ files are cpython-310), where sqlite3.Error.sqlite_errorcode is not available. Any discrimination therefore has to be designed deliberately.",
+    "PLAN-002: The plan says 'Existing databases and existing rows remain valid' and 'no migration is needed'. It also says pre-change rows are treated as already processed. At baseline the claim row is inserted before fulfil() and is never released. Any existing row whose fulfilment had actually failed would previously be re-fulfilled on a provider retry. After the change that retry becomes a duplicate and is permanently suppressed. The plan does not analyse this population of pre-existing rows. It only mentions the mixed old/new rolling-deployment case.",
+    "PLAN-003: Several verification details are imprecise. (a) T6 says 'every response is identical', but at PaymentService level ProcessingResult.fulfilled is True for the winner and False for duplicates. Only the CallbackController dict is identical, so T6 should assert at controller level. (b) The C-3 grep guard `grep -nE \"UPDATE|status\" repository.py` is case-sensitive and would false-fail if T1's new docstring mentions 'status' when explaining why no status column is used. (c) The 'expected to fail on baseline' claim for two existing tests is inferred, not run, and T3 rewrites setUp so those tests cannot run unchanged against the baseline. The red-to-green evidence must therefore be captured by running the original test file on the baseline before T2/T3."
+  ],
+  "blocking_findings": [
+    {
+      "description": "The plan says any exception from record_if_new other than sqlite3.IntegrityError propagates (FR-4), and it leaves record_if_new unchanged, so False means duplicate. But record_if_new maps every sqlite3.IntegrityError to False, and the table has payment_id TEXT NOT NULL as well as the PRIMARY KEY. A callback with a null payment_id (CallbackController does body[\"payment_id\"] with no validation) raises a NOT NULL IntegrityError. After the change the service would log it as 'duplicate callback ignored', skip fulfilment and return the normal ok response. At baseline the same input reaches fulfil(). This is a persistence write failing for a reason other than a duplicate, which FR-4 says must not be treated as a duplicate. It would also pollute the AC-3 signal. T5(c) only tests a non-IntegrityError sqlite3 error, so the gap is untested. The Python runtime appears to be 3.10 (the __pycache__ files are cpython-310), where sqlite3.Error.sqlite_errorcode is not available. Any discrimination therefore has to be designed deliberately.",
+      "disposition": "PLAN_CHANGE_REQUIRED",
+      "id": "PLAN-001",
+      "impact": "MEDIUM",
+      "plan_section": "Proposed design (Non-duplicate claim failure, FR-4); T2; T5(c); Requirement traceability FR-4",
+      "required_action": "Revise the plan to decide explicitly how a non-uniqueness IntegrityError (for example NOT NULL) is treated. Either distinguish a uniqueness violation from other integrity errors (for example by inspecting the error, while still keeping the constraint as the sole arbiter), which means a scoped change to record_if_new and its test. Or record it as a documented assumption or accepted limitation with a justification. Add a test for the chosen behaviour, and correct the FR-4 traceability wording so it does not claim that only non-IntegrityError failures are non-duplicates."
+    }
+  ],
+  "next_steps": [
+    "Read human-needed.json and, where present, candidate-plan.md and the reviews in this directory.",
+    "Resolve the blockers at their source (clarify the Jira/Confluence content or the requirement), then start a new run with a new run id.",
+    "Or record your decisions as developer guidance (docs/templates/developer-guidance.md) and start a new run with guidance_file=<path>.",
+    "To continue from this plan and its reviews instead of starting over, start a new run with resume_from=sdlc-records/PAY-DEMO-001/candidates/plan-PAY-DEMO-001-21 (and guidance_file=<path>; guidance is required after plan_review_requires_human_decision).",
+    "Raise max_review_rounds (1-10) if the reviews were converging but the round limit was reached."
+  ],
+  "run_id": "plan-PAY-DEMO-001-21",
+  "schema_version": "1.0",
+  "stop_cause": "review_convergence_limit_reached",
+  "ticket_id": "PAY-DEMO-001"
+}

@@ -8,7 +8,7 @@ It reads source; it does not fix code, execute tests, assess requirements compli
 check deployment readiness, approve a PR or merge it. GitHub publication is a separate,
 explicit operation. The default workflow writes local artifacts only.
 
-See the [modular source and deployment guide](../README.md) for shared modules,
+See the [modular source and deployment guide](../build-and-install.md) for shared modules,
 bundling, validation-only commands and source/bundle tests. Do not install the local
 `workflows/source_review.py` entry point by copying it directly.
 
@@ -81,7 +81,7 @@ Examples:
 | Caller expectations conflict about idempotency | `HUMAN_REQUIRED` | Intended behavior requires a decision |
 | Suspicion contradicted by an existing guard | Rejected | No substantiated defect |
 
-See [the policy](../../policies/source-review.md) for the normative rules.
+See [the policy](../policies/source-review.md) for the normative rules.
 
 ## Prerequisites
 
@@ -186,7 +186,7 @@ Artifacts are isolated by run ID and Git-ignored:
 ```
 
 Archive the complete run directory if durable audit retention is needed. No shared
-`records/<ticket>` directory is overwritten and there is no global “latest review.”
+`sdlc-records/<ticket>` directory is overwritten and there is no global “latest review.”
 
 `code-review.json` includes:
 
@@ -257,7 +257,7 @@ The fixture contains a clearly bounded off-by-one regression and a missing autho
 check. It creates its own repository and never modifies an existing repository:
 
 ```bash
-python3 .agentic-sdlc/examples/source-review/create_fixture.py /tmp/my-source-review-fixture
+python3 examples/source-review/create_fixture.py /tmp/my-source-review-fixture
 ```
 
 Use the returned paths and SHAs:
@@ -314,4 +314,4 @@ publication retries and failed-run evidence. Existing hook tests need local sock
 The live fixture exercises CAO/provider integration; it is not a substitute for the
 regression suite or an evaluation of review accuracy on representative real PRs.
 
-See the [implementation verification record](../../examples/source-review/verification.md) for test and live-run evidence.
+See the [implementation verification record](../verification/source-review-live.md) for test and live-run evidence.

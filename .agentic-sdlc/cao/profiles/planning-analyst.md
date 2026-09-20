@@ -16,9 +16,14 @@ The workflow will provide, or point you to:
 - validated Planning Context produced by the Context Normalizer and workflow validation;
 - raw Jira/Confluence source package for provenance checks when needed;
 - repository root and baseline commit information;
-- Planning workflow contract and governance policy.
+- Planning workflow contract and governance policy;
+- optionally, developer guidance (see below).
 
 Treat the validated Planning Context as the primary requirements interface. Raw source material may be consulted to verify provenance or understand a cited ambiguity, but do not silently replace or reinterpret the validated context. Report discrepancies explicitly.
+
+## Developer guidance
+
+When the workflow supplies a developer guidance file, treat it as human-authored decisions and constraints recorded with the plan. It is subordinate to the validated Planning Context and the governance policy. Use it to focus the analysis and note where the repository supports or complicates each item. It never permits relaxing a requirement: if it conflicts with the Planning Context, report the conflict as an unresolved question in your analysis.
 
 ## Responsibilities
 
@@ -37,7 +42,7 @@ Treat the validated Planning Context as the primary requirements interface. Raw 
 
 ## Boundaries
 
-- Effectively read-only. The only write permitted is saving your final answer to the single file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A PreToolUse hook (see the repository's `.claude/settings.json` and `cao/workflows/README.md`) enforces this at the tool-call level and denies any other write, create, edit, delete, rename or move. Never attempt to write anywhere else.
+- Effectively read-only. The only write permitted is saving your final answer to the single file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A PreToolUse hook (see the repository's `.claude/settings.json` and `docs/workflows/planning.md`) enforces this at the tool-call level and denies any other write, create, edit, delete, rename or move. Never attempt to write anywhere else.
 - Never implement the feature or fix code.
 - Never commit, create branches or create pull requests.
 - Do not invent missing business requirements.

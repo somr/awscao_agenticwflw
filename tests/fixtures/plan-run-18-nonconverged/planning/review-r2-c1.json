@@ -1,0 +1,99 @@
+{
+  "findings": [
+    {
+      "category": "OPERATIONS",
+      "confidence": 0.7,
+      "description": "The plan defaults the duplicate-callback log to INFO. It acknowledges the repository configures no logging, so Python's default WARNING level applies, and an INFO line may never reach operators. AC-3 requires duplicates to be observable in application logs. The default therefore risks failing AC-3 in the only known runtime configuration. WARNING passes the existing assertLogs(level='INFO') test equally well and is the safer default. The plan leaves the choice to the human but proposes the riskier value.",
+      "disposition": "ADVISORY",
+      "evidence": [
+        "JIRA:PAY-DEMO-001 Acceptance Criteria AC-3",
+        "CONF:4812 Observability",
+        "plan-r2-c1.md A6, HD-4, Risks (Rollout/operations)",
+        "app/tests/test_payment_service.py:45-50 (assertLogs level INFO)",
+        "Planning Context OQ-2"
+      ],
+      "id": "PLAN-001",
+      "impact": "MEDIUM",
+      "plan_section": "Assumptions A6 / HD-4; AC-3 row",
+      "required_action": "At the plan gate, present HD-4 as an explicit decision. Consider proposing WARNING (or another level confirmed to be visible) as the default. Record the human's choice with provenance."
+    },
+    {
+      "category": "ARCHITECTURE",
+      "confidence": 0.8,
+      "description": "The PaymentService constructor changes to a repository factory, and PaymentRepository gains a release_claim method. Both are material under governance (component boundaries, persistence behaviour, concurrency semantics). Neither is dictated by the sources. NFR-2 requires per-request construction but names no mechanism. FR-2 names deletion only as an example. CON-6 says 'as-is' without saying whether methods may be added. The plan correctly labels both as needing explicit human approval. The only in-repo caller is the test fixture (test_payment_service.py:16-19). The prior example record also uses the old signature, so out-of-tree consumers are unknown.",
+      "disposition": "ADVISORY",
+      "evidence": [
+        "CONF:4934 Transaction model paragraph 2; Persistence",
+        "CONF:4812 Functional requirements paragraph 2",
+        "payment_service.py:19-21",
+        "governance.md Material change guidance",
+        "plan-r2-c1.md HD-1, HD-2"
+      ],
+      "id": "PLAN-002",
+      "impact": "MEDIUM",
+      "plan_section": "HD-1, HD-2, T2, T3",
+      "required_action": "Keep HD-1 and HD-2 visible as approval items in the presented plan. If the human rejects either, the plan must go back for revision, as the plan already states. No plan change is needed now."
+    },
+    {
+      "category": "ARCHITECTURE",
+      "confidence": 0.6,
+      "description": "The design specifies repository.close() in a bare finally. If close() raises, it masks the original fulfilment exception, or converts an already-successful fulfilment into a raised error. The provider would then retry, and the retry would be acknowledged as a duplicate. The plan protects release failure and the success log line from masking, but not close(). The behaviour on close() failure is unspecified, and T5(f) tests only the happy lifecycle.",
+      "disposition": "PLAN_CHANGE_REQUIRED",
+      "evidence": [
+        "plan-r2-c1.md process_callback sketch (finally: repository.close())",
+        "repository.py:42-43 (close)",
+        "plan-r2-c1.md T5(f)"
+      ],
+      "id": "PLAN-003",
+      "impact": "LOW",
+      "plan_section": "Proposed design / process_callback; T2; T5(f)",
+      "required_action": "State how close() failure is handled (e.g. log at WARNING and never raise from finally). Add a test that a close() error neither masks the original exception nor fails a completed fulfilment."
+    },
+    {
+      "category": "TESTING",
+      "confidence": 0.55,
+      "description": "T5(d) says a release failure keeps the original exception and logs ERROR, 'under subTest for both an Exception subclass and a BaseException subclass'. The design states that a further asynchronous BaseException during release is not caught and propagates in place of the original. The text does not say whether the subTest varies the fulfilment exception, the release exception, or both. Read as varying the release exception, T5(d) contradicts the design.",
+      "disposition": "PLAN_CHANGE_REQUIRED",
+      "evidence": [
+        "plan-r2-c1.md T5(d)",
+        "plan-r2-c1.md Proposed design, _release_after_failure paragraph",
+        "plan-r2-c1.md A4 (second asynchronous interrupt during release)"
+      ],
+      "id": "PLAN-004",
+      "impact": "LOW",
+      "plan_section": "T5(d) vs Proposed design (_release_after_failure)",
+      "required_action": "Clarify that the subTest varies the exception raised by fulfil, with the release failure always an Exception subclass. If a BaseException raised during release is to be tested, state the expected propagation explicitly."
+    },
+    {
+      "category": "TESTING",
+      "confidence": 0.5,
+      "description": "T6(c) asserts that no automatic re-fulfilment occurs after an in-flight original fails, following a duplicate that was already acknowledged. This encodes an accepted limitation (CON-5) as a passing test. A future reconciliation ticket would have to invert it. CON-5 says nothing requires this behaviour and that automatic recovery may be added later.",
+      "disposition": "ADVISORY",
+      "evidence": [
+        "CONF:4934 Constraints, last paragraph",
+        "Planning Context CON-5",
+        "plan-r2-c1.md T6(c)"
+      ],
+      "id": "PLAN-005",
+      "impact": "LOW",
+      "plan_section": "T6(c)",
+      "required_action": "Label T6(c) as a characterization test of an accepted limitation. Consider limiting it to asserting the ack and the release, and not asserting the absence of recovery."
+    },
+    {
+      "category": "TESTING",
+      "confidence": 0.5,
+      "description": "record_if_new does not roll back after an IntegrityError (repository.py:39-40). Under Python 3.10's default sqlite3 transaction handling, the implicit transaction and its write lock appear to remain open until the connection closes. The duplicate path releases the lock only through the plan's close() in finally. This is safe with the planned per-request lifecycle, but the plan does not mention it. It also affects the N-thread race test's timing and the R4 'database is locked' analysis, because losers serialise behind each other's open transactions. This is inferred from SQLite semantics, not run.",
+      "disposition": "ADVISORY",
+      "evidence": [
+        "repository.py:30-40",
+        "plan-r2-c1.md Concurrency under SQLite; R4; T6(b)"
+      ],
+      "id": "PLAN-006",
+      "impact": "LOW",
+      "plan_section": "Concurrency under SQLite; T6(b); R4",
+      "required_action": "Note the dependency on close-in-finally in the design. Have the T6(b) race test assert completion within the bounded join, and use a modest N as already planned."
+    }
+  ],
+  "review_status": "CHANGES_REQUIRED",
+  "summary": "The normalized Planning Context matches the three raw sources (CONF:4812, CONF:4934, JIRA_PAY-DEMO-001) and the digests in retrieval.json match the context. The plan covers AC-1..AC-3, FR-1..FR-7, NFR-1..NFR-3 and CON-1..CON-7. Its repository claims check out against the code: the PRIMARY KEY already exists in repository.py, record_if_new's result is discarded at payment_service.py:24, and the only construction site is the test fixture. The mechanism (claim INSERT, plain DELETE to release, re-INSERT on retry) satisfies CON-1 and CON-3. Two low-impact plan changes are required: unspecified close() failure handling (PLAN-003) and an ambiguous T5(d) test description (PLAN-004). The remaining four findings are advisory, including two decisions the plan already routes to the human gate (HD-1/HD-2 and HD-4). No context re-normalization or human-decision finding exists."
+}

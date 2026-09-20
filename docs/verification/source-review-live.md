@@ -35,7 +35,7 @@ corrected candidate ID preservation. Final status: `REVIEWED`; coverage: `INCOMP
 explicitly retaining the fixture's limited application context and test-source gaps.
 This demonstrates that finding eligibility and whole-review coverage are distinct.
 
-The resulting [JSON artifact](sample-review.json) and [comments](sample-comments.md)
+The resulting [JSON artifact](../../examples/source-review/sample-review.json) and [comments](../../examples/source-review/sample-comments.md)
 are retained as examples. The final additional exclusion of local agent-instruction
 files and comment-hash normalization were regression-tested after this live run.
 
