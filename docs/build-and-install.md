@@ -20,6 +20,7 @@ cao/
 │   ├── runtime.py                   # CAO transport, stabilization and JSON repair
 │   ├── planning.py                  # Planning inputs, adapters, policy and orchestration
 │   ├── delivery.py                  # Implementation, verification, review/remediation
+│   ├── hybrid.py                    # Delivery's registry-driven supervisor/worker dispatch
 │   └── source_review.py             # PR snapshots, source review and fix routing
 ├── build_workflow.py                # Deterministic standalone bundler
 └── install_workflow.py              # Shared validation and atomic installation
@@ -138,6 +139,16 @@ terminal cleanup protocol as before extraction. Its `preserve_source` option ret
 the two existing repair-prompt variants: true for Planning/Source Review, explicitly
 false for Delivery. The headless-interaction error message now says "workflow agents"
 for all three; the exception and control flow are unchanged.
+
+## Runtime assets outside the bundle
+
+A bundle contains code only. Everything a run reads from the repository at start-up is
+resolved from `repository_root`, not embedded: the contracts, policies, schemas and
+templates under `.agentic-sdlc/`, and, for hybrid Delivery, `.agentic-sdlc/cao/specialists.json`
+and `.agentic-sdlc/cao/skills/`. Changing those files takes effect on the next run without a
+rebuild; changing Python modules requires rebuilding and reinstalling the bundle. Installing
+`sdlc_deliver` also requires the `sdlc_code_supervisor` profile, because Delivery defaults to
+`implementation_mode=hybrid` (see [hybrid delivery](workflows/hybrid-delivery.md)).
 
 ## Tests
 

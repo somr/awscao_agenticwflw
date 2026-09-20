@@ -32,6 +32,7 @@ The root [README](../README.md) is the current project entry point. `.agentic-sd
 
 - [Modular refactor validation](verification/modularity-verification.md)
 - [Source-review live verification](verification/source-review-live.md)
+- [Hybrid delivery live verification](verification/hybrid-delivery-live.md)
 
 ## Examples
 
