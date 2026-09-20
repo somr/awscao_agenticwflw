@@ -45,7 +45,7 @@ class RecordPrApprovalTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
             head = _init_repo_with_delivery_branch(repo)
-            records = repo / "sdlc-records" / "T-1"
+            records = repo / "agentic-sdlc-records" / "T-1"
             _write_manifest(records, pr_head_sha=head)
 
             result = subprocess.run([
@@ -68,7 +68,7 @@ class RecordPrApprovalTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
             head = _init_repo_with_delivery_branch(repo)
-            records = repo / "sdlc-records" / "T-1"
+            records = repo / "agentic-sdlc-records" / "T-1"
             _write_manifest(records, pr_head_sha=head)
 
             subprocess.run([
@@ -84,7 +84,7 @@ class RecordPrApprovalTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
             head = _init_repo_with_delivery_branch(repo)
-            records = repo / "sdlc-records" / "T-1"
+            records = repo / "agentic-sdlc-records" / "T-1"
             _write_manifest(records, pr_head_sha=head)
 
             (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
@@ -103,7 +103,7 @@ class RecordPrApprovalTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
             head = _init_repo_with_delivery_branch(repo)
-            records = repo / "sdlc-records" / "T-1"
+            records = repo / "agentic-sdlc-records" / "T-1"
             _write_manifest(records, pr_head_sha=head, state="AGENT_REVIEWING")
 
             result = subprocess.run([
@@ -118,7 +118,7 @@ class RecordPrApprovalTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
             head = _init_repo_with_delivery_branch(repo)
-            records = repo / "sdlc-records" / "T-1"
+            records = repo / "agentic-sdlc-records" / "T-1"
             _write_manifest(records, pr_head_sha=head)
 
             subprocess.run([

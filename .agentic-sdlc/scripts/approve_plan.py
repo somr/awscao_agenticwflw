@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 # Durable records live outside .agentic-sdlc/. Keep in sync with sdlc_workflows/artifacts.py.
-RECORDS_DIR = "sdlc-records"
+RECORDS_DIR = "agentic-sdlc-records"
 
 
 def read_json(path: Path) -> Any:

@@ -65,7 +65,7 @@ class NonConvergedPlanningTest(unittest.TestCase):
         """Common invariants of every non-converged stop; returns (candidate_dir, manifest, human_needed)."""
         self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_CLARIFICATION')
         self.assertEqual(output['reason'], stop_cause)
-        candidate = repo / 'sdlc-records' / TICKET / 'candidates' / run_id
+        candidate = repo / 'agentic-sdlc-records' / TICKET / 'candidates' / run_id
         self.assertEqual(Path(output['candidate_dir']), candidate)
 
         manifest = json.loads((candidate / 'candidate-manifest.json').read_text())
@@ -87,7 +87,7 @@ class NonConvergedPlanningTest(unittest.TestCase):
         self.assertEqual(json.loads(runtime_copy.read_text()), human)
 
         # Nothing approvable was published, and the approval script refuses this ticket.
-        records = repo / 'sdlc-records' / TICKET
+        records = repo / 'agentic-sdlc-records' / TICKET
         self.assertFalse((records / 'development-plan.md').exists())
         self.assertFalse((records / 'execution-manifest.json').exists())
         approval = subprocess.run(

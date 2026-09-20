@@ -91,7 +91,7 @@ class WarmStartBase(unittest.TestCase):
         return Path(output['candidate_dir'])
 
     def write_guidance(self, text=GUIDANCE, name='guidance.md'):
-        path = self.repo / 'sdlc-records' / TICKET / name
+        path = self.repo / 'agentic-sdlc-records' / TICKET / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
         return str(path.relative_to(self.repo))
@@ -135,7 +135,7 @@ class WarmStartFlowTest(WarmStartBase):
                 self.assertEqual(lineage['run_id'], 'cold-run')
                 self.assertEqual(lineage['candidate_manifest_sha256'], sha256(candidate / 'candidate-manifest.json'))
                 self.assertEqual(lineage['prior_review_rounds'], 1)
-                records = self.repo / 'sdlc-records' / TICKET
+                records = self.repo / 'agentic-sdlc-records' / TICKET
                 manifest = json.loads((records / 'execution-manifest.json').read_text())
                 self.assertEqual((manifest['review_rounds'], manifest['total_review_rounds']), (1, 2))
                 self.assertEqual(manifest['resumed_from'], lineage)
@@ -213,8 +213,8 @@ class WarmStartRefusalTest(WarmStartBase):
         with self.assertRaisesRegex(self.planning.WorkflowContractError, message):
             self.run_planning('warm-run', self.passing, allow_early_agents=False, **kwargs)
         # Nothing was published or snapshotted by the refused run.
-        self.assertFalse((self.repo / 'sdlc-records' / TICKET / 'development-plan.md').exists())
-        self.assertFalse((self.repo / 'sdlc-records' / TICKET / 'candidates' / 'warm-run').exists())
+        self.assertFalse((self.repo / 'agentic-sdlc-records' / TICKET / 'development-plan.md').exists())
+        self.assertFalse((self.repo / 'agentic-sdlc-records' / TICKET / 'candidates' / 'warm-run').exists())
 
     def test_fails_closed(self):
         def tamper_plan(candidate):
@@ -239,7 +239,7 @@ class WarmStartRefusalTest(WarmStartBase):
             (candidate / 'candidate-manifest.json').unlink()
 
         def other_ticket(candidate):
-            target = self.repo / 'sdlc-records/OTHER/candidates' / candidate.name
+            target = self.repo / 'agentic-sdlc-records/OTHER/candidates' / candidate.name
             shutil.copytree(candidate, target)
             return target
 

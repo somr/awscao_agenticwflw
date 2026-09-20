@@ -2,7 +2,7 @@
 
 Review profiles need fs_write for answer delivery. The workflow's trusted hook
 must restrict writes; provider permission rules alone are insufficient. See
-docs/workflows/planning.md, 'Answer file delivery & the write-scope hook'.
+agentic-sdlc-docs/workflows/planning.md, 'Answer file delivery & the write-scope hook'.
 
 Terminal screen text is not a reliable completion signal. Keep each worker alive,
 poll its status and answer file, then clean up only that worker's terminal.

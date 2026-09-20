@@ -66,7 +66,7 @@ INPUTS = {
     # "path" type only accepts existing directories. Validated by resolve_guidance().
     "guidance_file": {"type": "string", "required": False},
     # Optional warm start: a NOT_CONVERGED candidate directory of this ticket
-    # (sdlc-records/<ticket>/candidates/<run-id>). Declared "path" because CAO's "path"
+    # (agentic-sdlc-records/<ticket>/candidates/<run-id>). Declared "path" because CAO's "path"
     # type accepts directories; load_candidate() applies the real checks.
     "resume_from": {"type": "path", "required": False},
 }
@@ -895,7 +895,7 @@ def _human_next_steps(stop_cause: str, candidate_relative: str) -> list[str]:
     steps = [
         "Read human-needed.json and, where present, candidate-plan.md and the reviews in this directory.",
         "Resolve the blockers at their source (clarify the Jira/Confluence content or the requirement), then start a new run with a new run id.",
-        "Or record your decisions as developer guidance (docs/templates/developer-guidance.md) and start a new run with guidance_file=<path>.",
+        "Or record your decisions as developer guidance (agentic-sdlc-docs/templates/developer-guidance.md) and start a new run with guidance_file=<path>.",
     ]
     if stop_cause in WARM_START_STOP_CAUSES:
         steps.append(

@@ -1,6 +1,6 @@
 # Documentation map
 
-The root [README](../README.md) is the current project entry point. `.agentic-sdlc/` contains only what the workflows read or write at runtime; everything else lives here, in [`examples/`](../examples/) or in [`tools/`](../tools/).
+The root [README](../README.md) is the current project entry point. `.agentic-sdlc/` contains workflow tooling and runtime evidence. Project documentation lives here, local input fixtures in [`agentic-sdlc-local-inputs/`](../agentic-sdlc-local-inputs/), and durable workflow records in [`agentic-sdlc-records/`](../agentic-sdlc-records/).
 
 ## Guides
 
@@ -10,7 +10,6 @@ The root [README](../README.md) is the current project entry point. `.agentic-sd
 - [Source-review workflow](workflows/source-review.md)
 - [Hybrid delivery: adding specialists and skills](workflows/hybrid-delivery.md)
 - [Agent profile catalog](reference/agent-profiles.md)
-- [Run-report operations](operations/run-report.md)
 - [Payment-service example](../app/README.md)
 
 ## Contracts and policies
@@ -36,8 +35,8 @@ The root [README](../README.md) is the current project entry point. `.agentic-sd
 
 ## Examples
 
-- [`examples/PAY-DEMO-001/`](../examples/PAY-DEMO-001/) — Jira/Confluence fixture used as the planning `source_dir`, with the demonstration workflow records in `records/` (see its README; live records go to `sdlc-records/`).
-- [`examples/source-review/`](../examples/source-review/) — fixture generator and sample review output.
+- [`agentic-sdlc-local-inputs/PAY-DEMO-001/`](../agentic-sdlc-local-inputs/PAY-DEMO-001/) — Jira/Confluence fixture used as the planning `source_dir`, with the demonstration workflow records in `records/` (see its README; live records go to `agentic-sdlc-records/`).
+- [`agentic-sdlc-local-inputs/source-review/`](../agentic-sdlc-local-inputs/source-review/) — fixture generator and sample review output.
 
 ## Archive
 

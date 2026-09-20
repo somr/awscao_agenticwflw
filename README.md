@@ -36,25 +36,24 @@ cao workflow run sdlc_dev_plan \
   --run-id plan-PAY-DEMO-001-1 \
   --input ticket_id=PAY-DEMO-001 \
   --input repository_root="$PWD" \
-  --input source_dir="$PWD/examples/PAY-DEMO-001" \
+  --input source_dir="$PWD/agentic-sdlc-local-inputs/PAY-DEMO-001" \
   --input baseline_sha="$BASELINE_SHA" \
   --input base_branch=main \
   --input max_review_rounds=3
 ```
 
-The default `local_fixture` source adapter is deterministic and network-free. The planning workflow also supports `jira_confluence_live`; its credentials are supplied through environment variables as described in [docs/workflows/planning.md](docs/workflows/planning.md).
+The default `local_fixture` source adapter is deterministic and network-free. The planning workflow also supports `jira_confluence_live`; its credentials are supplied through environment variables as described in [agentic-sdlc-docs/workflows/planning.md](agentic-sdlc-docs/workflows/planning.md).
 
 ## Where to read next
 
-- [Workflow overview and repository layout](docs/architecture.md)
-- [Modular workflow build, validation, and installation](docs/build-and-install.md)
-- [Planning workflow](docs/workflows/planning.md)
+- [Workflow overview and repository layout](agentic-sdlc-docs/architecture.md)
+- [Modular workflow build, validation, and installation](agentic-sdlc-docs/build-and-install.md)
+- [Planning workflow](agentic-sdlc-docs/workflows/planning.md)
 - [Delivery contract](.agentic-sdlc/contracts/delivery-workflow.md)
-- [Hybrid delivery and specialist/skill extension guide](docs/workflows/hybrid-delivery.md)
-- [Source-review workflow](docs/workflows/source-review.md)
-- [CAO profiles](docs/reference/agent-profiles.md)
-- [Documentation map](docs/README.md)
-- [Run-report guide](docs/operations/run-report.md)
+- [Hybrid delivery and specialist/skill extension guide](agentic-sdlc-docs/workflows/hybrid-delivery.md)
+- [Source-review workflow](agentic-sdlc-docs/workflows/source-review.md)
+- [CAO profiles](agentic-sdlc-docs/reference/agent-profiles.md)
+- [Documentation map](agentic-sdlc-docs/README.md)
 - [Payment-service fixture](app/README.md)
 
-Durable workflow records belong under `sdlc-records/`, outside the embeddable `.agentic-sdlc/` tooling directory. Detailed per-run evidence belongs under `.agentic-sdlc/runtime/` and is ignored by Git. Human approval is always recorded separately; an agent cannot approve a plan or a pull request.
+Durable workflow records belong under `agentic-sdlc-records/`, outside the embeddable `.agentic-sdlc/` tooling directory. Detailed per-run evidence belongs under `.agentic-sdlc/runtime/` and is ignored by Git. Human approval is always recorded separately; an agent cannot approve a plan or a pull request.

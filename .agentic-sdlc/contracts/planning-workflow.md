@@ -67,7 +67,7 @@ After the plan passes independent review, compute a stable content digest (SHA-2
 
 A blocking context defect may transition to `AWAITING_HUMAN_CLARIFICATION` before planning continues.
 
-A run that stops without a passing independent review (round limit reached, human decision required, or a context that is not ready) ends in `AWAITING_HUMAN_CLARIFICATION` and leaves a `NOT_CONVERGED` candidate under `sdlc-records/<ticket>/candidates/<run-id>/`. A candidate is evidence for the human. It is never a Development Plan record and cannot be approved or delivered.
+A run that stops without a passing independent review (round limit reached, human decision required, or a context that is not ready) ends in `AWAITING_HUMAN_CLARIFICATION` and leaves a `NOT_CONVERGED` candidate under `agentic-sdlc-records/<ticket>/candidates/<run-id>/`. A candidate is evidence for the human. It is never a Development Plan record and cannot be approved or delivered.
 
 ## Human gate
 

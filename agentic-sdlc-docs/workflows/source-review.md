@@ -186,7 +186,7 @@ Artifacts are isolated by run ID and Git-ignored:
 ```
 
 Archive the complete run directory if durable audit retention is needed. No shared
-`sdlc-records/<ticket>` directory is overwritten and there is no global “latest review.”
+`agentic-sdlc-records/<ticket>` directory is overwritten and there is no global “latest review.”
 
 `code-review.json` includes:
 
@@ -257,7 +257,7 @@ The fixture contains a clearly bounded off-by-one regression and a missing autho
 check. It creates its own repository and never modifies an existing repository:
 
 ```bash
-python3 examples/source-review/create_fixture.py /tmp/my-source-review-fixture
+python3 agentic-sdlc-local-inputs/source-review/create_fixture.py /tmp/my-source-review-fixture
 ```
 
 Use the returned paths and SHAs:

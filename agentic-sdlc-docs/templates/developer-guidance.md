@@ -2,7 +2,7 @@
 
 <!--
 Human-authored input to the planning workflow (`guidance_file`). Keep it short and specific.
-Recommended location: sdlc-records/<TICKET-ID>/guidance.md (small UTF-8 file, inside the repository).
+Recommended location: agentic-sdlc-records/<TICKET-ID>/guidance.md (small UTF-8 file, inside the repository).
 
 What it may do: resolve an ambiguity, choose between options the sources allow, narrow scope, constrain the design,
 answer a reviewer finding.
@@ -11,7 +11,7 @@ the governance policy. If a requirement is wrong, correct the source instead. Th
 HUMAN_DECISION_REQUIRED.
 
 Refer to reviewer findings as `r<round>:<id>` (for example `r2:PLAN-003`); bare ids repeat across reviews.
-Source: the candidate's human-needed.json and reviews/ in sdlc-records/<TICKET-ID>/candidates/<run-id>/.
+Source: the candidate's human-needed.json and reviews/ in agentic-sdlc-records/<TICKET-ID>/candidates/<run-id>/.
 -->
 
 ## Decisions

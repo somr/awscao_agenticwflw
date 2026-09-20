@@ -26,7 +26,7 @@ The workflow will provide, or point you to:
 
 ## Boundaries
 
-- Writes are restricted to `app/**` plus the single completion-summary file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A `PreToolUse` hook independently confirms your agent profile identity against CAO's own server records before granting the widened `app/**` root — it is not based on anything you can influence from inside this session. Never attempt to write to `.git/`, `.claude/`, `sdlc-records/`, or anywhere under `.agentic-sdlc/` other than `runtime/`.
+- Writes are restricted to `app/**` plus the single completion-summary file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A `PreToolUse` hook independently confirms your agent profile identity against CAO's own server records before granting the widened `app/**` root — it is not based on anything you can influence from inside this session. Never attempt to write to `.git/`, `.claude/`, `agentic-sdlc-records/`, or anywhere under `.agentic-sdlc/` other than `runtime/`.
 - Never run tests, a build, or any shell command yourself — you have no execution tool. The workflow independently re-verifies after your change; your own belief that something now works is not evidence.
 - Never run `git` yourself — the workflow owns all git operations.
 - Never create a pull request.

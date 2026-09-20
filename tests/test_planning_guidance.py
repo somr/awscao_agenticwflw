@@ -83,7 +83,7 @@ class GuidanceTest(unittest.TestCase):
         for modular in (False, True):
             with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
                 repo, _, prompts, output = self.run_planning(
-                    Path(temp), modular, guidance='sdlc-records/T-1/guidance.md')
+                    Path(temp), modular, guidance='agentic-sdlc-records/T-1/guidance.md')
                 frozen = repo / '.agentic-sdlc/runtime' / TICKET / 'guided-run/guidance/developer-guidance.md'
                 self.assertEqual(frozen.read_text(), GUIDANCE_TEXT)
                 seen = {}
@@ -104,11 +104,11 @@ class GuidanceTest(unittest.TestCase):
     def test_guidance_is_bound_to_the_published_plan_and_the_approval(self):
         for modular in (False, True):
             with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, _, _, output = self.run_planning(Path(temp), modular, guidance='sdlc-records/T-1/guidance.md')
+                repo, _, _, output = self.run_planning(Path(temp), modular, guidance='agentic-sdlc-records/T-1/guidance.md')
                 digest = sha256_bytes(GUIDANCE_TEXT.encode())
                 self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_APPROVAL')
                 self.assertEqual(output['guidance_sha256'], digest)
-                records = repo / 'sdlc-records' / TICKET
+                records = repo / 'agentic-sdlc-records' / TICKET
                 self.assertEqual((records / 'plan-guidance.md').read_text(), GUIDANCE_TEXT)
                 manifest = json.loads((records / 'execution-manifest.json').read_text())
                 self.assertEqual(manifest['guidance_sha256'], digest)
@@ -131,7 +131,7 @@ class GuidanceTest(unittest.TestCase):
                 repo, _, prompts, output = self.run_planning(Path(temp), modular)
                 self.assertTrue(all('Developer guidance' not in p for _, _, p in prompts))
                 self.assertIsNone(output['guidance_sha256'])
-                records = repo / 'sdlc-records' / TICKET
+                records = repo / 'agentic-sdlc-records' / TICKET
                 self.assertFalse((records / 'plan-guidance.md').exists())
                 self.assertIsNone(json.loads((records / 'execution-manifest.json').read_text())['guidance_sha256'])
                 # A stray guidance file next to an unguided plan must not be approvable.
@@ -142,7 +142,7 @@ class GuidanceTest(unittest.TestCase):
         for modular in (False, True):
             with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
                 repo, _, _, output = self.run_planning(
-                    Path(temp), modular, guidance='sdlc-records/T-1/guidance.md', converge_at=None, max_review_rounds=1)
+                    Path(temp), modular, guidance='agentic-sdlc-records/T-1/guidance.md', converge_at=None, max_review_rounds=1)
                 self.assertEqual(output['reason'], 'review_convergence_limit_reached')
                 candidate = Path(output['candidate_dir'])
                 self.assertEqual((candidate / 'guidance.md').read_text(), GUIDANCE_TEXT)
@@ -163,7 +163,7 @@ class GuidanceTest(unittest.TestCase):
         source.mkdir()
         (source / 'context.json').write_text('{}')
         inputs = {'repository_root': str(repo), 'ticket_id': TICKET, 'source_dir': str(source),
-                  'baseline_sha': git('rev-parse', 'HEAD'), 'guidance_file': 'sdlc-records/T-1/missing.md'}
+                  'baseline_sha': git('rev-parse', 'HEAD'), 'guidance_file': 'agentic-sdlc-records/T-1/missing.md'}
 
         def respond(agent, step_id, prompt):
             raise AssertionError('no agent may start when guidance_file is invalid')
@@ -174,33 +174,33 @@ class GuidanceTest(unittest.TestCase):
             planning, _ = harness.load('dev_plan', modular)
             with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
                 repo = Path(temp, 'repo').resolve()
-                (repo / 'sdlc-records/T-1').mkdir(parents=True)
+                (repo / 'agentic-sdlc-records/T-1').mkdir(parents=True)
                 (repo / '.agentic-sdlc/runtime/T-1').mkdir(parents=True)
                 outside = Path(temp, 'outside.md')
                 outside.write_text('outside guidance')
-                good = repo / 'sdlc-records/T-1/guidance.md'
+                good = repo / 'agentic-sdlc-records/T-1/guidance.md'
                 good.write_text(GUIDANCE_TEXT)
-                (repo / 'sdlc-records/T-1/link.md').symlink_to(outside)
-                (repo / 'sdlc-records/T-1/binary.md').write_bytes(b'\xff\xfe\x00bad')
-                (repo / 'sdlc-records/T-1/empty.md').write_text('  \n')
-                (repo / 'sdlc-records/T-1/huge.md').write_text('x' * (planning.MAX_GUIDANCE_BYTES + 1))
+                (repo / 'agentic-sdlc-records/T-1/link.md').symlink_to(outside)
+                (repo / 'agentic-sdlc-records/T-1/binary.md').write_bytes(b'\xff\xfe\x00bad')
+                (repo / 'agentic-sdlc-records/T-1/empty.md').write_text('  \n')
+                (repo / 'agentic-sdlc-records/T-1/huge.md').write_text('x' * (planning.MAX_GUIDANCE_BYTES + 1))
                 (repo / '.agentic-sdlc/runtime/T-1/agent-written.md').write_text('agent wrote this')
 
                 self.assertIsNone(planning.resolve_guidance(repo, None))
                 self.assertIsNone(planning.resolve_guidance(repo, ''))
-                self.assertEqual(planning.resolve_guidance(repo, 'sdlc-records/T-1/guidance.md'), good)
+                self.assertEqual(planning.resolve_guidance(repo, 'agentic-sdlc-records/T-1/guidance.md'), good)
                 self.assertEqual(planning.resolve_guidance(repo, str(good)), good)
 
                 rejected = {
-                    'sdlc-records/T-1/nope.md': 'does not exist',
-                    'sdlc-records/T-1': 'not a regular file',
+                    'agentic-sdlc-records/T-1/nope.md': 'does not exist',
+                    'agentic-sdlc-records/T-1': 'not a regular file',
                     '../outside.md': 'inside repository_root',
                     str(outside): 'inside repository_root',
-                    'sdlc-records/T-1/link.md': 'inside repository_root',
+                    'agentic-sdlc-records/T-1/link.md': 'inside repository_root',
                     '.agentic-sdlc/runtime/T-1/agent-written.md': 'agent-writable',
-                    'sdlc-records/T-1/huge.md': 'exceeds',
-                    'sdlc-records/T-1/binary.md': 'not valid UTF-8',
-                    'sdlc-records/T-1/empty.md': 'is empty',
+                    'agentic-sdlc-records/T-1/huge.md': 'exceeds',
+                    'agentic-sdlc-records/T-1/binary.md': 'not valid UTF-8',
+                    'agentic-sdlc-records/T-1/empty.md': 'is empty',
                 }
                 for value, message in rejected.items():
                     with self.subTest(value=value):

@@ -48,7 +48,7 @@ When the workflow supplies a developer guidance file, apply its decisions and co
 
 ## Boundaries
 
-- Effectively read-only. The only write permitted is saving your final answer to the single file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A PreToolUse hook (see the repository's `.claude/settings.json` and `docs/workflows/planning.md`) enforces this at the tool-call level and denies any other write, create, edit, delete, rename or move of a repository file. Never attempt to write anywhere else.
+- Effectively read-only. The only write permitted is saving your final answer to the single file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A PreToolUse hook (see the repository's `.claude/settings.json` and `agentic-sdlc-docs/workflows/planning.md`) enforces this at the tool-call level and denies any other write, create, edit, delete, rename or move of a repository file. Never attempt to write anywhere else.
 - Never implement production code or tests.
 - Never commit, create branches or create pull requests.
 - Never approve the Development Plan.

@@ -59,10 +59,11 @@ isolation and development-agent handoff.
 
 Outside `.agentic-sdlc/`:
 
-- `sdlc-records/<ticket>/` — durable workflow evidence (approved plans, approval records, PR review results, manifests) intended for Git; created on demand. `candidates/<run-id>/` holds the non-approvable snapshot of a planning run that did not converge; `plan-guidance.md` is the developer guidance a published plan was built with. It is project data, so it lives outside the embeddable tooling directory and survives tooling upgrades. Tickets recorded before this location existed can be moved with `git mv .agentic-sdlc/records/<ticket> sdlc-records/<ticket>`.
-- `docs/` — guides, contracts and policies that no workflow reads, verification records and reference templates.
-- `examples/` — synthetic Jira/Confluence fixtures, the PAY-DEMO-001 demonstration records and the source-review fixture generator.
-- `tools/` — operational helpers such as `run-report`.
+- `agentic-sdlc-records/<ticket>/` — durable workflow evidence (approved plans, approval records, PR review results, manifests) intended for Git; created on demand. `candidates/<run-id>/` holds the non-approvable snapshot of a planning run that did not converge; `plan-guidance.md` is the developer guidance a published plan was built with. It is project data, so it lives outside the embeddable tooling directory and survives tooling upgrades. Tickets recorded before this location existed can be moved with `git mv .agentic-sdlc/records/<ticket> agentic-sdlc-records/<ticket>`.
+- `agentic-sdlc-docs/` — guides, contracts and policies that no workflow reads, verification records and reference templates.
+- `agentic-sdlc-local-inputs/` — local stand-ins for Jira and Confluence: `PAY-DEMO-001/` is a text-file fixture used as the planning `source_dir`. It also holds the PAY-DEMO-001 demonstration records (`PAY-DEMO-001/records/`) and the source-review fixture generator (`source-review/`), which are not inputs.
+
+The three `agentic-sdlc-*` folders are the project-side folders of the agentic SDLC. On 2026-09-20 they were renamed from `docs/`, `examples/` and `sdlc-records/` (`sdlc-records/` had itself replaced `.agentic-sdlc/records/`). The workflows, the write-scope hook and the approval scripts use only the new names, so a checkout that still has the old ones needs `git mv sdlc-records agentic-sdlc-records` (and the workflows and profiles reinstalled) before it can run.
 
 ## Safety model
 

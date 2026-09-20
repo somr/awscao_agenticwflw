@@ -68,11 +68,11 @@ Retrieval is a deterministic Python function, never an agent — see `retrieve_s
 }
 ```
 
-`ticket.id` stays the workflow's internal `ticket_id` (drives `sdlc-records/<ticket_id>/`, `.agentic-sdlc/runtime/<ticket_id>/`); `ticket.jira_key` is the real external Jira issue key, looked up separately so the two are never conflated. A manifest can list extra Confluence pages that aren't formally linked on the Jira ticket (e.g. an incident RCA, a related design doc) — this is deliberate: it lets a human curate context Jira itself doesn't capture, reviewably, before a run.
+`ticket.id` stays the workflow's internal `ticket_id` (drives `agentic-sdlc-records/<ticket_id>/`, `.agentic-sdlc/runtime/<ticket_id>/`); `ticket.jira_key` is the real external Jira issue key, looked up separately so the two are never conflated. A manifest can list extra Confluence pages that aren't formally linked on the Jira ticket (e.g. an incident RCA, a related design doc) — this is deliberate: it lets a human curate context Jira itself doesn't capture, reviewably, before a run.
 
 Both adapters write an identical `retrieval.json`/`raw_dir/sources/*` shape (`source_id`, `title`, `type`, `required`, `status`, `content_digest`, `path`), so nothing downstream — context-normalizer, `validate_planning_context`, the analyst/author/reviewer steps — needs to know or care which one ran.
 
-**Credentials are environment variables, never manifest fields**, so a per-ticket manifest can be safely committed under `sdlc-records/<ticket>/` without leaking a token:
+**Credentials are environment variables, never manifest fields**, so a per-ticket manifest can be safely committed under `agentic-sdlc-records/<ticket>/` without leaking a token:
 
 | Env var | Purpose |
 |---|---|
@@ -139,7 +139,7 @@ cao workflow run sdlc_dev_plan \
   --run-id "$RUN_ID" \
   --input ticket_id=PAY-DEMO-001 \
   --input repository_root="$(pwd)" \
-  --input source_dir="$(pwd)/examples/PAY-DEMO-001" \
+  --input source_dir="$(pwd)/agentic-sdlc-local-inputs/PAY-DEMO-001" \
   --input baseline_sha="$BASELINE_SHA" \
   --input base_branch=main \
   --input max_review_rounds=3
@@ -186,7 +186,7 @@ Agent-output directories contain `.answer.json` (the file the agent itself wrote
 A successful planning run publishes:
 
 ```text
-sdlc-records/<ticket>/
+agentic-sdlc-records/<ticket>/
     development-plan.md
     plan-review.json
     execution-manifest.json
@@ -204,7 +204,7 @@ The reviewer is not stateless across rounds. From the second review of a plan on
 If the independent review does not return `PASS`, nothing approvable is published. The run still ends `completed` in CAO, with outcome `AWAITING_HUMAN_CLARIFICATION`, and leaves a durable snapshot:
 
 ```text
-sdlc-records/<ticket>/candidates/<run-id>/
+agentic-sdlc-records/<ticket>/candidates/<run-id>/
     candidate-manifest.json   state NOT_CONVERGED, stop cause, digests of every file, sources_sha256, guidance_sha256
     human-needed.json         blockers, the blocking findings (id, impact, section, required action), next steps
     candidate-plan.md         last plan (absent when no plan was written yet)
@@ -213,7 +213,7 @@ sdlc-records/<ticket>/candidates/<run-id>/
     guidance.md               the guidance used, if any
 ```
 
-Stop causes: `review_convergence_limit_reached`, `plan_review_requires_human_decision`, `renormalized_context_not_ready`, `context_not_ready`. A candidate cannot be approved or delivered: `approve_plan.py` and the delivery workflow read only `sdlc-records/<ticket>/development-plan.md`.
+Stop causes: `review_convergence_limit_reached`, `plan_review_requires_human_decision`, `renormalized_context_not_ready`, `context_not_ready`. A candidate cannot be approved or delivered: `approve_plan.py` and the delivery workflow read only `agentic-sdlc-records/<ticket>/development-plan.md`.
 
 What the developer can do: read `human-needed.json`, then either fix the blocker at its source, raise `max_review_rounds`, or record decisions as developer guidance and start a new run (below). The same run id cannot be reused.
 
@@ -224,9 +224,9 @@ A non-converged candidate can be continued instead of re-running everything:
 ```bash
 cao workflow run sdlc_dev_plan --wait --json --run-id plan-PAY-DEMO-001-22 \
   --input ticket_id=PAY-DEMO-001 --input repository_root="$(pwd)" \
-  --input source_dir="$(pwd)/examples/PAY-DEMO-001" --input baseline_sha="$BASELINE_SHA" \
-  --input resume_from="$(pwd)/sdlc-records/PAY-DEMO-001/candidates/<run-id>" \
-  --input guidance_file=sdlc-records/PAY-DEMO-001/guidance.md
+  --input source_dir="$(pwd)/agentic-sdlc-local-inputs/PAY-DEMO-001" --input baseline_sha="$BASELINE_SHA" \
+  --input resume_from="$(pwd)/agentic-sdlc-records/PAY-DEMO-001/candidates/<run-id>" \
+  --input guidance_file=agentic-sdlc-records/PAY-DEMO-001/guidance.md
 ```
 
 The run skips normalization, validation and repository analysis (it reuses the candidate's), starts with a revision round from the candidate's last plan and reviews, then runs the normal review loop with its own `max_review_rounds` budget. The reviewer receives the candidate's reviews as history. The published `execution-manifest.json` records `resumed_from` (candidate run id, the SHA-256 of its manifest, prior review count, prior guidance digest) and `total_review_rounds`.
@@ -247,8 +247,8 @@ A re-run alone gives no guarantee of a different outcome. `guidance_file` lets t
 ```bash
 cao workflow run sdlc_dev_plan --wait --json --run-id plan-PAY-DEMO-001-21 \
   --input ticket_id=PAY-DEMO-001 --input repository_root="$(pwd)" \
-  --input source_dir="$(pwd)/examples/PAY-DEMO-001" --input baseline_sha="$BASELINE_SHA" \
-  --input guidance_file=sdlc-records/PAY-DEMO-001/guidance.md
+  --input source_dir="$(pwd)/agentic-sdlc-local-inputs/PAY-DEMO-001" --input baseline_sha="$BASELINE_SHA" \
+  --input guidance_file=agentic-sdlc-records/PAY-DEMO-001/guidance.md
 ```
 
 Use [the template](../templates/developer-guidance.md). Rules:
@@ -256,5 +256,5 @@ Use [the template](../templates/developer-guidance.md). Rules:
 - The file must be a non-empty UTF-8 regular file of at most 64 KiB, resolved inside `repository_root` (symlinks that leave it are refused) and outside `.agentic-sdlc/runtime/`.
 - It reaches the Planning Analyst, Plan Author and Plan Reviewer, not the Context Normalizer, so normalized requirements stay source-faithful. Each run works on a frozen copy (`runtime/<ticket>/<run-id>/guidance/developer-guidance.md`).
 - **Authority.** Guidance may resolve ambiguity, choose between options the sources allow, narrow scope or constrain the design. It cannot relax a source requirement or the governance policy: the reviewer reports a conflict as `HUMAN_DECISION_REQUIRED`, so the source gets corrected. The plan cites each applied item.
-- **Trust.** Guidance is trusted because it is human-authored and stored where no agent can write (the write-scope hook denies `sdlc-records/`, and the runtime directory is refused as a location). Its SHA-256 is recorded in `execution-manifest.json` and in any candidate manifest, and the exact file is published as `plan-guidance.md`, so human approval covers it (governance invariant 16).
+- **Trust.** Guidance is trusted because it is human-authored and stored where no agent can write (the write-scope hook denies `agentic-sdlc-records/`, and the runtime directory is refused as a location). Its SHA-256 is recorded in `execution-manifest.json` and in any candidate manifest, and the exact file is published as `plan-guidance.md`, so human approval covers it (governance invariant 16).
 - Guidance never approves anything. A `PASS` review is required (invariant 17) and a human still runs `approve_plan.py`.

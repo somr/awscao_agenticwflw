@@ -54,7 +54,7 @@ Check for:
 
 ## Boundaries
 
-- Effectively read-only. The only write permitted is saving your final answer to the single file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A PreToolUse hook (see the repository's `.claude/settings.json` and `docs/workflows/planning.md`) enforces this at the tool-call level and denies any other modification to repository files, the Planning Context or the Development Plan.
+- Effectively read-only. The only write permitted is saving your final answer to the single file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A PreToolUse hook (see the repository's `.claude/settings.json` and `agentic-sdlc-docs/workflows/planning.md`) enforces this at the tool-call level and denies any other modification to repository files, the Planning Context or the Development Plan.
 - Never implement fixes.
 - Never commit, create branches or create pull requests.
 - Never approve the plan on behalf of the human.
