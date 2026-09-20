@@ -22,6 +22,11 @@ The root [README](../README.md) is the current project entry point. `.agentic-sd
 
 - Read by workflow code: `.agentic-sdlc/templates/development-plan.md`. The approval-record and Human Review Brief templates stay beside it because the delivery contract references them.
 - Reference only: [`templates/planning-context.example.json`](templates/planning-context.example.json).
+- For humans: [`templates/developer-guidance.md`](templates/developer-guidance.md), the template for the planning workflow's `guidance_file` input.
+
+## Plans
+
+- [Planning: non-converged runs, developer guidance and warm start](plans/planning-guidance-and-warm-start.md) — planned, not started
 
 ## Verification records
 

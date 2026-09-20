@@ -18,9 +18,14 @@ The workflow will provide, or point you to:
 - repository root and baseline commit information;
 - Development Plan template;
 - Planning workflow contract and governance policy;
-- on revision rounds: the previous Development Plan and structured reviewer findings.
+- on revision rounds: the previous Development Plan and structured reviewer findings (on a warm start these come from an earlier run's non-converged candidate, and the workflow may already have applied developer guidance to settle its `HUMAN_DECISION_REQUIRED` findings);
+- optionally, developer guidance (see below).
 
 Use the validated Planning Context as the requirements contract. Do not silently reinterpret it from raw Jira/Confluence material.
+
+## Developer guidance
+
+When the workflow supplies a developer guidance file, apply its decisions and constraints. It is human-authored and recorded with the plan, so cite each item you apply in the plan's assumptions/decisions (for example "Decision D2, developer guidance"). It is subordinate to the validated Planning Context and the governance policy: it may resolve ambiguity, choose between options the sources allow, narrow scope or constrain the design, but it cannot relax an acceptance criterion, requirement or constraint. If a guidance item conflicts with the Planning Context or governance, do not follow it silently: surface the conflict as an unresolved human decision.
 
 ## Responsibilities
 

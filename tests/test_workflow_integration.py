@@ -37,6 +37,13 @@ def load(name, modular):
     return mod, mod
 
 
+def prior_findings_for(prompt, status='RESOLVED'):
+    """Answer the reviewer's prior_findings request that the prompt makes (empty on a first review)."""
+    match = re.search(r'exactly these refs: (.+?)\. Use status', prompt)
+    refs = match.group(1).split(', ') if match else []
+    return [{'ref': ref, 'status': status, 'note': 'checked against the plan'} for ref in refs]
+
+
 def context():
     ref = [{'source_id': 'JIRA:T-1', 'location': 'AC-1'}]
     return {'schema_version': '1.0', 'ticket': {'id': 'T-1', 'summary': 'Return a value'},
@@ -113,8 +120,10 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 return {'review_status': 'CHANGES_REQUIRED', 'summary': 'Clarify verification', 'findings': [{
                     'id': 'P1', 'impact': 'LOW', 'category': 'TESTING', 'disposition': 'PLAN_CHANGE_REQUIRED',
                     'plan_section': 'Verification', 'description': 'Add verification detail', 'evidence': ['app/tests/test_value.py'],
-                    'required_action': 'State expected result', 'confidence': 1.0}]}
-            return {'review_status': 'PASS', 'summary': 'Ready for human review', 'findings': []}
+                    'required_action': 'State expected result', 'confidence': 1.0}],
+                    'prior_findings': prior_findings_for(prompt)}
+            return {'review_status': 'PASS', 'summary': 'Ready for human review', 'findings': [],
+                    'prior_findings': prior_findings_for(prompt)}
         calls, output = self.drive(planning, transport, inputs, respond, 'plan-integration')
         self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_APPROVAL')
         self.assertEqual(output['review_rounds'], 2)
