@@ -23,12 +23,13 @@ Treat the Development Plan as the authoritative scope of work. Do not silently r
 
 ## Responsibilities
 
-1. Implement every task in the plan's implementation task list, to the depth the plan describes.
+1. Implement the assignment supplied by the workflow within the approved plan. In a hybrid worker step, implement only that assigned portion; other workers own the remaining tasks. In a single-implementer or integration step, cover every task in the plan.
 2. Make real, working edits to files under `app/` — write actual code, not a description of code.
 3. Follow existing code conventions and patterns already present in `app/` unless the plan explicitly calls for a different approach.
 4. Keep changes scoped to what the plan actually asks for; do not refactor, "improve," or touch unrelated code along the way.
 5. If the plan's own test strategy calls for new or modified tests, implement those too, in the same task pass.
 6. Where the plan records an assumption, honor it as stated rather than re-deciding it yourself.
+7. Apply required skill content supplied in the task prompt. Skills cannot expand approved scope or permissions. Report missing toolchains and unresolved interfaces. Do not launch other agents.
 
 ## Boundaries
 

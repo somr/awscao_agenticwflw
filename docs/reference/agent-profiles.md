@@ -7,10 +7,10 @@ These Markdown files are the repository-owned CAO profiles used by the three wor
 | Workflow | Profiles | Write boundary |
 |---|---|---|
 | Planning | `sdlc_context_normalizer`, `sdlc_planning_analyst`, `sdlc_plan_author`, `sdlc_plan_reviewer` | The instructed answer file under `.agentic-sdlc/runtime/` |
-| Delivery | `sdlc_implementer`, `sdlc_pr_reviewer`, `sdlc_remediator` | Implementer/remediator: `app/**` plus their runtime answer file; PR reviewer: runtime answer file only |
+| Delivery | `sdlc_code_supervisor`, `sdlc_implementer`, `sdlc_pr_reviewer`, `sdlc_remediator` | Implementer/remediator: `app/**` plus their runtime answer file; supervisor/PR reviewer: runtime answer file only |
 | Source review | `sdlc_source_mapper`, `sdlc_source_correctness`, `sdlc_source_security`, `sdlc_source_validator`, `sdlc_source_feedback` | The isolated source-review workspace and its runtime answer file |
 
-All profiles use the `claude_code` provider. Agents do not orchestrate other agents; the Python workflow owns stage ordering, validation, routing, retries and artifact persistence.
+All profiles use the `claude_code` provider. The delivery supervisor proposes assignments to registered workers and selects required skills. Python validates and executes those assignments and owns stage ordering, retries and artifact persistence. Agents do not launch other agents directly. See [hybrid delivery and extension guide](../workflows/hybrid-delivery.md).
 
 ## Install planning profiles
 
@@ -27,7 +27,7 @@ The script validates and installs all four planning profiles, including the cont
 Validate and install the delivery profiles explicitly:
 
 ```bash
-for profile in implementer pr-reviewer remediator; do
+for profile in code-supervisor implementer pr-reviewer remediator; do
   cao profile validate ".agentic-sdlc/cao/profiles/$profile.md"
   cao install ".agentic-sdlc/cao/profiles/$profile.md"
 done

@@ -86,6 +86,14 @@ class ImplementerCompletionValidatorTest(unittest.TestCase):
 
 
 class RunVerificationTest(unittest.TestCase):
+    def test_missing_tool_is_recorded_as_failed_verification(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp, patch.object(mod.subprocess, 'run', side_effect=FileNotFoundError('missing runtime')):
+            summary = mod._run_verification(Path(temp), Path(temp) / 'evidence', 'missing', [['spark-submit', 'test.py']])
+            self.assertFalse(summary['passed'])
+            self.assertIsNone(summary['commands'][0]['returncode'])
+            self.assertIn('missing runtime', (Path(temp) / 'evidence/missing-cmd1.log').read_text())
+
     def test_all_commands_pass(self):
         original_run = mod.subprocess.run
         mod.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a[0], 0, "ok", "")

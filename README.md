@@ -50,6 +50,7 @@ The default `local_fixture` source adapter is deterministic and network-free. Th
 - [Modular workflow build, validation, and installation](docs/build-and-install.md)
 - [Planning workflow](docs/workflows/planning.md)
 - [Delivery contract](.agentic-sdlc/contracts/delivery-workflow.md)
+- [Hybrid delivery and specialist/skill extension guide](docs/workflows/hybrid-delivery.md)
 - [Source-review workflow](docs/workflows/source-review.md)
 - [CAO profiles](docs/reference/agent-profiles.md)
 - [Documentation map](docs/README.md)

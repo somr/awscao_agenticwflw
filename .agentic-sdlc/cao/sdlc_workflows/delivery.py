@@ -33,11 +33,13 @@ from .runtime import (
     _run_json_contract_step,
     PROVIDER,
 )
+from .hybrid import run_hybrid, load_specialists
 
 INPUTS = {
     "ticket_id": {"type": "string", "required": True},
     "repository_root": {"type": "path", "required": True},
     "base_branch": {"type": "string", "required": False, "default": "main"},
+    "implementation_mode": {"type": "string", "required": False, "default": "hybrid"},
 }
 
 IMPLEMENTER = "sdlc_implementer"
@@ -206,6 +208,22 @@ def _implement_and_commit(
     return completion
 
 
+def _hybrid_and_commit(*, repo: Path, prompt: str, evidence_dir: Path, ticket_id: str) -> tuple[dict[str, Any], list[list[str]], str]:
+    if _git(["diff", "--cached", "--name-only"], cwd=repo).strip():
+        raise WorkflowContractError("Hybrid implementation requires an empty Git index")
+    if _git(["status", "--porcelain", "--", "app"], cwd=repo).strip():
+        raise WorkflowContractError("Hybrid implementation requires a clean app/ tree")
+    completion, commands, context = run_hybrid(
+        repo=repo, prompt=prompt, evidence_dir=evidence_dir,
+        completion_validator=_implementer_completion_validator,
+    )
+    if not _git(["status", "--porcelain", "--", "app"], cwd=repo).strip():
+        raise WorkflowContractError("Hybrid implementation left no changes under app/")
+    _git(["add", "--", "app"], cwd=repo)
+    _git(["commit", "-m", f"[{ticket_id}] Implement approved plan (hybrid)"], cwd=repo)
+    return completion, commands, context
+
+
 # Fixed, deterministic verification commands — no agent, no judgment. A
 # command's exit code and captured output IS the evidence; see the module
 # docstring / plan for why this is a trusted Python subprocess call rather
@@ -217,11 +235,11 @@ VERIFICATION_COMMANDS: list[list[str]] = [
 VERIFICATION_TIMEOUT_SECONDS = 300
 
 
-def _run_verification(repo: Path, evidence_dir: Path, label: str) -> dict[str, Any]:
+def _run_verification(repo: Path, evidence_dir: Path, label: str, commands: list[list[str]] | None = None) -> dict[str, Any]:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     command_results: list[dict[str, Any]] = []
     all_passed = True
-    for index, command in enumerate(VERIFICATION_COMMANDS, start=1):
+    for index, command in enumerate(VERIFICATION_COMMANDS if commands is None else commands, start=1):
         try:
             completed = subprocess.run(
                 command,
@@ -236,6 +254,9 @@ def _run_verification(repo: Path, evidence_dir: Path, label: str) -> dict[str, A
             returncode = None
             stdout = exc.stdout or ""
             stderr = f"{exc.stderr or ''}\n[timed out after {VERIFICATION_TIMEOUT_SECONDS}s]"
+        except OSError as exc:
+            returncode = None
+            stdout, stderr = "", str(exc)
         passed = returncode == 0
         all_passed = all_passed and passed
         command_results.append({"command": command, "returncode": returncode, "passed": passed})
@@ -595,6 +616,9 @@ def main() -> None:
     ticket_id = _safe_component(_require_str(inputs["ticket_id"], "ticket_id"), "ticket_id")
     repo = Path(inputs["repository_root"]).resolve()
     base_branch = _require_str(inputs.get("base_branch", "main"), "base_branch")
+    implementation_mode = inputs.get("implementation_mode", "hybrid")
+    if implementation_mode not in ("hybrid", "single"):
+        raise WorkflowContractError("implementation_mode must be hybrid or single")
     if not repo.is_dir():
         raise WorkflowContractError(f"repository_root is not a directory: {repo}")
 
@@ -613,6 +637,10 @@ def main() -> None:
             raise WorkflowContractError(f"required SDLC file is missing: {required}")
 
     manifest = _check_plan_approved(records_dir, plan_path, repo, base_branch)
+    if implementation_mode == "hybrid":
+        load_specialists(repo)
+        if _git(["status", "--porcelain", "--", "app"], cwd=repo).strip() or _git(["diff", "--cached", "--name-only"], cwd=repo).strip():
+            raise WorkflowContractError("Hybrid delivery requires a clean app/ tree and empty Git index")
     baseline_sha = manifest["repository_baseline_sha"]
     delivery_branch = f"sdlc/{ticket_id}"
     delivery_manifest_path = records_dir / "delivery-manifest.json"
@@ -632,17 +660,34 @@ def main() -> None:
         "plan_sha256": manifest["plan_sha256"],
         "repository_baseline_sha": baseline_sha,
         "state": "READY",
+        "implementation_mode": implementation_mode,
     })
 
     # 2. IMPLEMENTING
-    completion = _implement_and_commit(
-        prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
-        step_id="implement-v1",
-        repo=repo,
-        evidence_dir=implementing_dir / "agent-output",
-        ticket_id=ticket_id,
-        action_label="Implement approved plan",
-    )
+    verification_commands = None
+    skill_context = ""
+    if implementation_mode == "hybrid":
+        try:
+            completion, verification_commands, skill_context = _hybrid_and_commit(
+                repo=repo, prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
+                evidence_dir=implementing_dir / "agent-output", ticket_id=ticket_id,
+            )
+        except (WorkflowContractError, OSError) as exc:
+            failed_manifest = _read_json(delivery_manifest_path)
+            failed_manifest.update(state="BLOCKED", reason=f"hybrid_implementation_failed: {exc}")
+            _write_json(delivery_manifest_path, failed_manifest)
+            emit_output({"workflow_outcome": "BLOCKED", "ticket_id": ticket_id, "run_id": run_id,
+                         "reason": failed_manifest["reason"], "delivery_manifest": str(delivery_manifest_path)})
+            return
+    else:
+        completion = _implement_and_commit(
+            prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
+            step_id="implement-v1",
+            repo=repo,
+            evidence_dir=implementing_dir / "agent-output",
+            ticket_id=ticket_id,
+            action_label="Implement approved plan",
+        )
     _write_json(implementing_dir / "completion-v1.json", completion)
     commit_sha = _current_head_sha(repo)
 
@@ -654,11 +699,11 @@ def main() -> None:
 
     # 3. VERIFYING
     verifying_dir = runtime_dir / "verification"
-    verification = _run_verification(repo, verifying_dir, "verify-v1")
+    verification = _run_verification(repo, verifying_dir, "verify-v1", verification_commands)
     repair_completion: dict[str, Any] | None = None
     if not verification["passed"]:
         repair_completion = _implement_and_commit(
-            prompt=build_implementer_repair_prompt(repo, plan_path, delivery_contract, governance, verification),
+            prompt=build_implementer_repair_prompt(repo, plan_path, delivery_contract, governance, verification) + "\n" + skill_context,
             step_id="implement-v1-repair-1",
             repo=repo,
             evidence_dir=implementing_dir / "agent-output",
@@ -667,7 +712,7 @@ def main() -> None:
         )
         _write_json(implementing_dir / "completion-v1-repair-1.json", repair_completion)
         commit_sha = _current_head_sha(repo)
-        verification = _run_verification(repo, verifying_dir, "verify-v1-repair-1")
+        verification = _run_verification(repo, verifying_dir, "verify-v1-repair-1", verification_commands)
 
     delivery_manifest = _read_json(delivery_manifest_path)
     delivery_manifest["implementation_commit_sha"] = commit_sha
@@ -693,7 +738,10 @@ def main() -> None:
     # 4. PR_CREATED — local/simulated only: no gh pr create, no push. This is
     # the one seam a later phase swaps for real PR creation; everything else
     # in this workflow is unaffected by that later change.
-    final_completion = repair_completion if repair_completion is not None else completion
+    final_completion = completion
+    if repair_completion is not None:
+        final_completion = {key: list(dict.fromkeys(completion[key] + repair_completion[key]))
+                            for key in ("tasks_completed", "files_changed", "assumptions", "deviations")}
     pr_head_sha = commit_sha
     diff_text = _compute_delivery_diff(repo, base_branch, delivery_branch)
     pr_title = render_pr_title(ticket_id)
@@ -768,7 +816,7 @@ def main() -> None:
         remediation_completion = _run_json_contract_step(
             preserve_source=False,
             agent=REMEDIATOR,
-            prompt=build_remediator_prompt(repo, plan_path, delivery_contract, pr_review_policy, governance, auto_fix_findings),
+            prompt=build_remediator_prompt(repo, plan_path, delivery_contract, pr_review_policy, governance, auto_fix_findings) + "\n" + skill_context,
             label="Remediator",
             step_id=remediation_step_id,
             repo=repo,
@@ -789,7 +837,7 @@ def main() -> None:
         # Governance #8: verify after every remediation batch. A remediation
         # that breaks verification is escalation-worthy, not something to
         # retry blindly — stop the loop rather than looping on a regression.
-        verification = _run_verification(repo, verifying_dir, f"verify-remediate-r{review_round}")
+        verification = _run_verification(repo, verifying_dir, f"verify-remediate-r{review_round}", verification_commands)
         diff_text = _compute_delivery_diff(repo, base_branch, delivery_branch)
 
         remediation_history.append({

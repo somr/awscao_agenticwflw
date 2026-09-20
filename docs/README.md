@@ -8,6 +8,7 @@ The root [README](../README.md) is the current project entry point. `.agentic-sd
 - [Modular build, validation and installation](build-and-install.md)
 - [Planning workflow](workflows/planning.md), including the write-scope hook design
 - [Source-review workflow](workflows/source-review.md)
+- [Hybrid delivery: adding specialists and skills](workflows/hybrid-delivery.md)
 - [Agent profile catalog](reference/agent-profiles.md)
 - [Run-report operations](operations/run-report.md)
 - [Payment-service example](../app/README.md)

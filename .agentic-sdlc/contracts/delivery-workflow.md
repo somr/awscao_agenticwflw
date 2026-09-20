@@ -39,6 +39,18 @@ Implement an approved Development Plan, verify the implementation, create a pull
 14. Wait for human PR review and final approval.
 15. Route human review comments through the same triage/remediation policy, while preserving explicit requests for developer/human judgment.
 
+## Hybrid implementation execution
+
+The default implementation mode is `hybrid`; `single` retains the original
+single-implementer execution path. In hybrid mode, a read-only code supervisor
+proposes up to 16 ordered assignments using the repository specialist registry.
+Python validates worker/skill selections, unique task IDs and prior dependencies,
+dispatches workers sequentially, persists results and runs an integration pass.
+Parallel dispatch is reserved for a future implementation with isolated workspaces.
+The existing application write boundary, approval checks, independent review and
+bounded remediation remain mandatory. Required skills add their configured
+verification suites; missing tooling is a verification failure.
+
 ## Required outputs
 
 - Pull request reference.

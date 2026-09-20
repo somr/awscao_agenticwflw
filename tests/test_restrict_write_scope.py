@@ -175,6 +175,11 @@ class WriteScopeHookTest(unittest.TestCase):
                 ),
             )
 
+    def test_supervisor_cannot_modify_application_or_registry(self):
+        with _FakeTerminalServer("sdlc_code_supervisor") as port:
+            for path in ("app/value.py", ".agentic-sdlc/cao/specialists.json"):
+                assert_denied(self, run_hook(cao_terminal_id="term-1", tool_input={"file_path": path}, cao_api_port=port))
+
     def test_non_widened_profile_still_cannot_write_under_app(self):
         with _FakeTerminalServer("sdlc_context_normalizer") as port:
             assert_denied(

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "workers": {
+    "developer": {
+      "profile": "sdlc_implementer",
+      "description": "General application implementation, including AngularJS UI and Spark pipelines using required skills. No shell or external-system mutations.",
+      "skills": ["sdlc-angularjs-ui", "sdlc-spark-workflows"],
+      "verification": ["application"]
+    }
+  },
+  "skills": {
+    "sdlc-angularjs-ui": {"path": "skills/sdlc-angularjs-ui/SKILL.md", "description": "AngularJS 1.x UI components, forms, asynchronous state and tests; not modern Angular.", "verification": ["angularjs"]},
+    "sdlc-spark-workflows": {"path": "skills/sdlc-spark-workflows/SKILL.md", "description": "Apache Spark batch or streaming data pipelines, schemas, transformations and tests.", "verification": ["spark"]}
+  },
+  "verification": {
+    "application": [
+      ["python3", "-m", "compileall", "-q", "app"],
+      ["python3", "-m", "unittest", "discover", "-t", "app", "-s", "app/tests", "-v"]
+    ],
+    "angularjs": [["npm", "--prefix", "app/ui", "run", "verify"]],
+    "spark": [["spark-submit", "--master", "local[2]", "app/spark/tests/verify.py"]]
+  }
+}

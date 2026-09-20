@@ -53,7 +53,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
         repo = root / 'repo'
         repo.mkdir()
         sdlc = repo / '.agentic-sdlc'
-        for directory in ('contracts', 'policies', 'schemas', 'templates'):
+        for directory in ('contracts', 'policies', 'schemas', 'templates', 'cao'):
             shutil.copytree(ROOT / '.agentic-sdlc' / directory, sdlc / directory)
         (repo / 'app/tests').mkdir(parents=True)
         (repo / 'app/tests/__init__.py').write_text('')
@@ -134,6 +134,12 @@ class LifecycleIntegrationTest(unittest.TestCase):
             with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
                 repo, git, records = self.plan(Path(temp), modular)
                 delivery, transport = load('deliver', modular)
+                # Exercise skill-selected verification with an actual local command;
+                # the integration fixture has no AngularJS application or npm setup.
+                registry_path = repo / '.agentic-sdlc/cao/specialists.json'
+                registry = json.loads(registry_path.read_text())
+                registry['verification']['angularjs'] = [[sys.executable, '-c', 'import runpy; assert runpy.run_path("app/value.py")["value"]() >= 2']]
+                registry_path.write_text(json.dumps(registry))
                 human = {'id': 'H1', 'file': 'app/value.py', 'location': 'value', 'category': 'AUTHN_AUTHZ',
                     'impact': 'HIGH', 'confidence': .99, 'failure_scenario': 'Synthetic protected concern',
                     'consequence': 'Needs human review', 'remediation_direction': 'Human must assess',
@@ -142,9 +148,12 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 auto = {**human, 'id': 'A1', 'category': 'CORRECTNESS', 'impact': 'MEDIUM',
                         'failure_scenario': 'Value is two, expected three'}
                 def respond(agent, step_id, prompt):
+                    if agent == 'sdlc_code_supervisor':
+                        return {'tasks': [{'id': 'T1', 'worker': 'developer', 'plan_reference': 'T1',
+                            'instructions': 'Implement value', 'depends_on': [], 'skills': ['sdlc-angularjs-ui']}]}
                     if agent == delivery.IMPLEMENTER:
                         # Real compile/test subprocesses reject the first implementation.
-                        text = 'invalid python !!!\n' if step_id == 'implement-v1' else 'def value():\n    return 2\n'
+                        text = 'def value():\n    return 2\n' if step_id == 'implement-v1-repair-1' else 'invalid python !!!\n'
                         (repo / 'app/value.py').write_text(text)
                         return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
                     if agent == delivery.REMEDIATOR:
@@ -154,17 +163,23 @@ class LifecycleIntegrationTest(unittest.TestCase):
                         return {'findings_addressed': ['A1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
                     return {'summary': 'Synthetic review', 'findings': [auto, human] if step_id == 'pr-review-r1' else [human]}
                 calls, output = self.drive(delivery, transport, {'repository_root': str(repo), 'ticket_id': 'T-1'}, respond, 'delivery-integration')
-                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW')
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW',
+                    str(output) + '\n' + '\n'.join(p.read_text() for p in (repo / '.agentic-sdlc/runtime/T-1/delivery-integration/verification').glob('*repair*.log')))
                 self.assertTrue(output['has_developer_required_findings'])
                 self.assertFalse(output['has_auto_fix_findings'])
                 self.assertEqual(output['remediation_rounds'], 1)
                 self.assertEqual(output['pr_head_sha'], git('rev-parse', 'HEAD'))
                 self.assertEqual(git('branch', '--show-current'), 'sdlc/T-1')
                 self.assertIn((delivery.IMPLEMENTER, 'implement-v1-repair-1'), calls)
+                self.assertIn(('sdlc_code_supervisor', 'dispatch-v1'), calls)
+                self.assertIn((delivery.IMPLEMENTER, 'worker-1'), calls)
+                self.assertIn((delivery.IMPLEMENTER, 'integrate-v1'), calls)
                 self.assertTrue((records / 'human-review-brief.md').exists())
                 self.assertIn(output['pr_head_sha'], (records / 'pr-body.md').read_text())
                 review = json.loads((records / 'pr-review-r2.json').read_text())
                 self.assertEqual(review['findings'][0]['automation_eligibility'], 'DEVELOPER_REQUIRED')
+                delivery_manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual(len(delivery_manifest['verification']['commands']), 3)
 
     def test_delivery_rejects_changed_plan_before_any_agent_runs(self):
         for modular in (False, True):

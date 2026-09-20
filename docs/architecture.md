@@ -29,6 +29,11 @@ HUMAN APPROVAL
 [Delivery Workflow 2](../.agentic-sdlc/contracts/delivery-workflow.md) implements approved plans and manages
 verification, review and remediation. Install its bundled workflow with
 `.agentic-sdlc/cao/workflows/install_deliver.sh`; the delivery profiles are listed in the profile guide.
+Delivery defaults to a hybrid implementation stage: a code supervisor assigns
+approved work to registered workers with required skills, Python dispatches them
+sequentially, and an integration pass reconciles the feature before verification.
+See [hybrid delivery](workflows/hybrid-delivery.md) for configuration, limitations
+and step-by-step specialist/skill extension procedures.
 
 [Source Review Workflow 3](workflows/source-review.md) reviews an existing GitHub
 PR independently of planning/delivery. Five agents map source, review correctness and
