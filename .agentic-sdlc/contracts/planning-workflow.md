@@ -15,7 +15,7 @@ This workflow may retrieve context, normalize requirements, analyse and plan. It
 - Base branch.
 - Repository baseline commit SHA.
 - Access to Jira and the referenced Confluence material, or equivalent mocked raw-source files during initial development.
-- Optional additional context explicitly supplied by the user/team.
+- Optional additional context explicitly supplied by the user/team, as developer guidance (`guidance_file`: a small UTF-8 Markdown file inside the repository, outside `.agentic-sdlc/runtime/`).
 
 ## Sources of truth
 
@@ -23,7 +23,7 @@ This workflow may retrieve context, normalize requirements, analyse and plan. It
 2. Referenced Confluence documentation defines supporting functional/technical context.
 3. The validated Planning Context is the stable requirements interface for downstream planning agents.
 4. The repository defines the current implementation reality, not missing business intent.
-5. Explicit human clarification overrides an agent assumption and must be recorded with provenance.
+5. Explicit human clarification overrides an agent assumption and must be recorded with provenance. Developer guidance is such a clarification: it may resolve ambiguity and constrain the design, cannot relax requirements from sources 1 to 3 or the governance policy, and is recorded by digest with the plan it shaped.
 
 Agents must not silently invent missing requirements.
 
@@ -67,9 +67,11 @@ After the plan passes independent review, compute a stable content digest (SHA-2
 
 A blocking context defect may transition to `AWAITING_HUMAN_CLARIFICATION` before planning continues.
 
+A run that stops without a passing independent review (round limit reached, human decision required, or a context that is not ready) ends in `AWAITING_HUMAN_CLARIFICATION` and leaves a `NOT_CONVERGED` candidate under `sdlc-records/<ticket>/candidates/<run-id>/`. A candidate is evidence for the human. It is never a Development Plan record and cannot be approved or delivered.
+
 ## Human gate
 
-Implementation is forbidden until the Development Plan reaches `APPROVED`.
+Implementation is forbidden until the Development Plan reaches `APPROVED`. Only a plan whose independent review returned `PASS` is published for approval.
 
 Approval applies to the exact plan content and repository baseline. A material plan change or material baseline change invalidates the approval and requires review again.
 

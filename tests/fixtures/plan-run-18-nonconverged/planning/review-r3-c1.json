@@ -1,0 +1,64 @@
+{
+  "findings": [
+    {
+      "category": "TESTING",
+      "confidence": 0.7,
+      "description": "T4 says its transaction-lifetime test 'pins the dependency' on close() ending the implicit SQLite transaction after a rejected duplicate. As specified (B's record_if_new returns False, B is closed, then C claims a different ID) the test closes B before C runs, so it passes whether or not a rejected duplicate holds the write lock. The plan itself admits it 'still passes' if no lock is held. It therefore establishes nothing about the load-bearing claim that the design and R4 rely on, and that claim is inferred from sqlite3 semantics and never executed. record_if_new does not roll back after IntegrityError (repository.py:39-40), so whether the lock persists until close() matters for the duplicate path and for race-test timing.",
+      "disposition": "PLAN_CHANGE_REQUIRED",
+      "evidence": [
+        "plan-r3-c1.md T4 (transaction-lifetime test; 'if the observed SQLite behaviour turns out not to hold a lock, the test still passes')",
+        "plan-r3-c1.md Concurrency under SQLite ('inferred ... not executed')",
+        "app/payment_service/repository.py:30-40 (no rollback after IntegrityError)"
+      ],
+      "id": "PLAN-001",
+      "impact": "LOW",
+      "plan_section": "T4 (transaction-lifetime test); Proposed design / Concurrency under SQLite; R4",
+      "required_action": "Specify the test so it can fail: after B's duplicate is rejected and while B is still open, a third connection created with a short sqlite3 timeout (for example 0.1 s) attempts a claim of a different ID and the test asserts the observed outcome (OperationalError if the lock is held), then closes B and asserts C succeeds. Alternatively drop the 'pins the dependency' wording and downgrade the design statement to an unverified observation, stating how the observed result will be recorded if it contradicts the inference."
+    },
+    {
+      "category": "TESTING",
+      "confidence": 0.75,
+      "description": "T8 step (3) verifies that changes are confined to four files using `git diff --stat`. `app/tests/test_repository.py` is a new, untracked file, so `git diff --stat` will not list it and the check cannot confirm the file set. Any other new untracked file would likewise pass unnoticed. This weakens the scope-confinement evidence the plan uses for CON-7 and the 'no other component touched' claims.",
+      "disposition": "PLAN_CHANGE_REQUIRED",
+      "evidence": [
+        "plan-r3-c1.md T8 (3): `git diff --stat` shows changes confined to payment_service.py, repository.py, test_payment_service.py, test_repository.py",
+        "plan-r3-c1.md T4 (creates new app/tests/test_repository.py)"
+      ],
+      "id": "PLAN-002",
+      "impact": "LOW",
+      "plan_section": "T8 (3) scope check",
+      "required_action": "Change the check to also cover untracked files, for example `git status --porcelain` (or `git add -N` before `git diff --stat`) and compare the full set of modified and new paths against the four expected files."
+    },
+    {
+      "category": "REQUIREMENTS",
+      "confidence": 0.5,
+      "description": "HD-6 (release the claim on any BaseException, not only Exception) is listed among the 'non-blocking' decisions on which the plan proceeds by default. It alters transaction/concurrency semantics, which governance classes as material, and it is an interpretation of FR-2's 'raises or otherwise fails' and of the boundary of the CON-4 limitation rather than a purely technical detail. HD-3 (propagating the fulfilment exception as the failure response) similarly interprets AC-2/FR-7 while the sources define no failure response. The plan treats HD-1/HD-2/HD-4 as approval items but the same visibility is not guaranteed for these three, so the approver could miss that they are interpretations.",
+      "disposition": "ADVISORY",
+      "evidence": [
+        "plan-r3-c1.md A4, HD-3, HD-5, HD-6",
+        "governance.md Material change guidance (acceptance-criteria interpretation; transaction/concurrency semantics)",
+        "CONF_4812 Functional requirements ('raises or otherwise fails'); Planning Context OQ-1"
+      ],
+      "id": "PLAN-003",
+      "impact": "LOW",
+      "plan_section": "Other unresolved human decisions (HD-3, HD-5, HD-6); A4",
+      "required_action": "No plan rewrite needed. Ensure the plan-gate presentation lists HD-3, HD-5 and HD-6 alongside HD-1/HD-2/HD-4 and records the human's answers with provenance, since a differing answer changes T2/T5(g)."
+    },
+    {
+      "category": "TESTING",
+      "confidence": 0.5,
+      "description": "The in-flight and CON-5 tests block the original delivery's fulfilment on a threading.Event in another thread. If an assertion fails before the event is set, the worker thread stays blocked holding an open repository connection, so the test can hang or tearDown's TemporaryDirectory cleanup can fail, obscuring the real failure. The plan bounds joins only for the T6(b) race test.",
+      "disposition": "ADVISORY",
+      "evidence": [
+        "plan-r3-c1.md T6(a), T6(c), R5",
+        "app/tests/test_payment_service.py:21-23 (tearDown cleans the temp directory)"
+      ],
+      "id": "PLAN-004",
+      "impact": "LOW",
+      "plan_section": "T6(a), T6(c) (gated fulfilment tests); R5",
+      "required_action": "State that gate events are set in an addCleanup/finally and that worker threads are joined with a timeout in these tests too, so a failing assertion cannot leave a blocked thread or open connection behind."
+    }
+  ],
+  "review_status": "CHANGES_REQUIRED",
+  "summary": "The normalized Planning Context matches the three raw sources (JIRA_PAY-DEMO-001, CONF_4812, CONF_4934); the FR/NFR/CON texts, accepted limitations and scope are faithfully carried, and the digests agree with retrieval.json. The repository claims in the plan check out: the PRIMARY KEY already exists (repository.py:20-27), record_if_new's result is discarded (payment_service.py:24), and the only construction site is the test fixture (test_payment_service.py:16-19). The mechanism (claim INSERT, plain DELETE on failure, re-INSERT on retry, no status column, no lock) satisfies CON-1 and CON-3. The r2 findings (close() failure, T5(d) ambiguity, WARNING default, T6(c) framing, close-in-finally dependency) are addressed. Two low-impact plan changes remain: the T4 transaction-lifetime test as specified cannot detect the dependency it claims to pin, and the T8 scope check does not see the new untracked test file. Two advisory notes follow. No context re-normalization or human-decision finding exists beyond the HD items the plan already routes to the approval gate."
+}

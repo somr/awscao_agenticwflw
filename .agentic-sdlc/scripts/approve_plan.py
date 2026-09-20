@@ -53,6 +53,18 @@ def main() -> int:
             "Do not approve a modified plan; run Planning Workflow 1 again."
         )
 
+    # Developer guidance that shaped the plan is part of what is being approved.
+    guidance_sha = manifest.get("guidance_sha256")
+    guidance_file = records / "plan-guidance.md"
+    if guidance_sha is not None:
+        if not guidance_file.is_file() or sha256_file(guidance_file) != guidance_sha:
+            raise SystemExit(
+                "Developer guidance is missing or does not match the reviewed execution manifest. "
+                "Do not approve a plan whose guidance changed; run Planning Workflow 1 again."
+            )
+    elif guidance_file.exists():
+        raise SystemExit("plan-guidance.md exists but the execution manifest records no guidance; refusing to approve.")
+
     if approval_path.exists():
         previous = read_json(approval_path)
         if previous.get("plan_sha256") == actual_sha:
@@ -70,6 +82,7 @@ def main() -> int:
         "plan_path": str(plan.relative_to(repo)),
         "plan_sha256": actual_sha,
         "repository_baseline_sha": manifest["repository_baseline_sha"],
+        "guidance_sha256": guidance_sha,
         "decision": args.decision,
         "approved_by": args.approved_by,
         "approved_at": now,

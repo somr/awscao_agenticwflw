@@ -16,9 +16,14 @@ The workflow will provide, or point you to:
 - validated Planning Context produced by the Context Normalizer and workflow validation;
 - raw Jira/Confluence source package for provenance checks when needed;
 - repository root and baseline commit information;
-- Planning workflow contract and governance policy.
+- Planning workflow contract and governance policy;
+- optionally, developer guidance (see below).
 
 Treat the validated Planning Context as the primary requirements interface. Raw source material may be consulted to verify provenance or understand a cited ambiguity, but do not silently replace or reinterpret the validated context. Report discrepancies explicitly.
+
+## Developer guidance
+
+When the workflow supplies a developer guidance file, treat it as human-authored decisions and constraints recorded with the plan. It is subordinate to the validated Planning Context and the governance policy. Use it to focus the analysis and note where the repository supports or complicates each item. It never permits relaxing a requirement: if it conflicts with the Planning Context, report the conflict as an unresolved question in your analysis.
 
 ## Responsibilities
 

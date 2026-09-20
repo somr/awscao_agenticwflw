@@ -96,7 +96,9 @@ A missing env var raises `WorkflowContractError` immediately (fail fast, never a
 - `baseline_sha` — Git commit SHA that the human is asking the workflow to plan against.
 - `base_branch` — defaults to `main`.
 - `source_adapter` — `local_fixture` (default) or `jira_confluence_live`; see above.
-- `max_review_rounds` — defaults to 3; valid range 1–10.
+- `max_review_rounds` — defaults to 3; valid range 1–10. It is a cap: the loop stops at the first `PASS`.
+- `resume_from` — optional candidate directory for a warm start; see "Warm start" below.
+- `guidance_file` — optional path (absolute or relative to `repository_root`) to developer guidance; see "Developer guidance" below.
 
 `baseline_sha` remains an explicit workflow input so CAO replay cannot silently shift the repository planning baseline.
 
@@ -143,6 +145,8 @@ cao workflow run sdlc_dev_plan \
   --input max_review_rounds=3
 ```
 
+Use `--wait --json` to see the workflow's final output (including the blockers of a run that needs a human). The default follow mode prints only the run id and state, and CAO does not retain the output afterwards.
+
 Useful run commands:
 
 ```bash
@@ -186,6 +190,71 @@ sdlc-records/<ticket>/
     development-plan.md
     plan-review.json
     execution-manifest.json
+    plan-guidance.md          only when guidance_file was supplied
 ```
 
-The business outcome is `AWAITING_HUMAN_APPROVAL`; the workflow itself never approves the plan.
+The business outcome is `AWAITING_HUMAN_APPROVAL`; the workflow itself never approves the plan. Only a plan whose independent review returned `PASS` is published. `approve_plan.py` verifies the plan hash and, when present, the guidance digest, and records both in the approval.
+
+## Reviewer history
+
+The reviewer is not stateless across rounds. From the second review of a plan onward it receives the earlier reviews (`r1`, `r2`, ...) and must account, in `prior_findings`, for every blocking finding of the most recent previous review, using refs `r<index>:<finding id>` (ids such as `PLAN-001` repeat across reviews). Statuses are `RESOLVED`, `RESOLVED_BY_GUIDANCE` (only with developer guidance), `UNRESOLVED` and `NOT_APPLICABLE`. The workflow checks this deterministically: every listed ref exactly once, no unknown refs, and `PASS` is refused while any prior finding is `UNRESOLVED`. A response that fails the check gets the usual single repair turn. The reviewer stays independent: it re-verifies each finding and may raise new evidence-based ones.
+
+## When planning does not converge
+
+If the independent review does not return `PASS`, nothing approvable is published. The run still ends `completed` in CAO, with outcome `AWAITING_HUMAN_CLARIFICATION`, and leaves a durable snapshot:
+
+```text
+sdlc-records/<ticket>/candidates/<run-id>/
+    candidate-manifest.json   state NOT_CONVERGED, stop cause, digests of every file, sources_sha256, guidance_sha256
+    human-needed.json         blockers, the blocking findings (id, impact, section, required action), next steps
+    candidate-plan.md         last plan (absent when no plan was written yet)
+    reviews/<k>-review-r<N>-c<V>.json   k = position in the review history; matches the refs r<k>:<id>
+    planning-context.json, planning-analysis.md, sources.json
+    guidance.md               the guidance used, if any
+```
+
+Stop causes: `review_convergence_limit_reached`, `plan_review_requires_human_decision`, `renormalized_context_not_ready`, `context_not_ready`. A candidate cannot be approved or delivered: `approve_plan.py` and the delivery workflow read only `sdlc-records/<ticket>/development-plan.md`.
+
+What the developer can do: read `human-needed.json`, then either fix the blocker at its source, raise `max_review_rounds`, or record decisions as developer guidance and start a new run (below). The same run id cannot be reused.
+
+## Warm start
+
+A non-converged candidate can be continued instead of re-running everything:
+
+```bash
+cao workflow run sdlc_dev_plan --wait --json --run-id plan-PAY-DEMO-001-22 \
+  --input ticket_id=PAY-DEMO-001 --input repository_root="$(pwd)" \
+  --input source_dir="$(pwd)/examples/PAY-DEMO-001" --input baseline_sha="$BASELINE_SHA" \
+  --input resume_from="$(pwd)/sdlc-records/PAY-DEMO-001/candidates/<run-id>" \
+  --input guidance_file=sdlc-records/PAY-DEMO-001/guidance.md
+```
+
+The run skips normalization, validation and repository analysis (it reuses the candidate's), starts with a revision round from the candidate's last plan and reviews, then runs the normal review loop with its own `max_review_rounds` budget. The reviewer receives the candidate's reviews as history. The published `execution-manifest.json` records `resumed_from` (candidate run id, the SHA-256 of its manifest, prior review count, prior guidance digest) and `total_review_rounds`.
+
+It fails closed, before any agent runs, and the developer must start a cold run instead when any of these is true:
+
+- `resume_from` is not a `NOT_CONVERGED` candidate directory of this ticket, or a recorded file is missing, unsafe or modified since it was written;
+- the stop cause is not `review_convergence_limit_reached` or `plan_review_requires_human_decision` (a context that was never ready needs a cold run);
+- `baseline_sha` differs from the candidate's (its repository analysis would be stale) or the freshly retrieved sources differ (its context would be stale);
+- the candidate stopped for a human decision and `guidance_file` is missing or unchanged since the candidate.
+
+For a round-limit stop, no guidance is required: it can simply continue with a new round budget.
+
+## Developer guidance
+
+A re-run alone gives no guarantee of a different outcome. `guidance_file` lets the developer give the planners information they lacked:
+
+```bash
+cao workflow run sdlc_dev_plan --wait --json --run-id plan-PAY-DEMO-001-21 \
+  --input ticket_id=PAY-DEMO-001 --input repository_root="$(pwd)" \
+  --input source_dir="$(pwd)/examples/PAY-DEMO-001" --input baseline_sha="$BASELINE_SHA" \
+  --input guidance_file=sdlc-records/PAY-DEMO-001/guidance.md
+```
+
+Use [the template](../templates/developer-guidance.md). Rules:
+
+- The file must be a non-empty UTF-8 regular file of at most 64 KiB, resolved inside `repository_root` (symlinks that leave it are refused) and outside `.agentic-sdlc/runtime/`.
+- It reaches the Planning Analyst, Plan Author and Plan Reviewer, not the Context Normalizer, so normalized requirements stay source-faithful. Each run works on a frozen copy (`runtime/<ticket>/<run-id>/guidance/developer-guidance.md`).
+- **Authority.** Guidance may resolve ambiguity, choose between options the sources allow, narrow scope or constrain the design. It cannot relax a source requirement or the governance policy: the reviewer reports a conflict as `HUMAN_DECISION_REQUIRED`, so the source gets corrected. The plan cites each applied item.
+- **Trust.** Guidance is trusted because it is human-authored and stored where no agent can write (the write-scope hook denies `sdlc-records/`, and the runtime directory is refused as a location). Its SHA-256 is recorded in `execution-manifest.json` and in any candidate manifest, and the exact file is published as `plan-guidance.md`, so human approval covers it (governance invariant 16).
+- Guidance never approves anything. A `PASS` review is required (invariant 17) and a human still runs `approve_plan.py`.

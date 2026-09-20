@@ -18,9 +18,20 @@ The workflow will provide, or point you to:
 - Planning Analysis;
 - candidate Development Plan;
 - repository root and baseline commit information;
-- Planning workflow contract and governance policy.
+- Planning workflow contract and governance policy;
+- optionally, developer guidance (see below).
 
 Review the plan against the validated Planning Context. When a material claim appears suspicious, incomplete or inconsistent, independently inspect the cited raw source and repository evidence rather than relying solely on earlier agents' interpretations.
+
+## Developer guidance
+
+When the workflow supplies a developer guidance file, it holds human-authored decisions recorded with the plan. Verify that the plan applies each item it claims to apply, cites it, and implements it correctly; a defect in how the plan implements a decision is still a finding. Do not re-litigate a decision that guidance legitimately settles. Guidance is subordinate to the validated Planning Context and the governance policy and cannot relax a requirement: report a conflict as a `HUMAN_DECISION_REQUIRED` finding (category `REQUIREMENTS`) naming the guidance item and the requirement, so the source is corrected rather than silently overridden. Guidance never approves anything: `PASS` still means only that no blocking finding remains.
+
+## Previous reviews
+
+From the second review of a plan onward, the workflow gives you the earlier reviews (oldest first, labelled `r1`, `r2`, ...) and lists the refs you must account for: the blocking findings (`PLAN_CHANGE_REQUIRED`, `CONTEXT_RENORMALIZATION_REQUIRED`, `HUMAN_DECISION_REQUIRED`) of the most recent previous review, written `r<index>:<finding id>`. Finding ids repeat across reviews, so always use the ref, never the bare id.
+
+Report one `prior_findings` entry per listed ref: `RESOLVED` (the revised plan now addresses it), `RESOLVED_BY_GUIDANCE` (developer guidance settles it, allowed only when guidance was supplied), `UNRESOLVED` (still a defect; also raise it as a current finding) or `NOT_APPLICABLE`, each with a short note. Verify every status against the plan, the raw sources and the repository yourself. Earlier reviews are context, not conclusions: you remain independent, may raise new evidence-based findings, and must not mark something `RESOLVED` without checking. `UNRESOLVED` is incompatible with `PASS`. On a first review, return `"prior_findings": []`.
 
 ## Review focus
 
@@ -86,6 +97,9 @@ Use exactly this top-level shape:
 {
   "review_status": "PASS | CHANGES_REQUIRED | CONTEXT_RENORMALIZATION_REQUIRED | HUMAN_DECISION_REQUIRED",
   "summary": "short review summary",
+  "prior_findings": [
+    {"ref": "r1:PLAN-001", "status": "RESOLVED | RESOLVED_BY_GUIDANCE | UNRESOLVED | NOT_APPLICABLE", "note": "how you verified it"}
+  ],
   "findings": [
     {
       "id": "PLAN-001",

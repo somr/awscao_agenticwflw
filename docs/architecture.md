@@ -53,7 +53,7 @@ isolation and development-agent handoff.
 
 Outside `.agentic-sdlc/`:
 
-- `sdlc-records/<ticket>/` — durable workflow evidence (approved plans, approval records, PR review results, manifests) intended for Git; created on demand. It is project data, so it lives outside the embeddable tooling directory and survives tooling upgrades. Tickets recorded before this location existed can be moved with `git mv .agentic-sdlc/records/<ticket> sdlc-records/<ticket>`.
+- `sdlc-records/<ticket>/` — durable workflow evidence (approved plans, approval records, PR review results, manifests) intended for Git; created on demand. `candidates/<run-id>/` holds the non-approvable snapshot of a planning run that did not converge; `plan-guidance.md` is the developer guidance a published plan was built with. It is project data, so it lives outside the embeddable tooling directory and survives tooling upgrades. Tickets recorded before this location existed can be moved with `git mv .agentic-sdlc/records/<ticket> sdlc-records/<ticket>`.
 - `docs/` — guides, contracts and policies that no workflow reads, verification records and reference templates.
 - `examples/` — synthetic Jira/Confluence fixtures, the PAY-DEMO-001 demonstration records and the source-review fixture generator.
 - `tools/` — operational helpers such as `run-report`.
