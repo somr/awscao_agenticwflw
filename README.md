@@ -25,7 +25,10 @@ bash .agentic-sdlc/cao/workflows/install.sh "$PWD"
 Install the four planning profiles when needed:
 
 ```bash
-bash install-profiles.sh
+for profile in context-normalizer planning-analyst plan-author plan-reviewer; do
+  cao profile validate ".agentic-sdlc/cao/profiles/$profile.md"
+  cao install ".agentic-sdlc/cao/profiles/$profile.md"
+done
 ```
 
 Run the local PAY-DEMO-001 fixture with a fresh run ID:

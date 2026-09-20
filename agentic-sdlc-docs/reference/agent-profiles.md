@@ -17,10 +17,13 @@ All profiles use the `claude_code` provider. The delivery supervisor proposes as
 From the repository root:
 
 ```bash
-bash install-profiles.sh
+for profile in context-normalizer planning-analyst plan-author plan-reviewer; do
+  cao profile validate ".agentic-sdlc/cao/profiles/$profile.md"
+  cao install ".agentic-sdlc/cao/profiles/$profile.md"
+done
 ```
 
-The script validates and installs all four planning profiles, including the context normalizer required by `sdlc_dev_plan`.
+This validates and installs all four planning profiles, including the context normalizer required by `sdlc_dev_plan`. Confirm with `cao profile list | grep sdlc_`.
 
 ## Install delivery profiles
 
