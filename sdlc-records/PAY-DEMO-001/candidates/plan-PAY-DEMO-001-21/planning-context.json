@@ -1,0 +1,492 @@
+{
+  "acceptance_criteria": [
+    {
+      "id": "AC-1",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Acceptance Criteria, AC-1",
+          "source_id": "JIRA:PAY-DEMO-001"
+        }
+      ],
+      "text": "Repeated callbacks carrying the same provider event ID must not cause duplicate fulfilment."
+    },
+    {
+      "id": "AC-2",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Acceptance Criteria, AC-2",
+          "source_id": "JIRA:PAY-DEMO-001"
+        }
+      ],
+      "text": "Existing provider-facing HTTP response behaviour must remain backward compatible."
+    },
+    {
+      "id": "AC-3",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Acceptance Criteria, AC-3",
+          "source_id": "JIRA:PAY-DEMO-001"
+        }
+      ],
+      "text": "Duplicate callback attempts must be observable in application logs."
+    }
+  ],
+  "constraints": [
+    {
+      "id": "C-1",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Constraints, paragraph 1",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "Do not introduce a distributed lock service solely for callback idempotency."
+    },
+    {
+      "id": "C-2",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Constraints, paragraph 2",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "Reuse existing persistence and transaction infrastructure where practical."
+    },
+    {
+      "id": "C-3",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Constraints, paragraph 3",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "Every idempotency-relevant write, including a retried event after a prior failure, must go through the same persistence-layer uniqueness constraint on the provider event ID (e.g. delete-then-reinsert under that constraint), not a separate mutable-status compare-and-swap (such as a conditional UPDATE ... WHERE status = 'failed'). A status-based compare-and-swap does not satisfy this constraint."
+    },
+    {
+      "id": "C-4",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Transaction model, paragraph 2",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "PaymentRepository must be constructed per request (a fresh connection to the same underlying persistence store), not shared as a single long-lived instance across concurrent requests. Concurrent callback requests are each handled on their own thread/request context."
+    },
+    {
+      "id": "C-5",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Persistence",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "PostgreSQL is the system of record for payment state; for the current baseline, PaymentRepository's existing SQLite-backed implementation is an accepted stand-in to keep using as-is. Introducing an actual PostgreSQL dependency is out of scope."
+    },
+    {
+      "id": "C-6",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Constraints, paragraph 4",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "Known accepted limitation: a crash after a callback is accepted but before its outcome (success or failure) is durably recorded may leave the event permanently unresolved with no automatic recovery. Automatic reconciliation/timeout recovery is out of scope for this ticket."
+    },
+    {
+      "id": "C-7",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Constraints, paragraph 5",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "Known accepted limitation: if a duplicate arrived while the original delivery was in flight and received a successful acknowledgement, and the original claimant's processing subsequently fails and is released, no further callback for that provider event ID will arrive, so that payment is not automatically recovered. Accepted for this ticket's scope."
+    },
+    {
+      "id": "C-8",
+      "origin": "NORMALIZED_FROM_SOURCE",
+      "sources": [
+        {
+          "location": "Scope",
+          "source_id": "JIRA:PAY-DEMO-001"
+        }
+      ],
+      "text": "Provider adapter public interfaces must not be changed."
+    }
+  ],
+  "contradictions": [],
+  "dependencies": [
+    {
+      "sources": [
+        {
+          "location": "Relevant components",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "Architecture components identified as relevant: CallbackController, PaymentService, PaymentRepository, FulfilmentService."
+    },
+    {
+      "sources": [
+        {
+          "location": "Transaction model, paragraph 1",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "Payment state transitions and fulfilment coordination are initiated by PaymentService."
+    },
+    {
+      "sources": [
+        {
+          "location": "Persistence",
+          "source_id": "CONF:4934"
+        },
+        {
+          "location": "Constraints, paragraph 2",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "Existing persistence and transaction infrastructure, including PaymentRepository's existing SQLite-backed implementation."
+    },
+    {
+      "sources": [
+        {
+          "location": "Background",
+          "source_id": "CONF:4812"
+        }
+      ],
+      "text": "Payment providers' callbacks carry a provider event ID that is stable across retransmissions of the same event."
+    }
+  ],
+  "functional_requirements": [
+    {
+      "id": "FR-1",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Background",
+          "source_id": "CONF:4812"
+        }
+      ],
+      "text": "Each provider callback includes a provider event ID that is stable across retransmissions of the same event."
+    },
+    {
+      "id": "FR-2",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Functional requirements, paragraph 1",
+          "source_id": "CONF:4812"
+        }
+      ],
+      "text": "A provider event that has already completed business processing must not execute fulfilment again."
+    },
+    {
+      "id": "FR-3",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Functional requirements, paragraph 2",
+          "source_id": "CONF:4812"
+        }
+      ],
+      "text": "If fulfilment itself raises or otherwise fails after the event has been claimed (persisted under the uniqueness constraint), the claim must be released (e.g. by deleting the claim row) so that a subsequent retry with the same provider event ID can re-claim the event and attempt fulfilment again. The provider is allowed to retry in this case."
+    },
+    {
+      "id": "FR-4",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Functional requirements, paragraph 2",
+          "source_id": "CONF:4812"
+        }
+      ],
+      "text": "A failure to claim the event in the first place (the persistence write failing for a reason other than a duplicate, e.g. a transient storage error) is not a retry scenario under FR-3; the provider's ordinary retry behaviour repeats the same claim attempt and no released-claim bookkeeping is needed."
+    },
+    {
+      "id": "FR-5",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Functional requirements, paragraph 3",
+          "source_id": "CONF:4812"
+        }
+      ],
+      "text": "If a duplicate callback for the same provider event ID arrives while the original delivery is still being processed (neither completed nor failed), the duplicate must not trigger a second fulfilment."
+    },
+    {
+      "id": "FR-6",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Functional requirements, paragraph 3",
+          "source_id": "CONF:4812"
+        }
+      ],
+      "text": "The concurrency-safe idempotency guarantee must be enforced by a persistence-layer uniqueness constraint on the provider event ID, rather than an application-level or distributed lock."
+    },
+    {
+      "id": "FR-7",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Constraints, paragraph 5",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "A rejected duplicate that arrives while the original delivery is still in flight must receive the same successful response as any other duplicate, per the unchanged external response contract."
+    },
+    {
+      "id": "FR-8",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Observability",
+          "source_id": "CONF:4812"
+        }
+      ],
+      "text": "The service should record enough information in operational logs to distinguish a duplicate callback from a first delivery."
+    }
+  ],
+  "non_functional_requirements": [
+    {
+      "id": "NFR-1",
+      "origin": "EXPLICIT",
+      "sources": [
+        {
+          "location": "Compatibility",
+          "source_id": "CONF:4812"
+        },
+        {
+          "location": "Acceptance Criteria, AC-2",
+          "source_id": "JIRA:PAY-DEMO-001"
+        }
+      ],
+      "text": "The external HTTP response contract for callbacks must remain unchanged by this feature (backward compatible for providers)."
+    },
+    {
+      "id": "NFR-2",
+      "origin": "NORMALIZED_FROM_SOURCE",
+      "sources": [
+        {
+          "location": "Functional requirements, paragraph 3",
+          "source_id": "CONF:4812"
+        },
+        {
+          "location": "Transaction model, paragraph 2",
+          "source_id": "CONF:4934"
+        }
+      ],
+      "text": "Idempotency under concurrent duplicate callbacks must be guaranteed by the persistence layer's uniqueness constraint, so that concurrent inserts genuinely race at the persistence layer independent of timing."
+    },
+    {
+      "id": "NFR-3",
+      "origin": "NORMALIZED_FROM_SOURCE",
+      "sources": [
+        {
+          "location": "Acceptance Criteria, AC-3",
+          "source_id": "JIRA:PAY-DEMO-001"
+        },
+        {
+          "location": "Observability",
+          "source_id": "CONF:4812"
+        }
+      ],
+      "text": "Operational logs must allow duplicate callbacks to be distinguished from first deliveries."
+    }
+  ],
+  "open_questions": [
+    {
+      "blocking": false,
+      "id": "OQ-1",
+      "question": "What are the exact current provider-facing HTTP response (status code and body) for a first delivery, for a duplicate, and for a failed delivery, so that 'unchanged' and 'backward compatible' can be verified?",
+      "reason": "Sources require the response contract to remain unchanged and duplicates to receive 'the same successful response as any other duplicate', but do not state the concrete response values or how failures are currently reported.",
+      "sources": [
+        {
+          "location": "Acceptance Criteria, AC-2",
+          "source_id": "JIRA:PAY-DEMO-001"
+        },
+        {
+          "location": "Compatibility",
+          "source_id": "CONF:4812"
+        },
+        {
+          "location": "Constraints, paragraph 5",
+          "source_id": "CONF:4934"
+        }
+      ]
+    },
+    {
+      "blocking": false,
+      "id": "OQ-2",
+      "question": "What specific information, log level and format must a duplicate-callback log entry contain?",
+      "reason": "AC-3 requires duplicates to be observable in application logs and CONF:4812 says 'enough information to distinguish a duplicate from a first delivery', but neither specifies fields, level or format.",
+      "sources": [
+        {
+          "location": "Acceptance Criteria, AC-3",
+          "source_id": "JIRA:PAY-DEMO-001"
+        },
+        {
+          "location": "Observability",
+          "source_id": "CONF:4812"
+        }
+      ]
+    },
+    {
+      "blocking": false,
+      "id": "OQ-3",
+      "question": "Does the idempotency requirement cover only fulfilment, or also other 'payment processing' (e.g. payment state transitions) triggered by a callback?",
+      "reason": "The Jira description refers to 'duplicate payment processing or fulfilment', while AC-1 and CONF:4812 refer only to duplicate fulfilment / fulfilment not executing again.",
+      "sources": [
+        {
+          "location": "Description",
+          "source_id": "JIRA:PAY-DEMO-001"
+        },
+        {
+          "location": "Acceptance Criteria, AC-1",
+          "source_id": "JIRA:PAY-DEMO-001"
+        },
+        {
+          "location": "Functional requirements, paragraph 1",
+          "source_id": "CONF:4812"
+        }
+      ]
+    },
+    {
+      "blocking": false,
+      "id": "OQ-4",
+      "question": "How is 'completed business processing' defined, and is a completed event's claim retained indefinitely or subject to a retention period?",
+      "reason": "CONF:4812 uses 'completed business processing' without definition and no source states whether or for how long claim records for completed events are retained.",
+      "sources": [
+        {
+          "location": "Functional requirements, paragraph 1",
+          "source_id": "CONF:4812"
+        }
+      ]
+    },
+    {
+      "blocking": false,
+      "id": "OQ-5",
+      "question": "Is a requirement to log duplicates mandatory ('must' in AC-3) or advisory ('should' in CONF:4812 Observability)?",
+      "reason": "Modal strength differs between the sources; the Jira ticket states it as an acceptance criterion, while the Confluence page uses 'should'. No source establishes precedence.",
+      "sources": [
+        {
+          "location": "Acceptance Criteria, AC-3",
+          "source_id": "JIRA:PAY-DEMO-001"
+        },
+        {
+          "location": "Observability",
+          "source_id": "CONF:4812"
+        }
+      ]
+    }
+  ],
+  "problem_statement": {
+    "sources": [
+      {
+        "location": "Description",
+        "source_id": "JIRA:PAY-DEMO-001"
+      }
+    ],
+    "text": "Payment providers can send the same callback more than once. A repeated provider event must not trigger duplicate payment processing or fulfilment."
+  },
+  "retrieval_warnings": [],
+  "schema_version": "1.0",
+  "scope": {
+    "in": [
+      {
+        "sources": [
+          {
+            "location": "Scope",
+            "source_id": "JIRA:PAY-DEMO-001"
+          }
+        ],
+        "text": "The payment callback processing path."
+      },
+      {
+        "sources": [
+          {
+            "location": "Persistence",
+            "source_id": "CONF:4934"
+          }
+        ],
+        "text": "Continuing to use PaymentRepository's existing SQLite-backed implementation as an accepted stand-in for PostgreSQL, as-is, for this repository's current baseline."
+      }
+    ],
+    "out": [
+      {
+        "sources": [
+          {
+            "location": "Scope",
+            "source_id": "JIRA:PAY-DEMO-001"
+          }
+        ],
+        "text": "Provider adapter public interfaces."
+      },
+      {
+        "sources": [
+          {
+            "location": "Persistence",
+            "source_id": "CONF:4934"
+          }
+        ],
+        "text": "Introducing an actual PostgreSQL dependency."
+      },
+      {
+        "sources": [
+          {
+            "location": "Constraints, paragraph 4",
+            "source_id": "CONF:4934"
+          }
+        ],
+        "text": "Automatic reconciliation or timeout recovery for events left permanently unresolved after a crash between callback acceptance and durable recording of the outcome; may be addressed by a follow-up ticket."
+      },
+      {
+        "sources": [
+          {
+            "location": "Constraints, paragraph 5",
+            "source_id": "CONF:4934"
+          }
+        ],
+        "text": "Automatic recovery of a payment whose original in-flight delivery fails and is released for retry after a duplicate was already acknowledged successfully; may be addressed by a follow-up ticket (e.g. a reconciliation job over rows stuck in a non-final state)."
+      }
+    ],
+    "uncertain": []
+  },
+  "sources": [
+    {
+      "content_digest": "63d3b4f5bb73aa0551796a3c8a695861353082deb9436a824a9c80ae2e339991",
+      "source_id": "JIRA:PAY-DEMO-001",
+      "status": "RETRIEVED",
+      "title": "Make payment callbacks idempotent",
+      "type": "JIRA"
+    },
+    {
+      "content_digest": "e2524c60bd64cb542a9eb23a6b89cd95c453ffa073405d8497c39e381778ea43",
+      "source_id": "CONF:4812",
+      "status": "RETRIEVED",
+      "title": "Payment Callback Processing",
+      "type": "CONFLUENCE"
+    },
+    {
+      "content_digest": "01527c41aff931406eabd25ddc9c5a7867df34eba70c2ba2f774d29ad3049064",
+      "source_id": "CONF:4934",
+      "status": "RETRIEVED",
+      "title": "Payment Service Architecture",
+      "type": "CONFLUENCE"
+    }
+  ],
+  "ticket": {
+    "id": "PAY-DEMO-001",
+    "summary": "Make payment callbacks idempotent"
+  }
+}

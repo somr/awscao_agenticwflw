@@ -1,0 +1,25 @@
+{
+  "base_branch": "main",
+  "context_versions": 1,
+  "created_at": "2026-09-20T21:27:19.066355Z",
+  "files": {
+    "candidate-plan.md": "52d1f22d350ad2d6064859a76647b7fe55aa9c1a3157b03938c2ac4473efcbc9",
+    "human-needed.json": "69eae501743e0b44fd7ded62ae726cdcdb6976c36265019662d3696c7c2c4fbd",
+    "planning-analysis.md": "39968fe9ca84f05b3084aeae18badc9574ba9b54d43357f1da70cbbfcdd59289",
+    "planning-context.json": "809299f06cad507d62571a07a1d073f394093683a3d2d1ed437e4a1677d2d65a",
+    "reviews/01-review-r1-c1.json": "bb01816bbd17efa3a0ee0ea3fe4d95fc5eb11428ac0ad10805c7112808fae8bc",
+    "sources.json": "b7751e8423fa94324ef5ef651355c921d46c530daf2eef3a51f2365c3894229f"
+  },
+  "guidance_sha256": null,
+  "plan_sha256": "52d1f22d350ad2d6064859a76647b7fe55aa9c1a3157b03938c2ac4473efcbc9",
+  "planning_context_sha256": "809299f06cad507d62571a07a1d073f394093683a3d2d1ed437e4a1677d2d65a",
+  "repository_baseline_sha": "a806a98e5a4b024ef5000d29a3458f7c219bc068",
+  "resumed_from": null,
+  "review_rounds": 1,
+  "run_id": "plan-PAY-DEMO-001-21",
+  "schema_version": "1.0",
+  "sources_sha256": "5178149cf34bdb37afcfb9b102e76a22a1e412e88685c33382509f15781e97d7",
+  "state": "NOT_CONVERGED",
+  "stop_cause": "review_convergence_limit_reached",
+  "ticket_id": "PAY-DEMO-001"
+}
