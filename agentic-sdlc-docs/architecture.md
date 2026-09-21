@@ -1,76 +1,215 @@
-# Agentic SDLC on AWS Labs CAO
+# Agentic SDLC architecture on AWS Labs CAO
 
-This directory is the repository-local, version-controlled contract and implementation for the agentic development lifecycle.
+This guide describes the implemented learning prototype as of **2026-09-21**. Workflow code and runtime contracts live in [`.agentic-sdlc/`](../.agentic-sdlc/); this directory holds project documentation. Start with the [root README](../README.md) for installation and commands.
+
+## System overview
+
+Python owns workflow order, validation, persistence, Git operations and verification. CAO runs the agent steps through the `claude_code` provider. Agents produce analysis, plans, code or findings; Python checks their outputs and chooses the next stage. Humans record approval separately.
+
+```mermaid
+flowchart TD
+    REQ["Requirements sources"] --> PLAN["Planning: sdlc_dev_plan"]
+    PLAN -->|Passing review| DP["Reviewed Development Plan"]
+    PLAN -->|Needs clarification| CAND["Non-approvable candidate"]
+    CAND -.->|Human guidance and eligible new run| PLAN
+    DP --> PA["Human plan decision"]
+    PA -->|APPROVED| DEL["Delivery: sdlc_deliver"]
+    DEL --> BRIEF["Local branch, PR artifacts<br/>and Human Review Brief"]
+    BRIEF --> DA["Human delivery decision"]
+
+    PR["Existing GitHub PR<br/>or committed local fixture"] --> SR["Source review: source_review"]
+    SR --> FB["Local findings and feedback queues"]
+    FB -.->|Separate explicit publication command| GH["GitHub review comments"]
+```
+
+Planning and Delivery share ticket-level records. Source review is independent: it needs no approved plan or delivery manifest. Its `AUTO_FIX` queue describes eligible work for a later consumer; it does not trigger Delivery or apply fixes. Delivery itself creates local PR artifacts and does not push, open a remote PR or merge.
+
+## Execution components
+
+The maintained modules are under [`.agentic-sdlc/cao/sdlc_workflows/`](../.agentic-sdlc/cao/sdlc_workflows/):
+
+| Component | Responsibility |
+|---|---|
+| `planning.py`, `delivery.py`, `source_review.py` | Workflow inputs, domain contracts, routing and orchestration |
+| `hybrid.py` | Specialist registry, supervisor assignments, sequential workers, skill injection and verification-suite selection |
+| `runtime.py` | CAO steps, answer-file delivery, completion checks, bounded JSON repair and terminal cleanup |
+| `artifacts.py`, `validation.py`, `errors.py` | Evidence files, digests, validation helpers and error types |
+| `source_config.py` | Source-root and write-profile validation used by Delivery; the hook carries a standalone copy checked by parity tests |
+
+The common agent-step protocol is shown below. Each workflow supplies its profile, prompt and output contract; it retains its own domain policy. In particular, Delivery and Source Review use different finding-routing rules.
+
+```mermaid
+sequenceDiagram
+    participant W as Python workflow
+    participant R as Shared runtime
+    participant C as CAO server
+    participant A as Claude Code agent
+    participant F as Runtime evidence files
+    W->>R: Profile, prompt, step ID and output contract
+    R->>C: Start step with answer-file instructions
+    C->>A: Launch configured profile
+    A->>F: Write requested answer through write hook
+    R->>C: Check terminal status
+    R->>F: Wait for stable answer file
+    R->>C: Clean up this step's terminal
+    R->>R: Parse and validate structured output
+    opt Completed answer violates JSON contract
+        R->>C: One repair step with a new answer path
+        Note over R,F: Same answer-delivery and cleanup protocol
+    end
+    R-->>W: Validated output or execution/contract error
+    W->>F: Persist evidence and routing result
+```
+
+The answer file is the response channel; terminal text is not treated as the final structured answer. An incomplete execution is distinguished from a completed but malformed JSON response. Agents do not launch other agents, run verification or manage Git; the Python workflow does that work.
 
 ## Implemented workflows
 
-Planning Workflow 1 is executable:
+### Planning: requirements to a reviewed plan
 
-```text
-Jira/Confluence retrieval adapter (local_fixture default, jira_confluence_live for production — see workflows/planning.md "Source adapters")
-        ↓
-Context Normalizer (Claude)
-        ↓
-deterministic validation/readiness
-        ↓
-Planning Analyst (Claude)
-        ↓
-Plan Author (Claude)
-        ↓
-Plan Reviewer (Claude)
-        ↓
-revise / re-normalize / human escalation
-        ↓
-reviewed Development Plan
-        ↓
-HUMAN APPROVAL
+The retrieval adapter copies local fixtures by default. The optional `jira_confluence_live` adapter fetches remote sources through Python; it has been tested against a fake HTTP server, not a real Atlassian tenant.
+
+```mermaid
+flowchart TD
+    SRC["Retrieve ticket and Confluence sources<br/>Python adapter"] --> N["Context Normalizer"]
+    N --> V{"Python: context valid<br/>and ready?"}
+    V -->|Yes| A["Planning Analyst"]
+    A --> P["Plan Author"]
+    P --> R["Independent Plan Reviewer"]
+    R --> G{"Python: review outcome"}
+    G -->|PASS| PUB["Publish reviewed plan<br/>AWAITING_HUMAN_APPROVAL"]
+    G -->|Revise within budget| P
+    G -->|Re-normalize within budget| N
+    V -->|Not ready| C["Preserve candidate and blockers<br/>AWAITING_HUMAN_CLARIFICATION"]
+    G -->|Human decision or exhausted budget| C
+    H["Optional developer guidance"] -.-> A
+    H -.-> P
+    H -.-> R
 ```
 
-If the independent review cannot return `PASS`, nothing approvable is published: the run leaves a non-approvable candidate under `agentic-sdlc-records/<ticket>/candidates/`, and the developer can supply guidance and warm-start from it (see the [Planning guide](workflows/planning.md)).
+Only a `PASS` review publishes a plan for approval. Later reviews must account for earlier blocking findings. Developer guidance reaches the analyst, author and reviewer; it does not rewrite the normalized source requirements.
 
-[Delivery Workflow 2](../.agentic-sdlc/contracts/delivery-workflow.md) implements approved plans and manages
-verification, review and remediation; the [Delivery guide](workflows/delivery.md) covers running, configuring and approving it. Install its bundled workflow with
-`.agentic-sdlc/cao/workflows/install_deliver.sh`; the delivery profiles are listed in the profile guide.
-Delivery defaults to a hybrid implementation stage: a code supervisor assigns
-approved work to registered workers with required skills, Python dispatches them
-sequentially, and an integration pass reconciles the feature before verification.
-See [hybrid delivery](workflows/hybrid-delivery.md) for configuration, limitations
-and step-by-step specialist/skill extension procedures.
+Non-converged candidates preserve the plan, context, analysis, reviews and digests available at the stop point. An eligible `resume_from` starts a **new run** from that evidence, with a fresh review budget. It checks the baseline, retrieved sources and candidate integrity; context-readiness stops require a cold run. See the [Planning guide](workflows/planning.md) for guidance authority and warm-start conditions.
 
-[Source Review Workflow 3](workflows/source-review.md) reviews an existing GitHub
-PR independently of planning/delivery. Five agents map source, review correctness and
-security, validate findings and author feedback. A deterministic gate routes findings
-to `AUTO_FIX` or `HUMAN_REQUIRED`. The guide covers installation, running, publication,
-isolation and development-agent handoff.
+### Delivery: approved plan to a reviewed branch
 
-## Layout
+Delivery checks the plan approval and configured source roots, then creates or continues `sdlc/<ticket>`. A new branch starts at the current base-branch tip; the approved baseline must be an ancestor of that tip. The default hybrid mode uses a supervisor and registered workers. `implementation_mode=single` uses one implementer.
 
-`.agentic-sdlc/` holds only what the workflows read or write at runtime; paths are resolved directly by workflow code, the installer and the write-scope hook.
+```mermaid
+flowchart TD
+    P["Approved plan and registry"] --> CHECK["Python preflight<br/>and branch selection"]
+    CHECK --> MODE{"Implementation mode"}
+    MODE -->|Hybrid: default| SUP["Code Supervisor proposes assignments"]
+    SUP --> GRAPH["Python validates task graph"]
+    GRAPH --> WORK["Python dispatches workers sequentially<br/>with selected skill instructions"]
+    WORK --> INT["Implementer integrates assignments"]
+    MODE -->|Single| IMP["One Implementer"]
+    INT --> COMMIT["Python commits and verifies"]
+    IMP --> COMMIT
+    COMMIT -->|Pass| REVIEW["Local PR artifacts<br/>and independent PR Reviewer"]
+    COMMIT -->|First verification failure| REPAIR["One implementation repair turn"]
+    REPAIR --> COMMIT
+    COMMIT -->|Verification still fails| BLOCK["Stop with failure evidence"]
+    REVIEW --> ROUTE{"Python routes findings"}
+    ROUTE -->|Eligible and rounds remain| REM["Remediator: at most three rounds"]
+    REM --> VERIFY["Python commits and verifies again"]
+    VERIFY -->|Pass| REVIEW
+    VERIFY -->|Fail| BLOCK
+    ROUTE -->|No further automatic fixes| BRIEF["Human Review Brief<br/>AWAITING_HUMAN_REVIEW"]
+```
 
-- `.agentic-sdlc/contracts/` — lifecycle and context contracts read by Planning and Delivery.
-- `.agentic-sdlc/policies/` — governance and PR-review policy.
-- `.agentic-sdlc/schemas/` — machine-readable Planning Context schema.
-- `.agentic-sdlc/templates/` — Development Plan template, plus the approval-record and Human Review Brief templates named by the delivery contract.
-- `.agentic-sdlc/cao/profiles/` — repository-owned CAO agent profiles.
-- `.agentic-sdlc/cao/specialists.json` and `.agentic-sdlc/cao/skills/` — hybrid-delivery registry (workers, skills, trusted verification commands), the project's source roots and write profiles, and skill content. Read from the repository when a run starts, not bundled; see [hybrid delivery](workflows/hybrid-delivery.md).
-- `.agentic-sdlc/cao/workflows/` — local workflow entry points and installer commands.
-- `.agentic-sdlc/cao/sdlc_workflows/` — workflow implementations and shared execution modules (`hybrid.py` is Delivery's supervisor/worker dispatch).
-- `.agentic-sdlc/cao/build_workflow.py`, `install_workflow.py` — standalone CAO deployment builder and installer; see [the deployment guide](build-and-install.md).
-- `.agentic-sdlc/scripts/` — deterministic human-decision recorders (`approve_plan.py`, `record_pr_approval.py`) and the optional source-review publisher.
-- `.agentic-sdlc/runtime/<ticket>/<run-id>/` — temporary detailed execution evidence; Git-ignored; created on demand.
+The supervisor proposes 1–16 ordered assignments; Python validates worker names, skills and dependencies before dispatch. Workers execute one at a time in the same checkout, each in a fresh session. The integration pass checks the whole feature. There is no parallel worker scheduler or per-run delivery worktree.
 
-Outside `.agentic-sdlc/`:
+[`specialists.json`](../.agentic-sdlc/cao/specialists.json) connects workers to profiles, skills and verification suites. Hybrid verification uses the deduplicated union of selected worker and skill commands; single mode uses the `application` suite. Python runs commands without a shell, with timeouts, and repeats verification after repair or remediation. The registry currently ships one general `developer` worker and AngularJS/Spark skills; those skill suites need their own project files and toolchains.
 
-- `agentic-sdlc-records/<ticket>/` — durable workflow evidence (approved plans, approval records, PR review results, manifests) intended for Git; created on demand. `candidates/<run-id>/` holds the non-approvable snapshot of a planning run that did not converge; `plan-guidance.md` is the developer guidance a published plan was built with. It is project data, so it lives outside the embeddable tooling directory and survives tooling upgrades. Tickets recorded before this location existed can be moved with `git mv .agentic-sdlc/records/<ticket> agentic-sdlc-records/<ticket>`.
-- `agentic-sdlc-docs/` — guides, contracts and policies that no workflow reads, verification records and reference templates.
-- `agentic-sdlc-local-inputs/` — local stand-ins for Jira and Confluence: `PAY-DEMO-001/` is a text-file fixture used as the planning `source_dir`. It also holds the PAY-DEMO-001 demonstration records (`PAY-DEMO-001/records/`) and the source-review fixture generator (`source-review/`), which are not inputs.
+Protected or high-impact findings go to human handling. Exhausting automatic remediation also leads to a brief with unresolved findings. Some exceptions currently end the CAO run as `failed` without updating the manifest to `BLOCKED`; the [Delivery guide](workflows/delivery.md) documents those outcomes. See [hybrid delivery](workflows/hybrid-delivery.md) for extension procedures.
 
-The three `agentic-sdlc-*` folders are the project-side folders of the agentic SDLC. On 2026-09-20 they were renamed from `docs/`, `examples/` and `sdlc-records/` (`sdlc-records/` had itself replaced `.agentic-sdlc/records/`). The workflows, the write-scope hook and the approval scripts use only the new names, so a checkout that still has the old ones needs `git mv sdlc-records agentic-sdlc-records` (and the workflows and profiles reinstalled) before it can run.
+### Source review: an independent PR snapshot
 
-## Safety model
+Source Review pins commits in a private object store and exports base/head source as plain files into a run workspace. It does not check out the PR in the developer's working tree. Local fixture mode supplies a repository and commit SHAs instead of a GitHub URL.
 
-Planning, review and code-supervisor agents only write their instructed answer files under runtime evidence. Delivery implementer/remediator agents (including hybrid workers, which use the implementer profile) can write application files under the project's configured source roots (default `app/`, set in the registry), while source-review agents work in isolated run workspaces. The repository hook enforces these write boundaries because CAO worker permission bypasses do not provide path-level protection.
+```mermaid
+flowchart TD
+    PR["GitHub PR or local commit pair"] --> SNAP["Python pins commits<br/>and exports source snapshot"]
+    SNAP --> MAP["Context Mapper"]
+    MAP --> COR["Correctness Reviewer"]
+    COR --> SEC["Security Reviewer"]
+    SEC --> VAL["Finding Validator<br/>accepts, rejects or deduplicates"]
+    VAL --> GATE["Python routing gate"]
+    GATE --> AUTHOR["Feedback Author"]
+    AUTHOR --> OUT["Python renders code-review.json<br/>and comments.md"]
+    OUT --> AUTO["AUTO_FIX queue"]
+    OUT --> HUMAN["HUMAN_REQUIRED queue"]
+```
 
-The Python workflows persist artifacts and own control flow. The workflow, not the model, decides whether review findings cause plan revision, context re-normalization, automatic remediation or human escalation.
+The arrows show execution order. Correctness and security reviewers have separate contexts and are instructed not to consult each other's findings; the validator considers their combined candidates. Source review reads code and test source but does not run tests, establish requirements compliance or approve the PR. GitHub mode checks the remote base/head again at completion and marks changed snapshots `STALE`. Publication is a separate explicit action. See the [Source-review guide](workflows/source-review.md).
 
-A generated Development Plan is not approved by an agent. Human approval is recorded separately and is bound to the exact SHA-256 of the reviewed plan and the repository baseline SHA.
+## Build and deployment boundary
+
+Repository modules are the maintained source. The builder follows each workflow's dependency graph and emits one standalone Python script, including a literal `INPUTS` declaration and `SDLC_BUNDLE_MANIFEST` with module digests. The installer validates the candidate through CAO before promoting it.
+
+```mermaid
+flowchart LR
+    subgraph REPO["Repository: maintained source and assets"]
+        CODE["Workflow and shared Python modules"]
+        PROFILES["Agent profiles"]
+        ASSETS["Contracts, policies, schemas, templates<br/>registry and skills"]
+    end
+    CODE --> BUILD["Deterministic builder"]
+    BUILD --> INSTALL["Installer: validate and promote"]
+    INSTALL --> BUNDLE["Installed standalone workflow"]
+    PROFILES --> PI["Profile installation"]
+    PI --> CP["CAO profile registry"]
+    BUNDLE --> RUN["CAO run<br/>frozen script snapshot"]
+    CP --> RUN
+    ASSETS -->|Read from repository_root| RUN
+```
+
+CAO snapshots the entry script, not its Python import tree, so local entry points must not be copied directly into the workflow installation directory. Bundling preserves the workflow code when that script is relocated or replayed. It does **not** freeze every external asset or make every workflow resumable; Source Review refuses reuse of an existing run directory, and Planning warm starts use new runs.
+
+Python edits require rebuilding and reinstalling affected bundles. Profile edits require profile reinstallation. Repository assets such as the registry, skills and contracts remain outside the bundle and are read by subsequent runs. Planning and Delivery profiles are installed separately before their workflows; Source Review's installer includes its five profiles and refuses to overwrite an existing installation. See [build and install](build-and-install.md).
+
+## Layout and evidence lifecycle
+
+Tooling, project data and detailed execution evidence have separate locations:
+
+| Path | Contents and lifecycle |
+|---|---|
+| `.agentic-sdlc/cao/` | Maintained modules, local entry points, builder, installers, profiles, registry and skills |
+| `.agentic-sdlc/contracts/`, `policies/`, `schemas/`, `templates/` | Runtime contracts and supporting assets; templates also include the human approval and review-brief formats |
+| `.agentic-sdlc/scripts/` | Human-decision recorders and optional source-review publisher |
+| `.claude/settings.json`, `.claude/hooks/restrict-write-scope.py` | Repository write-hook wiring and enforcement |
+| `agentic-sdlc-records/<ticket>/` | Durable plans, guidance, reviews, approval records and manifests, intended for Git; outside the embeddable tooling directory |
+| `agentic-sdlc-records/<ticket>/candidates/<run-id>/` | Non-approvable planning snapshots and human-needed reports |
+| `.agentic-sdlc/runtime/<ticket>/<run-id>/` | Planning/Delivery answers, raw output, dispatch and verification logs; Git-ignored |
+| `.agentic-sdlc/runtime/source-review/<run-id>/` | Source-review object store, workspace, report and optional publication receipt; Git-ignored |
+| `agentic-sdlc-local-inputs/` | Requirements fixtures, demonstration records and source-review fixture generator |
+| `agentic-sdlc-docs/` | Guides, reference material and dated verification records |
+| `app/`, `tests/` | Payment-service example and workflow test suites, respectively |
+
+Planning publishes a reviewed plan, review and execution manifest; human approval adds `plan-approval-record.json`. Delivery adds its manifest, local PR artifacts, review rounds and Human Review Brief; the human decision adds `pr-approval-record.json`. Earlier decisions on superseded delivery heads are archived under `approval-history/`.
+
+Source-review evidence stays entirely in its run directory: archive the whole directory when durable retention is needed. Legacy checkouts may still use `docs/`, `examples/`, `sdlc-records/` or `.agentic-sdlc/records/`; current code uses the paths above.
+
+## Enforcement and human authority
+
+The profiles request one answer file per step. **The current hooks enforce a broader runtime-directory boundary**, not exclusive ownership of that answer file:
+
+| Actor | Current enforced agent-tool write scope |
+|---|---|
+| Planning agents, code supervisor, PR reviewer | Repository `.agentic-sdlc/runtime/**` |
+| Implementer, remediator and registered source-writing workers | Runtime tree plus configured source roots, narrowed by `write_profiles` where configured |
+| Source-review agents | `.agentic-sdlc/runtime/**` inside the isolated workspace; exported source and other workspace files are protected |
+
+The repository hook uses CAO terminal metadata and the trusted registry to grant source writes. Invalid source-root configuration denies source writes; the runtime answer area remains writable. The hook intercepts Claude write/edit tools and applies to CAO worker sessions. It does not sandbox Python orchestration or application code executed by verification. See the [profile reference](reference/agent-profiles.md) and [hook reference](reference/write-scope-hook.md), read alongside these current limits.
+
+Humans use [`approve_plan.py`](../.agentic-sdlc/scripts/approve_plan.py) to record a decision bound to the reviewed plan digest, baseline and any guidance. [`record_pr_approval.py`](../.agentic-sdlc/scripts/record_pr_approval.py) binds the delivery decision to the exact reviewed local branch head. These scripts record supplied human decisions; they do not authenticate a remote GitHub review. Agents cannot approve plans or PRs through the workflow.
+
+The [hardening plan](../hardening-plan.md) proposes exact answer-file authorization, stronger baseline-drift checks and consistent protection of pre-existing local changes. They are not implemented guarantees. At present:
+
+- Baseline ancestry does not establish that intervening changes preserve the plan's assumptions.
+- Clean-source and empty-index checks are enforced for hybrid mode, not consistently for single mode. Delivery requires exclusive use of its checkout; concurrency isolation is not enforced.
+- Planning does not consume configured source roots, so a human must check that approved tasks fit Delivery's write scope.
+- Verification executes agent-editable application code and tests on the host without a dedicated sandbox.
+
+The [future-versions assessment](../future-versions.md) records remaining gaps and deferred capabilities. Tests cover source and bundled execution, hooks, approval and integration paths; real CAO checks and their limits are documented separately in the [verification records](README.md#verification-records).

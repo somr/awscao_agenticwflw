@@ -1,34 +1,49 @@
 # Documentation map
 
-The root [README](../README.md) is the current project entry point. `.agentic-sdlc/` contains workflow tooling and runtime evidence. Project documentation lives here, local input fixtures in [`agentic-sdlc-local-inputs/`](../agentic-sdlc-local-inputs/), and durable workflow records in [`agentic-sdlc-records/`](../agentic-sdlc-records/).
+Start with the [project README](../README.md) for the quick start and current capabilities. Use this index to find detailed guides, specifications and evidence.
 
 ## Guides
 
-- [Architecture and repository layout](architecture.md)
-- [Modular build, validation and installation](build-and-install.md)
-- [Planning workflow](workflows/planning.md)
-- [Delivery workflow](workflows/delivery.md)
-- [Source-review workflow](workflows/source-review.md)
-- [Delivery: specialists and skills](workflows/hybrid-delivery.md)
-- [Agent profile catalog](reference/agent-profiles.md)
-- [Agent answers and write scope](reference/write-scope-hook.md): the hook that confines every agent
-- [Payment-service example](../app/README.md)
+| To… | Read… |
+|---|---|
+| Understand components, workflow relationships and deployment | [Architecture and diagrams](architecture.md) |
+| Locate tooling, records and runtime evidence | [Layout and evidence lifecycle](architecture.md#layout-and-evidence-lifecycle) |
+| Build, validate, install or upgrade workflows | [Build and install](build-and-install.md) |
+| Run the workflow test suites | [Tests](build-and-install.md#tests) |
+| Plan work, supply guidance, warm-start or approve a plan | [Planning](workflows/planning.md) |
+| Deliver a plan, configure source roots or record a delivery decision | [Delivery](workflows/delivery.md) |
+| Review an existing PR or publish feedback | [Source review](workflows/source-review.md) |
+| Extend Delivery with workers, skills or verification toolchains | [Specialists and skills](workflows/hybrid-delivery.md) |
+| Install or change agent profiles and providers | [Agent profiles](reference/agent-profiles.md) |
+| Inspect the answer protocol and write hook | [Agent answers and write scope](reference/write-scope-hook.md) |
+| Check current enforcement boundaries and limitations | [Enforcement and human authority](architecture.md#enforcement-and-human-authority) |
 
 ## Contracts and policies
 
-- Read by workflow code, so kept under `.agentic-sdlc/`: [planning](../.agentic-sdlc/contracts/planning-workflow.md), [context package](../.agentic-sdlc/contracts/context-package.md), [delivery](../.agentic-sdlc/contracts/delivery-workflow.md), [governance](../.agentic-sdlc/policies/governance.md), [PR review](../.agentic-sdlc/policies/pr-review.md).
-- Not read by workflow code: [source-review contract](contracts/source-review-workflow.md) and [source-review policy](policies/source-review.md).
+- Runtime contracts: [Planning](../.agentic-sdlc/contracts/planning-workflow.md), [Context package](../.agentic-sdlc/contracts/context-package.md), [Delivery](../.agentic-sdlc/contracts/delivery-workflow.md).
+- Runtime policies: [Governance](../.agentic-sdlc/policies/governance.md), [PR review](../.agentic-sdlc/policies/pr-review.md).
+- Source-review specifications: [Contract](contracts/source-review-workflow.md), [Policy](policies/source-review.md).
+- Schema: [Planning Context](../.agentic-sdlc/schemas/planning-context.schema.json).
 
 ## Templates
 
-- Read by workflow code: `.agentic-sdlc/templates/development-plan.md`. The approval-record and Human Review Brief templates stay beside it because the delivery contract references them.
-- Reference only: [`templates/planning-context.example.json`](templates/planning-context.example.json).
-- For humans: [`templates/developer-guidance.md`](templates/developer-guidance.md), the template for the planning workflow's `guidance_file` input.
+- [Development Plan](../.agentic-sdlc/templates/development-plan.md)
+- [Plan approval record](../.agentic-sdlc/templates/plan-approval-record.json)
+- [Human Review Brief](../.agentic-sdlc/templates/human-review-brief.md)
+- [Planning Context example](templates/planning-context.example.json)
+- [Developer guidance](templates/developer-guidance.md)
 
 ## Plans
 
-- [Planning: non-converged runs, developer guidance and warm start](plans/planning-guidance-and-warm-start.md) — implemented and live-verified (2026-09-20)
-- [Delivery: configurable source roots](plans/configurable-source-roots.md) — implemented and live-verified (2026-09-21)
+Proposed work and remaining gaps:
+
+- [Workflow hardening plan](../hardening-plan.md)
+- [Future versions and reassessment criteria](../future-versions.md)
+
+Implementation design history; use the workflow guides above for current operating instructions:
+
+- [Planning guidance and warm start](plans/planning-guidance-and-warm-start.md)
+- [Configurable source roots](plans/configurable-source-roots.md)
 
 ## Verification records
 
@@ -39,9 +54,11 @@ The root [README](../README.md) is the current project entry point. `.agentic-sd
 
 ## Examples
 
-- [`agentic-sdlc-local-inputs/PAY-DEMO-001/`](../agentic-sdlc-local-inputs/PAY-DEMO-001/) — Jira/Confluence fixture used as the planning `source_dir`, with the demonstration workflow records in `records/` (see its README; live records go to `agentic-sdlc-records/`).
-- [`agentic-sdlc-local-inputs/source-review/`](../agentic-sdlc-local-inputs/source-review/) — fixture generator and sample review output.
+- [Payment-service application](../app/README.md)
+- [PAY-DEMO-001 requirements fixture](../agentic-sdlc-local-inputs/PAY-DEMO-001/)
+- [PAY-DEMO-001 demonstration records](../agentic-sdlc-local-inputs/PAY-DEMO-001/records/README.md)
+- [Source-review fixture instructions](workflows/source-review.md#local-fixture)
 
 ## Archive
 
-[Archive](archive/README.md) contains historical handoffs and the earlier documentation reorganization proposal. These files are evidence of previous development sessions, not current operating instructions.
+[Historical handoffs and superseded documentation](archive/README.md).
