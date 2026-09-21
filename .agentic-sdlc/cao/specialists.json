@@ -1,5 +1,7 @@
 {
   "version": 1,
+  "source_roots": ["app"],
+  "write_profiles": {"sdlc_implementer": null, "sdlc_remediator": null},
   "workers": {
     "developer": {
       "profile": "sdlc_implementer",

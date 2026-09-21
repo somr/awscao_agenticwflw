@@ -92,6 +92,29 @@ class HybridTest(unittest.TestCase):
                 with patch.object(mod, '_read_json', return_value=registry), self.assertRaises(mod.WorkflowContractError):
                     mod.load_specialists(ROOT)
 
+    def test_a_worker_whose_profile_may_not_write_is_a_registry_error(self):
+        for mod in modules():
+            original = mod.load_specialists(ROOT)
+            # Default write profiles cover the implementer, so this is accepted.
+            self.assertEqual(original['workers']['developer']['profile'], 'sdlc_implementer')
+            registry = copy.deepcopy(original)
+            registry['workers']['java'] = dict(registry['workers']['developer'], profile='sdlc_java_persistence')
+            with patch.object(mod, '_read_json', return_value=registry), self.assertRaisesRegex(
+                    mod.WorkflowContractError, 'not listed in write_profiles'):
+                mod.load_specialists(ROOT)
+            # Listing the profile (limited to part of a source root) makes the same registry valid.
+            registry['write_profiles'] = {'sdlc_implementer': None, 'sdlc_java_persistence': ['app/payment_service']}
+            with patch.object(mod, '_read_json', return_value=registry):
+                self.assertIn('java', mod.load_specialists(ROOT)['workers'])
+
+    def test_invalid_source_root_config_stops_the_registry_from_loading(self):
+        for mod in modules():
+            for extra in ({'source_roots': ['.git']}, {'write_profiles': {'sdlc_code_supervisor': None}},
+                          {'source_roots': ['app'], 'write_profiles': {'sdlc_implementer': ['elsewhere']}}):
+                registry = dict(copy.deepcopy(mod.load_specialists(ROOT)), **extra)
+                with patch.object(mod, '_read_json', return_value=registry), self.assertRaises(mod.WorkflowContractError):
+                    mod.load_specialists(ROOT)
+
     def test_worker_failure_stops_dependents_and_integration(self):
         for mod in modules():
             calls = []

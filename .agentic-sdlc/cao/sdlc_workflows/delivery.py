@@ -34,6 +34,7 @@ from .runtime import (
     PROVIDER,
 )
 from .hybrid import run_hybrid, load_specialists
+from .source_config import load_source_config, resolve_source_roots
 
 INPUTS = {
     "ticket_id": {"type": "string", "required": True},
@@ -101,7 +102,7 @@ def _ensure_delivery_branch(repo: Path, branch: str, base_branch: str) -> None:
     Deliberately NOT rooted at the plan's historical approval-baseline
     commit. Discovered live: this repository's own tooling (notably
     .claude/hooks/restrict-write-scope.py, which grants the implementer
-    agent write access to app/**) is itself tracked in git. Checking out a
+    agent write access to the source roots) is itself tracked in git. Checking out a
     branch rooted at an old commit reverts the working tree's copy of that
     hook back to whatever it was at that commit — silently taking away the
     very write access this workflow's agents depend on, with no error, just
@@ -160,14 +161,46 @@ def _check_plan_approved(records_dir: Path, plan_path: Path, repo: Path, base_br
     return manifest
 
 
+def _source_roots(repo: Path) -> list[str]:
+    """The validated source roots: where agents may write and where Python commits, verifies and diffs.
+
+    Configured by the registry keys source_roots/write_profiles (default: app). Raises before any
+    agent runs when the configuration is invalid or a root resolves outside the repository.
+    """
+    config = load_source_config(repo)
+    resolve_source_roots(repo, config["source_roots"])
+    return config["source_roots"]
+
+
+def _existing_roots(repo: Path, roots: list[str]) -> list[str]:
+    # git add fails on a pathspec that matches nothing, and a new module may not exist yet.
+    return [root for root in roots if (repo / root).exists()]
+
+
+def _source_changes(repo: Path, roots: list[str]) -> str:
+    existing = _existing_roots(repo, roots)
+    if not existing:
+        return ""  # an empty pathspec would list the whole repository
+    return _git(["status", "--porcelain", "--", *existing], cwd=repo)
+
+
+def _stage_source_changes(repo: Path, roots: list[str]) -> None:
+    _git(["add", "--", *_existing_roots(repo, roots)], cwd=repo)
+
+
+def _roots_line(repo: Path) -> str:
+    return "Source roots (write only under these): " + ", ".join(_source_roots(repo))
+
+
 def build_implementer_prompt(repo: Path, plan_path: Path, contract: Path, governance: Path) -> str:
     return f"""Implement the approved Development Plan for repository {repo}.
 
 Approved Development Plan: {plan_path}
 Delivery workflow contract: {contract}
 Governance policy: {governance}
+{_roots_line(repo)}
 
-Read the plan and implement every task in its Implementation Tasks section against the application source under app/. Follow your profile's boundaries exactly: implement only what the plan asks for, make no test/build/git changes yourself, and disclose any assumption or deviation in your output rather than silently choosing."""
+Read the plan and implement every task in its Implementation Tasks section against the application source under the source roots listed above. Follow your profile's boundaries exactly: implement only what the plan asks for, make no test/build/git changes yourself, and disclose any assumption or deviation in your output rather than silently choosing."""
 
 
 def _implementer_completion_validator(value: Any) -> Any:
@@ -189,6 +222,7 @@ def _implement_and_commit(
     ticket_id: str,
     action_label: str,
 ) -> dict[str, Any]:
+    roots = _source_roots(repo)  # invalid configuration stops here, before the agent runs
     completion = _run_json_contract_step(
         preserve_source=False,
         agent=IMPLEMENTER,
@@ -199,10 +233,9 @@ def _implement_and_commit(
         evidence_dir=evidence_dir,
         validator=_implementer_completion_validator,
     )
-    changed = _git(["status", "--porcelain", "--", "app"], cwd=repo)
-    if not changed.strip():
-        raise WorkflowContractError(f"{step_id} completed but left no changes under app/")
-    _git(["add", "--", "app"], cwd=repo)
+    if not _source_changes(repo, roots).strip():
+        raise WorkflowContractError(f"{step_id} completed but left no changes under the source roots ({', '.join(roots)})")
+    _stage_source_changes(repo, roots)
     task_list = ", ".join(completion.get("tasks_completed", [])) or "(no tasks reported)"
     _git(["commit", "-m", f"[{ticket_id}] {action_label} (tasks: {task_list})"], cwd=repo)
     return completion
@@ -211,15 +244,16 @@ def _implement_and_commit(
 def _hybrid_and_commit(*, repo: Path, prompt: str, evidence_dir: Path, ticket_id: str) -> tuple[dict[str, Any], list[list[str]], str]:
     if _git(["diff", "--cached", "--name-only"], cwd=repo).strip():
         raise WorkflowContractError("Hybrid implementation requires an empty Git index")
-    if _git(["status", "--porcelain", "--", "app"], cwd=repo).strip():
-        raise WorkflowContractError("Hybrid implementation requires a clean app/ tree")
+    roots = _source_roots(repo)
+    if _source_changes(repo, roots).strip():
+        raise WorkflowContractError(f"Hybrid implementation requires clean source roots ({', '.join(roots)})")
     completion, commands, context = run_hybrid(
         repo=repo, prompt=prompt, evidence_dir=evidence_dir,
         completion_validator=_implementer_completion_validator,
     )
-    if not _git(["status", "--porcelain", "--", "app"], cwd=repo).strip():
-        raise WorkflowContractError("Hybrid implementation left no changes under app/")
-    _git(["add", "--", "app"], cwd=repo)
+    if not _source_changes(repo, roots).strip():
+        raise WorkflowContractError(f"Hybrid implementation left no changes under the source roots ({', '.join(roots)})")
+    _stage_source_changes(repo, roots)
     _git(["commit", "-m", f"[{ticket_id}] Implement approved plan (hybrid)"], cwd=repo)
     return completion, commands, context
 
@@ -227,19 +261,17 @@ def _hybrid_and_commit(*, repo: Path, prompt: str, evidence_dir: Path, ticket_id
 # Fixed, deterministic verification commands — no agent, no judgment. A
 # command's exit code and captured output IS the evidence; see the module
 # docstring / plan for why this is a trusted Python subprocess call rather
-# than something delegated to an agent with execute_bash.
-VERIFICATION_COMMANDS: list[list[str]] = [
-    ["python3", "-m", "compileall", "-q", "app"],
-    ["python3", "-m", "unittest", "discover", "-t", "app", "-s", "app/tests", "-v"],
-]
+# than something delegated to an agent with execute_bash. The commands come from the
+# registry (.agentic-sdlc/cao/specialists.json, "verification"): the "application" suite
+# in single mode, the union of worker and skill suites in hybrid mode.
 VERIFICATION_TIMEOUT_SECONDS = 300
 
 
-def _run_verification(repo: Path, evidence_dir: Path, label: str, commands: list[list[str]] | None = None) -> dict[str, Any]:
+def _run_verification(repo: Path, evidence_dir: Path, label: str, commands: list[list[str]]) -> dict[str, Any]:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     command_results: list[dict[str, Any]] = []
     all_passed = True
-    for index, command in enumerate(VERIFICATION_COMMANDS if commands is None else commands, start=1):
+    for index, command in enumerate(commands, start=1):
         try:
             completed = subprocess.run(
                 command,
@@ -279,10 +311,12 @@ Approved Development Plan: {plan_path}
 Delivery workflow contract: {contract}
 Governance policy: {governance}
 
+{_roots_line(repo)}
+
 Failed verification commands:
 {json.dumps(failed, indent=2)}
 
-Fix the implementation under app/ so verification passes. Do not weaken, skip, or delete any test assertion to make it pass — if a test looks wrong given the plan, say so in your output instead of changing the test. Keep changes scoped to fixing the failure; do not otherwise expand scope beyond the plan."""
+Fix the implementation under the source roots so verification passes. Do not weaken, skip, or delete any test assertion to make it pass — if a test looks wrong given the plan, say so in your output instead of changing the test. Keep changes scoped to fixing the failure; do not otherwise expand scope beyond the plan."""
 
 
 def _compute_delivery_diff(repo: Path, base_branch: str, delivery_branch: str) -> str:
@@ -459,6 +493,7 @@ Approved Development Plan: {plan_path}
 Delivery workflow contract: {contract}
 PR review and remediation policy: {pr_review_policy}
 Governance policy: {governance}
+{_roots_line(repo)}
 
 Findings to fix (already filtered to AUTO_FIX-eligible only by the workflow):
 {json.dumps(findings_to_fix, indent=2)}
@@ -637,10 +672,17 @@ def main() -> None:
             raise WorkflowContractError(f"required SDLC file is missing: {required}")
 
     manifest = _check_plan_approved(records_dir, plan_path, repo, base_branch)
+    # Both modes: validate the source roots and the registry before any agent runs.
+    source_roots = _source_roots(repo)
+    registry = load_specialists(repo)
+    application_commands = registry["verification"].get("application")
+    if implementation_mode == "single" and not application_commands:
+        raise WorkflowContractError("single mode needs the registry's 'application' verification suite")
     if implementation_mode == "hybrid":
-        load_specialists(repo)
-        if _git(["status", "--porcelain", "--", "app"], cwd=repo).strip() or _git(["diff", "--cached", "--name-only"], cwd=repo).strip():
-            raise WorkflowContractError("Hybrid delivery requires a clean app/ tree and empty Git index")
+        if _source_changes(repo, source_roots).strip() or _git(["diff", "--cached", "--name-only"], cwd=repo).strip():
+            raise WorkflowContractError(
+                f"Hybrid delivery requires clean source roots ({', '.join(source_roots)}) and an empty Git index"
+            )
     baseline_sha = manifest["repository_baseline_sha"]
     delivery_branch = f"sdlc/{ticket_id}"
     delivery_manifest_path = records_dir / "delivery-manifest.json"
@@ -661,10 +703,11 @@ def main() -> None:
         "repository_baseline_sha": baseline_sha,
         "state": "READY",
         "implementation_mode": implementation_mode,
+        "source_roots": source_roots,
     })
 
     # 2. IMPLEMENTING
-    verification_commands = None
+    verification_commands = application_commands
     skill_context = ""
     if implementation_mode == "hybrid":
         try:
@@ -825,10 +868,11 @@ def main() -> None:
         )
         _write_json(remediating_dir / f"{remediation_step_id}-completion.json", remediation_completion)
 
-        changed = _git(["status", "--porcelain", "--", "app"], cwd=repo)
-        if not changed.strip():
-            raise WorkflowContractError(f"{remediation_step_id} completed but left no changes under app/")
-        _git(["add", "--", "app"], cwd=repo)
+        if not _source_changes(repo, source_roots).strip():
+            raise WorkflowContractError(
+                f"{remediation_step_id} completed but left no changes under the source roots ({', '.join(source_roots)})"
+            )
+        _stage_source_changes(repo, source_roots)
         addressed = ", ".join(remediation_completion.get("findings_addressed", [])) or "(none reported)"
         _git(["commit", "-m", f"[{ticket_id}] Remediate findings ({addressed})"], cwd=repo)
         commit_sha = _current_head_sha(repo)

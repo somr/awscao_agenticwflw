@@ -8,6 +8,7 @@ from typing import Any
 from .errors import WorkflowContractError
 from .artifacts import _read_json, _write_json, _write_text, _sha256_file
 from .runtime import _run_json_contract_step
+from .source_config import validate_source_config
 
 SUPERVISOR = "sdlc_code_supervisor"
 MAX_HYBRID_TASKS = 16
@@ -54,6 +55,11 @@ def load_specialists(repo: Path) -> dict[str, Any]:
         for command in commands:
             if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):
                 raise WorkflowContractError(f"Invalid verification command in {name}")
+    # A worker whose profile may not write could never implement its assignment.
+    write_profiles = validate_source_config(registry)["write_profiles"]
+    for name, worker in registry["workers"].items():
+        if worker["profile"] not in write_profiles:
+            raise WorkflowContractError(f"Worker {name} uses profile {worker['profile']}, which is not listed in write_profiles")
     return registry
 
 

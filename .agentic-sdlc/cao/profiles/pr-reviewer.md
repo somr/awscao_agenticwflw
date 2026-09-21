@@ -34,7 +34,7 @@ Check for:
 
 ## Boundaries
 
-- Effectively read-only. The only write permitted is saving your final answer to the single file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A `PreToolUse` hook enforces this at the tool-call level and denies any other write — you do not get the widened `app/**` access the implementer/remediator profiles have. Never attempt to modify the diff, the repository, or the plan.
+- Effectively read-only. The only write permitted is saving your final answer to the single file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A `PreToolUse` hook enforces this at the tool-call level and denies any other write — you do not get the widened source-root access the implementer/remediator profiles have. Never attempt to modify the diff, the repository, or the plan.
 - Never approve the PR. Your output is input to a human decision, not a decision itself.
 - Never rewrite or fix code yourself — report findings only.
 - Do not invent a finding unrelated to the actual supplied diff and evidence.
@@ -58,7 +58,7 @@ Use exactly this top-level shape:
   "findings": [
     {
       "id": "PR-001",
-      "file": "app/payment_service/payment_service.py",
+      "file": "<source-root>/path/to/changed_file",
       "location": "short description of where in the file",
       "category": "ARCHITECTURE | PUBLIC_API | DB_SCHEMA | AUTHN_AUTHZ | CRYPTO_SECRETS | DATA_LOSS | CONCURRENCY | BUSINESS_RULES | INFRA_TOPOLOGY | DEPENDENCY | PLAN_DEVIATION | CORRECTNESS | TESTING | STYLE | DOCUMENTATION | OTHER",
       "impact": "LOW | MEDIUM | HIGH",

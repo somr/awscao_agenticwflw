@@ -1,182 +1,94 @@
-# Hybrid delivery: specialists and skills
+# Delivery: specialists and skills
 
-Delivery now defaults to `implementation_mode=hybrid`. Planning and independent
-PR/source review retain their existing responsibilities. A model supervisor
-allocates the approved plan; Python validates its task graph and dispatches the
-workers. A final implementer integrates the result. Python commits application
-changes, executes verification, and runs the existing review/remediation loop.
-Human approval remains outside the implementation team.
+In its default hybrid mode, [Delivery](delivery.md) does not have one agent implement the whole plan. A read-only
+supervisor splits the approved plan into assignments, Python validates them and dispatches registered **workers**
+one after another, and a final implementer integrates the result. This guide explains how that works and how to
+extend it with skills, specialist profiles, new verification toolchains, and new authority. Running, inputs,
+results and approval are in the [Delivery guide](delivery.md).
 
-```text
-Approved plan → supervisor → validated assignments → workers → integration
-                                                            ↓
-                           independent review ← Python verification
+## At a glance
+
+| Concept | What it is | Where it is defined |
+|---|---|---|
+| Supervisor | A read-only agent that turns the approved plan into ordered assignments. It cannot write source. | Profile `code-supervisor` |
+| Worker | A registry entry naming an agent profile, the skills it may use and its verification suites. | `workers` in `.agentic-sdlc/cao/specialists.json` |
+| Skill | Instructions injected into a worker's prompt, plus verification suites that become mandatory when it is selected. | `.agentic-sdlc/cao/skills/<name>/SKILL.md` and `skills` in the registry |
+| Verification suite | A named list of commands Python runs after each change. | `verification` in the registry |
+| Limits | 1 to 16 assignments; workers run one at a time in one checkout. | Enforced by Python |
+
+## How it works
+
+```mermaid
+sequenceDiagram
+    participant P as Python
+    participant S as Code Supervisor
+    participant W as Worker (fresh session)
+    participant I as Integrator
+    P->>S: approved plan and the catalog of workers and skills
+    S-->>P: ordered assignments (JSON)
+    P->>P: validate the task graph
+    loop each assignment, in order
+        P->>W: assignment, earlier results, required skill text
+        W-->>P: completion summary
+    end
+    P->>I: all assignments and results
+    I-->>P: completion of the whole feature
+    P->>P: commit, then verify with the union of the suites
 ```
 
-This is model-directed allocation with deterministic execution, not direct MCP
-delegation. Agents have no `assign`, `handoff`, shell or Git capability. Worker
-sessions are fresh, but run sequentially in one checkout. This avoids concurrent
-writers and merge races. The graph must list dependencies before consumers, have
-unique IDs, use registered workers/skills, and contain 1–16 tasks. Task scope and
-plan coverage are model judgments checked again during integration and independent
-review; the validator does not prove semantic equivalence to the approved plan.
-Per-task file ownership is instructional; the existing hook enforces the broader
-`app/**` boundary. Parallel worktree dispatch is not implemented.
+This is model-directed allocation with deterministic execution, not delegation between agents. No agent can
+assign, hand off, run a shell or use Git.
 
-## Files and evidence
+- **Validation.** Python accepts a task graph only if every task has a unique ID, a registered worker, registered
+  skills that this worker may use, instructions and a plan reference, and dependencies that name earlier tasks;
+  there must be 1 to 16 tasks. An invalid graph stops the run before any worker starts.
+- **Sequential.** Each worker starts fresh, but they run one after another in one checkout. That avoids concurrent
+  writers and merge races. Parallel dispatch in isolated worktrees is not supported.
+- **Judgment stays checked.** Task scope and plan coverage are model judgments. The integration pass and the
+  independent review check them again; the validator does not prove that the assignments equal the plan.
+- **Ownership.** A worker's file ownership is an instruction. The hard boundary is the write-scope hook and the
+  configured [source roots](delivery.md#source-roots).
 
-- `.agentic-sdlc/cao/specialists.json`: workers, selectable skills and trusted verification commands.
-- `.agentic-sdlc/cao/profiles/code-supervisor.md`: allocation-only supervisor.
-- `.agentic-sdlc/cao/profiles/implementer.md`: reusable worker and integration role.
-- `.agentic-sdlc/cao/skills/*/SKILL.md`: versioned skill content.
-- `.agentic-sdlc/cao/sdlc_workflows/hybrid.py`: validation and dispatch.
+## Results
 
-Each run persists the registry, validated dispatch, worker results and raw agent
-answers under `.agentic-sdlc/runtime/<ticket>/<run>/implementation/agent-output/`.
-Required skill bodies and SHA-256 hashes are included in worker prompts and saved
-in `required-skills.md` once workers complete. Selected skills also reach integration,
-the bounded verification-repair attempt and eligible review remediation.
-Verification is the deduplicated union of worker and selected-skill suites and is
-repeated after repairs/remediation. Existing evidence logs record each command and
-exit status. Missing executables and timeouts count as failures, never success.
-An implementation contract failure blocks delivery and preserves any partial edits
-for inspection; it does not commit or launch dependent tasks. Inspect/reconcile
-those edits before retrying with a fresh run ID.
+Each run keeps the registry, the validated dispatch, every worker's result and the raw agent answers under
+`.agentic-sdlc/runtime/<ticket>/<run>/implementation/agent-output/`. The full text of each required skill and its
+SHA-256 are included in the worker's prompt and saved in `required-skills.md`. Selected skills also reach the
+integration pass, the bounded verification-repair turn and eligible remediation.
 
-Registry commands are trusted maintainer configuration, executed without a shell
-by Python. Treat changes to them as executable-code changes. Agents cannot edit
-the registry or profiles through the repository hook.
+Verification is the deduplicated union of the workers' and the selected skills' suites, and it is repeated after
+repairs and remediation. The evidence logs record each command and its exit status. A missing executable or a
+timeout counts as a failure, never as success.
 
-## Install and run
+## When it stops early
 
-From a checkout containing these changes, with CAO configured:
+An implementation step that breaks its contract, or a graph that fails validation, blocks Delivery. Partial edits
+stay in the working tree for inspection and nothing is committed. Inspect or discard them, then run again with a
+fresh run ID. The other stop reasons are in the [Delivery guide](delivery.md#when-a-run-stops-early).
 
-```bash
-for profile in code-supervisor implementer pr-reviewer remediator; do
-  cao profile validate ".agentic-sdlc/cao/profiles/$profile.md"
-  cao install ".agentic-sdlc/cao/profiles/$profile.md"
-done
-bash .agentic-sdlc/cao/workflows/install_deliver.sh "$PWD"
-cao workflow run sdlc_deliver --run-id delivery-EXAMPLE-1 \
-  --input ticket_id=EXAMPLE --input repository_root="$PWD" \
-  --input implementation_mode=hybrid
+## Choosing what to add
+
+```mermaid
+flowchart TD
+    N["Delivery needs new expertise"] --> Q1{"Are instructions<br/>all that is missing?"}
+    Q1 -- yes --> SK["Add a skill"]
+    Q1 -- no --> Q2{"Does it need a different role<br/>or a narrower write scope?"}
+    Q2 -- yes --> SP["Add a specialist profile"]
+    Q2 -- no --> Q3{"Does it need a new toolchain<br/>to verify the result?"}
+    Q3 -- yes --> TC["Add a verification toolchain"]
+    Q3 -- no --> Q4{"Does it need writes outside the source roots<br/>or authority over an external system?"}
+    Q4 -- yes --> PM["Extend the execution boundary"]
+    Q4 -- no --> RG["Adjust the registry only"]
 ```
 
-Use a real ticket with the existing approved-plan records. Use a fresh run ID and
-a clean `app/` tree with no staged changes. `implementation_mode=single` retains
-the former single-implementer path and fixed Python checks; it does not enable
-hybrid skill dispatch. Installing a bundled workflow does not copy its repository
-assets: the target repository must also contain the registry, skills and hook.
+Skills are the lightest option and usually enough, because ordinary source work can share one worker's
+permissions. A distinct specialist profile is justified when recurring tasks need a different role, a lot of
+focused context or a narrower write scope. The two combine.
 
-The sample application is Python. The example AngularJS suite expects an
-`app/ui/package.json` with a noninteractive `verify` script covering build/lint/tests.
-The Spark suite expects `spark-submit` and `app/spark/tests/verify.py` using synthetic
-local data. Those applications/toolchains are not installed or generated by this
-change. Before assigning those skills, adapt their registered commands to the
-actual target application's checks. Absent tooling/entry points fail verification.
+## Add a skill
 
-## Scenario 1: add a specialist within existing boundaries
-
-Example: a Java persistence specialist whose files remain under `app/` and whose
-checks already exist in the registry.
-
-1. Decide whether the gap only needs instructions. If so, add a skill using the
-   procedure below and retain the `developer` worker.
-2. For a distinct role, copy the implementer profile into a new file, give it a
-   unique `name` such as `sdlc_java_persistence`, and define when it should own a
-   task. Preserve answer JSON, assigned-scope behaviour, no shell/Git/delegation,
-   and the prohibition on weakening tests.
-3. Register a worker, for example:
-
-   ```json
-   "java-persistence": {
-     "profile": "sdlc_java_persistence",
-     "description": "Own approved Java persistence changes; use developer for unrelated UI work.",
-     "skills": [],
-     "verification": ["java"]
-   }
-   ```
-
-   `java` must already name an appropriate verification suite. If it does not,
-   follow Scenario 2; do not substitute Python checks for Java validation.
-4. Add the exact profile identity to `WIDENED_WRITE_ROOTS` in
-   `.claude/hooks/restrict-write-scope.py`, with `["app"]`. The registry does not
-   grant write access. Keep CAO server identity verification and deny roots intact.
-5. Add hook tests proving the new identity can write `app/` but cannot write
-   profiles, the registry, guardrails or durable records. Test supervisor routing
-   with a representative task and an overlapping generalist task.
-6. Validate/install the new profile with `cao profile validate <file>` and
-   `cao install <file>`. Rebuild/install delivery if runner code changed. Run a
-   fixture and inspect dispatch, worker evidence, verification and final diff.
-
-Registry and skill edits are read on the next run. Installed profile edits require
-reinstallation. No supervisor prompt edit is necessary: it receives the registry.
-
-## Scenario 2: add a specialist requiring a new toolchain
-
-Example: Spark verification in an isolated local Spark runtime.
-
-1. Follow Scenario 1 for any distinct worker profile; a general developer plus
-   the Spark skill may suffice if only the verifier needs the new runtime.
-2. Provision pinned, compatible dependencies in the workflow execution environment
-   (for example Java, Spark and project dependencies). Workers do not install them.
-3. Create or identify an application-owned, noninteractive test entry point. Use
-   synthetic fixtures and a local/isolated runtime; it must return nonzero on failure.
-4. Add a named command suite to `verification`, as an array of argument arrays:
-
-   ```json
-   "spark": [["spark-submit", "--master", "local[2]", "app/spark/tests/verify.py"]]
-   ```
-
-   Commands run at repository root with a 300-second timeout each. Shell pipelines,
-   substitutions and redirections are not interpreted. Use a reviewed executable
-   wrapper for environment preparation if needed; never accept commands from model
-   output. Java/Scala projects should register their actual build/test commands.
-5. Reference the suite from the worker's `verification`, or the skill's
-   `verification` when the runtime is required only for that skill. Skill-selected
-   suites are mandatory once that skill is selected.
-6. Test passing, assertion-failing, missing-runtime and timeout cases. Confirm the
-   same suites run after repair/remediation and that the human brief exposes the
-   evidence. Validate the actual toolchain in its intended environment before use.
-
-Changing a command does not itself provision the environment. If the toolchain
-needs external-system access, also follow Scenario 3.
-
-## Scenario 3: add a specialist requiring new permissions or external systems
-
-Example: applying a database migration, rather than authoring migration source.
-This is an execution-boundary extension, not a registry-only addition. The current
-delivery workflow does not provide a live migration executor.
-
-1. Separate the requested capability: writing migrations can stay inside existing
-   source boundaries; applying them requires authority over a named environment.
-2. Define exact resources, credentials, permitted operations, approval evidence,
-   timeout/retry limits and recovery behaviour. Do not place credentials in skills,
-   prompts or registry command arguments.
-3. Implement a trusted executor/adapter with scoped credentials and deterministic
-   checks of those permissions and approvals. Prefer keeping external mutations
-   outside model tools. The executor must enforce its boundary itself; prose in a
-   profile and a skill catalog are not access controls.
-4. Add an explicit workflow stage and result contract for the executor. Bind any
-   approval to the target, migration artifact and environment; prevent retries from
-   blindly repeating irreversible work. Preserve existing plan and PR gates.
-5. If source write roots must change, update the hook deliberately and add denial,
-   identity-failure and path-escape tests. Merely adding a registry entry must never
-   widen permissions. Do not grant an entire orchestration/tool bundle to obtain
-   one needed capability.
-6. Exercise the adapter against an isolated disposable environment, including
-   unauthorized targets, expired/mismatched approval, partial failure and recovery.
-7. Register/install the profile only after those controls exist, document its
-   operational prerequisites, and enable the new stage through reviewed configuration.
-
-This scenario requires code and operational design beyond the extension points
-implemented here. The hybrid does not silently authorize database, cloud or cluster
-mutations. Local verification commands must also be reviewed for external effects.
-
-## Create and introduce a skill
-
-1. Choose a precise lowercase hyphenated name and create
-   `.agentic-sdlc/cao/skills/<name>/SKILL.md` with matching frontmatter:
+1. Choose a precise lowercase hyphenated name and create `.agentic-sdlc/cao/skills/<name>/SKILL.md` with matching
+   frontmatter:
 
    ```markdown
    ---
@@ -188,13 +100,12 @@ mutations. Local verification commands must also be reviewed for external effect
    Document project-specific decisions, failure cases and relevant test expectations here.
    ```
 
-2. Include guidance that changes implementation decisions: supported versions,
-   conventions, interface assumptions and characteristic failure modes. Avoid
-   generic tutorials. Preserve assigned scope and execution permissions. Keep the
-   skill self-contained; if adding reference files, explicitly instruct the worker
-   when and where to read them. The runner injects only `SKILL.md`.
-3. Add an entry under registry `skills`, with a path relative to
-   `.agentic-sdlc/cao`, a routing description, and existing verification suite names:
+2. Write guidance that changes implementation decisions: supported versions, conventions, interface assumptions
+   and characteristic failure modes. Avoid generic tutorials, and never grant scope or permissions. Keep the skill
+   self-contained: the runner injects only `SKILL.md`, so tell the worker explicitly when and where to read any
+   other file.
+3. Register it under `skills` with a path relative to `.agentic-sdlc/cao`, a routing description, and existing
+   verification suite names:
 
    ```json
    "project-java-persistence": {
@@ -204,28 +115,123 @@ mutations. Local verification commands must also be reviewed for external effect
    }
    ```
 
-4. Add the name to each eligible worker's `skills` list. The supervisor sees that
-   catalog; Python rejects unregistered selections and injects required contents
-   into the assigned worker's prompt. No CAO MCP tools are needed for this path.
-5. Validate registry loading and skill naming, then test a representative task,
-   an irrelevant task that should not select the skill, and a task combining two
-   skills. Inspect the actual code and test evidence, not just skill-selection text.
-6. For use by CAO agents outside this workflow, optionally install it using
-   `cao skills add .agentic-sdlc/cao/skills/<name>` (use `--force` to update). Native
-   CAO discovery/loading is separate from this workflow's deterministic injection.
-   Configure only the necessary `load_skill` tool for providers that require it;
-   do not add the whole orchestration bundle to these restricted workers.
-7. Version skill changes in Git and rerun a representative fixture. The next hybrid
-   run reads repository content directly; native CAO installations need their own
-   update. Keep the repository copy authoritative.
+4. Add the name to the `skills` list of each eligible worker. The supervisor sees that catalog; Python rejects
+   unregistered selections and injects the required text into the assigned worker's prompt. No CAO MCP tool is needed.
+5. Test a representative task, an unrelated task that must not select the skill, and a task that combines two
+   skills. Inspect the actual code and test evidence, not only the skill selection.
+6. Optionally install it for other CAO agents with `cao skills add .agentic-sdlc/cao/skills/<name>` (`--force`
+   updates). That native mechanism is separate from this workflow's injection, and the repository copy stays
+   authoritative. Do not add a whole orchestration tool bundle to these restricted workers.
 
-The included AngularJS and Spark examples are skills because ordinary source work
-can share the same worker permissions. Distinct specialist profiles are justified
-when recurring tasks need a different role, extensive focused context or access
-boundary. Both can coexist with these reusable skills.
+Registry and skill edits are read on the next run. Keep skill changes in Git.
 
-References: [CAO skills](https://github.com/awslabs/cli-agent-orchestrator/blob/main/docs/skills.md),
-[CAO profiles](https://awslabs.github.io/cli-agent-orchestrator/docs/features/profiles/),
-[AngularJS components](https://docs.angularjs.org/guide/component),
-[AngularJS dependency injection](https://docs.angularjs.org/guide/di), and
-[Spark Structured Streaming](https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html).
+The bundled `sdlc-angularjs-ui` and `sdlc-spark-workflows` skills are examples. Their registered verification
+commands assume an `app/ui` project with a non-interactive npm `verify` script and an `app/spark/tests/verify.py`
+running on synthetic local data, neither of which the sample application contains. Adapt the commands to your
+project before assigning those skills; missing tooling fails verification.
+
+## Add a specialist profile
+
+For a distinct role, for example a Java persistence specialist whose files stay inside the source roots:
+
+1. Copy the implementer profile into a new file and give it a unique `name` such as `sdlc_java_persistence`.
+   Say when it should own a task. Keep the answer JSON, the assigned-scope behaviour, the ban on shell, Git and
+   delegation, and the ban on weakening tests.
+2. Register a worker:
+
+   ```json
+   "java-persistence": {
+     "profile": "sdlc_java_persistence",
+     "description": "Own approved Java persistence changes; use developer for unrelated UI work.",
+     "skills": [],
+     "verification": ["java"]
+   }
+   ```
+
+   The suite `java` must already exist in `verification`; if it does not, add a toolchain (below). Do not
+   substitute Python checks for Java validation.
+3. List the profile in `write_profiles`: `null` for every source root, or a list of directories inside the roots
+   to limit it, for example `"sdlc_java_persistence": ["billing/src"]`. No hook edit is needed. The worker entry
+   does not grant write access by itself, and the registry refuses to load if a worker's profile is not listed.
+4. Add hook tests (see `ConfigurableSourceRootsHookTest` in `tests/test_restrict_write_scope.py`) showing that the
+   profile can write its roots but not profiles, the registry, guardrails or records, and test supervisor routing
+   with a representative task and an overlapping generalist task.
+5. Validate and install the profile (`cao profile validate <file>`, `cao install <file>`), reinstall the delivery
+   workflow if runner code changed, and run a fixture. Inspect the dispatch, the worker evidence, the verification
+   and the final diff. Installed profile edits need a reinstall; the supervisor needs no prompt change because it
+   receives the registry.
+
+## Add a verification toolchain
+
+For example, Spark verification in an isolated local Spark runtime:
+
+1. Add a distinct worker profile only if the role differs (above); a general developer plus the Spark skill may
+   be enough when only the verifier needs the new runtime.
+2. Provision pinned, compatible dependencies in the environment that runs the workflow (Java, Spark, project
+   dependencies). Workers do not install them.
+3. Provide an application-owned, non-interactive test entry point that uses synthetic data, a local or isolated
+   runtime, and returns non-zero on failure.
+4. Add a named suite to `verification` as a list of argument lists:
+
+   ```json
+   "spark": [["spark-submit", "--master", "local[2]", "app/spark/tests/verify.py"]]
+   ```
+
+   Commands run from the repository root with a 300-second timeout each. Pipes, substitutions and redirections are
+   not interpreted. If the environment needs preparation, use a reviewed executable wrapper. Never take commands
+   from model output.
+5. Reference the suite from the worker's `verification`, or from the skill's when only that skill needs the runtime.
+   A suite named by a selected skill is mandatory.
+6. Test passing, assertion-failing, missing-runtime and timeout cases; confirm the same suites run after repair and
+   remediation and that the Human Review Brief shows the evidence. Validate the toolchain in its intended environment.
+
+Changing a command does not provision the environment. If the toolchain needs access to an external system, extend
+the execution boundary (below).
+
+## Extend the execution boundary
+
+Some capabilities cannot be a registry entry: applying a database migration (rather than writing migration source)
+needs authority over a named environment. Delivery has no live migration executor, so this is code and operational
+design, not configuration.
+
+1. Separate the capability. Writing migrations can stay inside the source roots; applying them cannot.
+2. Define the exact resources, credentials, permitted operations, approval evidence, timeouts, retries and recovery.
+   Never place credentials in skills, prompts or registry command arguments.
+3. Implement a trusted executor with scoped credentials that checks permissions and approvals itself. Keep external
+   mutations outside model tools. A profile's prose and a skill catalog are not access controls.
+4. Add an explicit workflow stage and result contract for the executor. Bind any approval to the target, the
+   artifact and the environment, and stop retries from repeating irreversible work. Keep the plan and PR gates.
+5. Adding or moving source roots is configuration. A capability that needs writes outside the roots, or a new kind
+   of authority, must change the hook deliberately, with denial, identity-failure and path-escape tests. A registry
+   entry alone must never widen permissions. Do not grant a whole tool bundle to obtain one capability.
+6. Exercise the executor against an isolated disposable environment: unauthorized targets, expired or mismatched
+   approval, partial failure and recovery.
+7. Register and install the profile only after those controls exist, document the operational prerequisites and
+   enable the stage through reviewed configuration.
+
+The hybrid mode never silently authorizes database, cloud or cluster changes, and local verification commands must
+also be reviewed for external effects.
+
+## Safety boundaries
+
+- Registry commands are trusted maintainer configuration, run by Python without a shell. Treat a change to them as
+  an executable-code change.
+- Agents cannot edit the registry or the profiles: both are under a folder the hook protects.
+- A skill guides implementation; it grants no authority. Only `write_profiles` and the hook decide who may write where.
+- The supervisor never modifies source or runs commands, and the integrator writes only under the source roots.
+
+See [Agent answers and write scope](../reference/write-scope-hook.md) for the enforcement design.
+
+## Tests
+
+`tests/test_hybrid.py` (registry, task graph, dispatch, verification union), `tests/test_source_config.py` (source
+roots and write profiles), `tests/test_restrict_write_scope.py` (the boundary) and the hybrid flows in
+`tests/test_workflow_integration.py`. See [build and install](../build-and-install.md#tests) for how to run them.
+
+## See also
+
+[Delivery](delivery.md) · [Agent profiles](../reference/agent-profiles.md) ·
+[CAO skills](https://github.com/awslabs/cli-agent-orchestrator/blob/main/docs/skills.md) ·
+[CAO profiles](https://awslabs.github.io/cli-agent-orchestrator/docs/features/profiles/) ·
+[AngularJS components](https://docs.angularjs.org/guide/component) ·
+[Spark Structured Streaming](https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html)

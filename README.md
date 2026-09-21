@@ -47,11 +47,39 @@ cao workflow run sdlc_dev_plan \
 
 The default `local_fixture` source adapter is deterministic and network-free. The planning workflow also supports `jira_confluence_live`; its credentials are supplied through environment variables as described in [agentic-sdlc-docs/workflows/planning.md](agentic-sdlc-docs/workflows/planning.md).
 
+## Approve the plan, then deliver
+
+Planning ends at `AWAITING_HUMAN_APPROVAL`. A human records the decision, and only an approved plan can be delivered:
+
+```bash
+python3 .agentic-sdlc/scripts/approve_plan.py --repository-root "$PWD" --ticket-id PAY-DEMO-001 \
+  --decision APPROVED --approved-by "<your name>" --reference "<ticket or review link>"
+```
+
+Install the four delivery profiles before the delivery workflow (order matters; see the [Delivery guide](agentic-sdlc-docs/workflows/delivery.md)), then run it:
+
+```bash
+cao workflow run sdlc_deliver --wait --json --run-id deliver-PAY-DEMO-001-1 \
+  --input ticket_id=PAY-DEMO-001 --input repository_root="$PWD"
+```
+
+## Configure for your project
+
+The sample application lives under `app/`. To point the workflows at your own code, edit [`.agentic-sdlc/cao/specialists.json`](.agentic-sdlc/cao/specialists.json):
+
+- `source_roots`: the directories where generated source is written, committed and verified (default `["app"]`);
+- `write_profiles`: which agent profiles may write there;
+- `verification`: the commands that verify a change, so use your own build and test commands;
+- `workers` and `skills`: the specialists Delivery can assign work to.
+
+Agents cannot edit this file. An invalid file stops Delivery and denies all source writes instead of falling back to `app/`. See [source roots](agentic-sdlc-docs/workflows/delivery.md#source-roots) and the [registry reference](agentic-sdlc-docs/workflows/delivery.md#registry-reference). Planning accepts optional developer guidance and can be warm-started from a run that did not converge; see the [Planning guide](agentic-sdlc-docs/workflows/planning.md).
+
 ## Where to read next
 
 - [Workflow overview and repository layout](agentic-sdlc-docs/architecture.md)
 - [Modular workflow build, validation, and installation](agentic-sdlc-docs/build-and-install.md)
 - [Planning workflow](agentic-sdlc-docs/workflows/planning.md)
+- [Delivery workflow: running, configuring and approving](agentic-sdlc-docs/workflows/delivery.md)
 - [Delivery contract](.agentic-sdlc/contracts/delivery-workflow.md)
 - [Hybrid delivery and specialist/skill extension guide](agentic-sdlc-docs/workflows/hybrid-delivery.md)
 - [Source-review workflow](agentic-sdlc-docs/workflows/source-review.md)

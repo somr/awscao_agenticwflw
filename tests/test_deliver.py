@@ -85,6 +85,10 @@ class ImplementerCompletionValidatorTest(unittest.TestCase):
             mod._implementer_completion_validator(["not", "a", "dict"])
 
 
+# Verification commands now come from the registry; these tests only need two of them.
+TWO_COMMANDS = [["compile-step", "app"], ["test-step", "app/tests"]]
+
+
 class RunVerificationTest(unittest.TestCase):
     def test_missing_tool_is_recorded_as_failed_verification(self):
         from unittest.mock import patch
@@ -99,7 +103,7 @@ class RunVerificationTest(unittest.TestCase):
         mod.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a[0], 0, "ok", "")
         try:
             with tempfile.TemporaryDirectory() as temp:
-                summary = mod._run_verification(Path(temp), Path(temp) / "evidence", "verify-test")
+                summary = mod._run_verification(Path(temp), Path(temp) / "evidence", "verify-test", TWO_COMMANDS)
                 self.assertTrue(summary["passed"])
                 self.assertTrue(all(c["passed"] for c in summary["commands"]))
                 self.assertTrue((Path(temp) / "evidence" / "verify-test.json").is_file())
@@ -119,7 +123,7 @@ class RunVerificationTest(unittest.TestCase):
         mod.subprocess.run = fake_run
         try:
             with tempfile.TemporaryDirectory() as temp:
-                summary = mod._run_verification(Path(temp), Path(temp) / "evidence", "verify-test")
+                summary = mod._run_verification(Path(temp), Path(temp) / "evidence", "verify-test", TWO_COMMANDS)
                 self.assertFalse(summary["passed"])
                 self.assertTrue(summary["commands"][0]["passed"])
                 self.assertFalse(summary["commands"][1]["passed"])
@@ -135,7 +139,7 @@ class RunVerificationTest(unittest.TestCase):
         mod.subprocess.run = fake_run
         try:
             with tempfile.TemporaryDirectory() as temp:
-                summary = mod._run_verification(Path(temp), Path(temp) / "evidence", "verify-test")
+                summary = mod._run_verification(Path(temp), Path(temp) / "evidence", "verify-test", TWO_COMMANDS)
                 self.assertFalse(summary["passed"])
                 self.assertIsNone(summary["commands"][0]["returncode"])
         finally:
@@ -191,6 +195,128 @@ class ImplementAndCommitTest(unittest.TestCase):
                     )
         finally:
             mod._run_json_contract_step = original_step
+
+
+def _write_registry(repo: Path, **keys) -> None:
+    """A minimal registry: the source-root helpers only read source_roots/write_profiles."""
+    (repo / ".agentic-sdlc" / "cao").mkdir(parents=True, exist_ok=True)
+    (repo / ".agentic-sdlc" / "cao" / "specialists.json").write_text(json.dumps(keys), encoding="utf-8")
+
+
+def _committed_files(repo: Path) -> list[str]:
+    out = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"], cwd=str(repo), capture_output=True, text=True).stdout
+    return sorted(out.split())
+
+
+class ConfigurableSourceRootsDeliveryTest(unittest.TestCase):
+    """Delivery commits, checks and prompts by the configured source roots, not a hardcoded app/."""
+
+    def writing_step(self, *files):
+        def fake_step(**kwargs):
+            for name in files:
+                target = kwargs["repo"] / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("x = 1\n", encoding="utf-8")
+            return {"tasks_completed": ["T1"], "files_changed": list(files), "assumptions": [], "deviations": []}
+        return fake_step
+
+    def implement(self, repo):
+        return mod._implement_and_commit(prompt="do it", step_id="implement-v1", repo=repo,
+                                         evidence_dir=repo / "evidence", ticket_id="T-1", action_label="Implement approved plan")
+
+    def with_step(self, step):
+        original = mod._run_json_contract_step
+        mod._run_json_contract_step = step
+        self.addCleanup(setattr, mod, "_run_json_contract_step", original)
+
+    def make_repo(self, **registry):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        repo = Path(temp.name)
+        _init_repo(repo)
+        if registry:
+            _write_registry(repo, **registry)
+        return repo
+
+    def test_only_files_under_the_roots_are_committed_and_a_missing_root_is_harmless(self):
+        # git add fails on a pathspec that matches nothing, so a root nobody created must be skipped.
+        repo = self.make_repo(source_roots=["billing/src", "never/created"])
+        self.with_step(self.writing_step("billing/src/A.java", "notes/outside.md"))
+        self.implement(repo)
+        self.assertEqual(_committed_files(repo), ["billing/src/A.java"])
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=str(repo), capture_output=True, text=True).stdout
+        self.assertIn("?? notes/", status)  # the change outside the roots was left alone
+
+    def test_a_module_created_by_the_worker_is_committed(self):
+        repo = self.make_repo(source_roots=["existing/src", "newmod/src"])
+        self.with_step(self.writing_step("newmod/src/B.java"))
+        self.implement(repo)
+        self.assertEqual(_committed_files(repo), ["newmod/src/B.java"])
+
+    def test_changes_only_outside_the_roots_are_an_error_that_names_the_roots(self):
+        repo = self.make_repo(source_roots=["billing/src"])
+        self.with_step(self.writing_step("notes/x.md"))
+        with self.assertRaisesRegex(mod.WorkflowContractError, r"left no changes under the source roots \(billing/src\)"):
+            self.implement(repo)
+
+    def test_no_root_exists_and_nothing_written_is_a_clean_error_not_a_git_failure(self):
+        repo = self.make_repo(source_roots=["never/created"])
+        (repo / "unrelated.txt").write_text("untracked\n", encoding="utf-8")
+        self.with_step(self.writing_step())
+        with self.assertRaises(mod.WorkflowContractError):
+            self.implement(repo)
+        # An empty pathspec would have listed the whole repository, including this file.
+        self.assertEqual(mod._source_changes(repo, ["never/created"]), "")
+
+    def test_invalid_config_stops_before_the_agent_runs(self):
+        for registry in ({"source_roots": [".."]}, {"source_roots": [".git"]}, {"write_profiles": {"sdlc_code_supervisor": None}}):
+            repo = self.make_repo(**registry)
+            self.with_step(lambda **kwargs: self.fail("the agent must not run with an invalid source-root config"))
+            with self.assertRaises(mod.WorkflowContractError):
+                self.implement(repo)
+
+    def test_a_symlinked_root_that_leaves_the_repository_stops_before_the_agent(self):
+        repo = self.make_repo(source_roots=["escape"])
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        os.symlink(outside.name, repo / "escape")
+        self.with_step(lambda **kwargs: self.fail("the agent must not run"))
+        with self.assertRaisesRegex(mod.WorkflowContractError, "outside the repository"):
+            self.implement(repo)
+
+    def hybrid(self, repo, *files):
+        original = mod.run_hybrid
+        mod.run_hybrid = lambda **kwargs: (self.writing_step(*files)(repo=repo), [["check"]], "")
+        self.addCleanup(setattr, mod, "run_hybrid", original)
+        return mod._hybrid_and_commit(repo=repo, prompt="p", evidence_dir=repo / "evidence", ticket_id="T-1")
+
+    def test_hybrid_ignores_unrelated_dirty_files_but_blocks_on_dirty_roots(self):
+        repo = self.make_repo(source_roots=["billing/src"])
+        (repo / "README.md").write_text("edited outside the roots\n", encoding="utf-8")
+        self.hybrid(repo, "billing/src/A.java")
+        self.assertEqual(_committed_files(repo), ["billing/src/A.java"])
+
+        repo = self.make_repo(source_roots=["billing/src"])
+        (repo / "billing" / "src").mkdir(parents=True)
+        (repo / "billing" / "src" / "dirty.java").write_text("uncommitted\n", encoding="utf-8")
+        with self.assertRaisesRegex(mod.WorkflowContractError, r"requires clean source roots \(billing/src\)"):
+            self.hybrid(repo, "billing/src/A.java")
+
+    def test_prompts_name_the_roots_and_no_longer_say_app(self):
+        default = self.make_repo()
+        custom = self.make_repo(source_roots=["billing/src", "billing/test"])
+        paths = (Path("plan.md"), Path("contract.md"), Path("governance.md"))
+        verification = {"commands": [{"command": ["check"], "passed": False}]}
+        for repo, roots in ((default, "app"), (custom, "billing/src, billing/test")):
+            prompts = [
+                mod.build_implementer_prompt(repo, *paths[:1], *paths[1:]),
+                mod.build_implementer_repair_prompt(repo, *paths, verification),
+                mod.build_remediator_prompt(repo, paths[0], paths[1], Path("policy.md"), paths[2], [{"id": "F1"}]),
+            ]
+            for prompt in prompts:
+                with self.subTest(roots=roots):
+                    self.assertIn(f"Source roots (write only under these): {roots}", prompt)
+                    self.assertNotIn("under app/", prompt)
 
 
 class GitBranchRootingTest(unittest.TestCase):

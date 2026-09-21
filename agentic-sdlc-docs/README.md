@@ -6,10 +6,12 @@ The root [README](../README.md) is the current project entry point. `.agentic-sd
 
 - [Architecture and repository layout](architecture.md)
 - [Modular build, validation and installation](build-and-install.md)
-- [Planning workflow](workflows/planning.md), including the write-scope hook design
+- [Planning workflow](workflows/planning.md)
+- [Delivery workflow](workflows/delivery.md)
 - [Source-review workflow](workflows/source-review.md)
-- [Hybrid delivery: adding specialists and skills](workflows/hybrid-delivery.md)
+- [Delivery: specialists and skills](workflows/hybrid-delivery.md)
 - [Agent profile catalog](reference/agent-profiles.md)
+- [Agent answers and write scope](reference/write-scope-hook.md): the hook that confines every agent
 - [Payment-service example](../app/README.md)
 
 ## Contracts and policies
@@ -25,13 +27,15 @@ The root [README](../README.md) is the current project entry point. `.agentic-sd
 
 ## Plans
 
-- [Planning: non-converged runs, developer guidance and warm start](plans/planning-guidance-and-warm-start.md) — planned, not started
+- [Planning: non-converged runs, developer guidance and warm start](plans/planning-guidance-and-warm-start.md) — implemented and live-verified (2026-09-20)
+- [Delivery: configurable source roots](plans/configurable-source-roots.md) — implemented and live-verified (2026-09-21)
 
 ## Verification records
 
 - [Modular refactor validation](verification/modularity-verification.md)
 - [Source-review live verification](verification/source-review-live.md)
 - [Hybrid delivery live verification](verification/hybrid-delivery-live.md)
+- [Configurable source roots live verification](verification/configurable-source-roots-live.md)
 
 ## Examples
 

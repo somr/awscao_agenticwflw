@@ -26,8 +26,10 @@ reviewed Development Plan
 HUMAN APPROVAL
 ```
 
+If the independent review cannot return `PASS`, nothing approvable is published: the run leaves a non-approvable candidate under `agentic-sdlc-records/<ticket>/candidates/`, and the developer can supply guidance and warm-start from it (see the [Planning guide](workflows/planning.md)).
+
 [Delivery Workflow 2](../.agentic-sdlc/contracts/delivery-workflow.md) implements approved plans and manages
-verification, review and remediation. Install its bundled workflow with
+verification, review and remediation; the [Delivery guide](workflows/delivery.md) covers running, configuring and approving it. Install its bundled workflow with
 `.agentic-sdlc/cao/workflows/install_deliver.sh`; the delivery profiles are listed in the profile guide.
 Delivery defaults to a hybrid implementation stage: a code supervisor assigns
 approved work to registered workers with required skills, Python dispatches them
@@ -50,7 +52,7 @@ isolation and development-agent handoff.
 - `.agentic-sdlc/schemas/` — machine-readable Planning Context schema.
 - `.agentic-sdlc/templates/` — Development Plan template, plus the approval-record and Human Review Brief templates named by the delivery contract.
 - `.agentic-sdlc/cao/profiles/` — repository-owned CAO agent profiles.
-- `.agentic-sdlc/cao/specialists.json` and `.agentic-sdlc/cao/skills/` — hybrid-delivery registry (workers, skills, trusted verification commands) and skill content. Read from the repository when a run starts, not bundled; see [hybrid delivery](workflows/hybrid-delivery.md).
+- `.agentic-sdlc/cao/specialists.json` and `.agentic-sdlc/cao/skills/` — hybrid-delivery registry (workers, skills, trusted verification commands), the project's source roots and write profiles, and skill content. Read from the repository when a run starts, not bundled; see [hybrid delivery](workflows/hybrid-delivery.md).
 - `.agentic-sdlc/cao/workflows/` — local workflow entry points and installer commands.
 - `.agentic-sdlc/cao/sdlc_workflows/` — workflow implementations and shared execution modules (`hybrid.py` is Delivery's supervisor/worker dispatch).
 - `.agentic-sdlc/cao/build_workflow.py`, `install_workflow.py` — standalone CAO deployment builder and installer; see [the deployment guide](build-and-install.md).
@@ -67,7 +69,7 @@ The three `agentic-sdlc-*` folders are the project-side folders of the agentic S
 
 ## Safety model
 
-Planning, review and code-supervisor agents only write their instructed answer files under runtime evidence. Delivery implementer/remediator agents (including hybrid workers, which use the implementer profile) can write application files under `app/`, while source-review agents work in isolated run workspaces. The repository hook enforces these write boundaries because CAO worker permission bypasses do not provide path-level protection.
+Planning, review and code-supervisor agents only write their instructed answer files under runtime evidence. Delivery implementer/remediator agents (including hybrid workers, which use the implementer profile) can write application files under the project's configured source roots (default `app/`, set in the registry), while source-review agents work in isolated run workspaces. The repository hook enforces these write boundaries because CAO worker permission bypasses do not provide path-level protection.
 
 The Python workflows persist artifacts and own control flow. The workflow, not the model, decides whether review findings cause plan revision, context re-normalization, automatic remediation or human escalation.
 

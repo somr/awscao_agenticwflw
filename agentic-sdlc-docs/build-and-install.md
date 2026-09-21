@@ -114,6 +114,28 @@ Coordinate upgrades with other operators. The installer does not stop active run
 restart the server or clean up another workflow's terminals. An operator should retain
 the previous artifact and restore it if a later environment-dependent check fails.
 
+## Check that CAO matches the repository
+
+Installed workflows are frozen copies, so after any change compare them with a fresh build. The paths are
+CAO's defaults (`~/.aws/cli-agent-orchestrator/`; `CAO_WORKFLOW_DIR` moves the workflows):
+
+```bash
+for w in dev_plan deliver; do
+  python3 .agentic-sdlc/cao/build_workflow.py "$w" --output "/tmp/check_$w.py" > /dev/null
+  cmp -s "/tmp/check_$w.py" ~/.aws/cli-agent-orchestrator/workflows/sdlc_$w.py && echo "sdlc_$w matches" || echo "sdlc_$w DIFFERS"
+done
+for pair in context-normalizer:sdlc_context_normalizer planning-analyst:sdlc_planning_analyst plan-author:sdlc_plan_author \
+            plan-reviewer:sdlc_plan_reviewer code-supervisor:sdlc_code_supervisor implementer:sdlc_implementer \
+            pr-reviewer:sdlc_pr_reviewer remediator:sdlc_remediator; do
+  cmp -s ~/.aws/cli-agent-orchestrator/agent-context/${pair##*:}.md ".agentic-sdlc/cao/profiles/${pair%%:*}.md" \
+    && echo "${pair##*:} matches" || echo "${pair##*:} DIFFERS"
+done
+```
+
+After pulling changes, run the tests, reinstall the profiles that differ, then reinstall the workflows that
+differ (profiles first), and use new run IDs. Registry, skill and contract edits need no reinstall because
+they are read from the repository when a run starts.
+
 ## Editing and extending modules
 
 Use explicit, top-level relative imports for local dependencies:
@@ -167,7 +189,7 @@ test class. Local HTTP fixture tests require socket access.
 Additional packaging tests cover deterministic output and dependency digests, module
 conflicts, execution in isolated Python with no source-package path, frozen bundles
 surviving dependency changes, exact terminal cleanup, and installer collision/failure
-handling. The integration tests use real Git commits and application verification
+handling. Further suites cover the write-scope hook (including the configurable source roots, and a parity test that runs the workflow's validator and the hook's copy over one corpus), non-converged planning, developer guidance, warm start, reviewer history and hybrid delivery. The integration tests use real Git commits and application verification
 subprocesses, with only agent responses/CAO transport simulated. They cover planning
 JSON repair and plan revision, digest-bound approval, delivery verification repair,
 automatic remediation, protected findings, re-review and human handoff.

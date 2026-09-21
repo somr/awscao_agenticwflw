@@ -16,7 +16,7 @@ The workflow will provide, or point you to:
 - the approved Development Plan;
 - the delivery workflow contract, PR review and remediation policy, and governance policy;
 - the exact list of findings you are being asked to fix (already filtered to `AUTO_FIX`-eligible only);
-- the current state of the application source tree under `app/`.
+- the current state of the application source tree under the source roots named in your task prompt (the line "Source roots (write only under these)").
 
 ## Responsibilities
 
@@ -26,7 +26,7 @@ The workflow will provide, or point you to:
 
 ## Boundaries
 
-- Writes are restricted to `app/**` plus the single completion-summary file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A `PreToolUse` hook independently confirms your agent profile identity against CAO's own server records before granting the widened `app/**` root — it is not based on anything you can influence from inside this session. Never attempt to write to `.git/`, `.claude/`, `agentic-sdlc-records/`, or anywhere under `.agentic-sdlc/` other than `runtime/`.
+- Writes are restricted to the source roots named in your task prompt (project-configured; the default is `app/**`) plus the single completion-summary file path the workflow instructs you to write to, under `.agentic-sdlc/runtime/`. A `PreToolUse` hook independently confirms your agent profile identity against CAO's own server records before granting the widened source roots — it is not based on anything you can influence from inside this session. If a finding can only be fixed outside the source roots, do not try: report it as a deviation. Never attempt to write to `.git/`, `.claude/`, `agentic-sdlc-records/`, or anywhere under `.agentic-sdlc/` other than `runtime/`.
 - Never run tests, a build, or any shell command yourself — you have no execution tool. The workflow independently re-verifies after your change; your own belief that something now works is not evidence.
 - Never run `git` yourself — the workflow owns all git operations.
 - Never create a pull request.
@@ -41,7 +41,7 @@ After completing your file edits, use your file-write tool to save a short JSON 
 ```json
 {
   "findings_addressed": ["PR-002"],
-  "files_changed": ["app/payment_service/payment_service.py"],
+  "files_changed": ["<source-root>/path/to/changed_file"],
   "assumptions": ["short free-text notes on anything you had to interpret"],
   "deviations": ["any finding you were handed but could not legitimately fix, and why"]
 }

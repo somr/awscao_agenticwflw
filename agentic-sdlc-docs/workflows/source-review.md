@@ -1,236 +1,242 @@
-# Workflow 3: source code review
+# Source review workflow (`source_review`)
 
-Workflow 3 reviews an existing GitHub pull request and produces actionable feedback
-for a development agent and a human reviewer. It is independent of planning and
-delivery: no Jira ticket, approved plan, CI result or delivery manifest is required.
+Source review reviews an existing GitHub pull request and produces actionable feedback for a development agent
+and a human reviewer. It is independent of Planning and Delivery: no Jira ticket, approved plan, CI result or
+delivery manifest is needed.
 
-It reads source; it does not fix code, execute tests, assess requirements compliance,
-check deployment readiness, approve a PR or merge it. GitHub publication is a separate,
-explicit operation. The default workflow writes local artifacts only.
+It reads source. It does not fix code, run tests, assess requirements compliance or deployment readiness,
+approve a pull request or merge it. Publishing to GitHub is a separate, explicit command; by default the
+workflow writes local artifacts only.
 
-See the [modular source and deployment guide](../build-and-install.md) for shared modules,
-bundling, validation-only commands and source/bundle tests. Do not install the local
-`workflows/source_review.py` entry point by copying it directly.
+## At a glance
 
-## Agent stages
+| | |
+|---|---|
+| Registered name | `source_review` |
+| Agents | Context Mapper, Correctness Reviewer, Security Reviewer, Finding Validator, Feedback Author (five profiles) |
+| Done by Python | Pinning the PR, exporting the source, the routing gate, rendering the artifacts, publication |
+| Requires | A GitHub PR URL, or a local committed repository in fixture mode |
+| Human gate | Publishing is an explicit command; a person decides the `HUMAN_REQUIRED` findings. Nothing approves or merges the PR. |
+| Results | `.agentic-sdlc/runtime/source-review/<run-id>/` |
+| Write boundary | Each agent may write only the answer area of the run's isolated workspace, through a hook generated for that workspace |
+
+## How it works
 
 ```mermaid
 flowchart TD
-    A[Pin PR base and HEAD; export source] --> B[Context mapper]
-    B --> C[Correctness reviewer]
-    C --> D[Security and reliability reviewer]
-    D --> E[Independent finding validator]
-    E --> F[Deterministic routing gate]
-    F --> G[Feedback author]
-    G --> H[JSON findings and Markdown comments]
-    H --> I[Automatic-fix queue]
-    H --> J[Human-action queue]
+    A["Pin PR base and head,<br/>export the source"] --> B[Context Mapper]
+    B --> C[Correctness Reviewer]
+    C --> D[Security Reviewer]
+    D --> E[Finding Validator]
+    E --> F{"Routing gate<br/>(Python)"}
+    F --> G[Feedback Author]
+    G --> H["code-review.json<br/>and comments.md"]
+    H --> I["AUTO_FIX queue"]
+    H --> J["HUMAN_REQUIRED queue"]
 ```
 
-1. **Context mapper** accounts for every changed file, classifies source/test versus
-   out-of-scope material, identifies callers and sensitive boundaries.
-2. **Correctness reviewer** traces changed behavior, edge cases, compatibility and
-   test-source defects. Findings need a concrete reachable failure scenario.
-3. **Security reviewer** independently examines authorization, sensitive data,
-   transactions, concurrency and resource lifetime.
-4. **Finding validator** re-reads source, checks guards and base/head behavior,
-   rejects speculation, deduplicates shared root causes and reassesses fix eligibility.
-   Every candidate must receive an explicit acceptance, rejection or duplicate decision.
-5. **Feedback author** explains the accepted findings for development. It cannot change
-   routing or severity; canonical evidence and routing are rendered by Python.
+1. **Context Mapper.** Accounts for every changed file, separates source and test files from out-of-scope material,
+   and identifies callers and sensitive boundaries.
+2. **Correctness Reviewer.** Traces changed behavior, edge cases, compatibility and test-source defects. A finding
+   needs a concrete, reachable failure scenario.
+3. **Security Reviewer.** Independently examines authorization, sensitive data, transactions, concurrency and
+   resource lifetime.
+4. **Finding Validator.** Re-reads the source, checks guards and base and head behavior, rejects speculation,
+   merges findings that share a root cause and reassesses fix eligibility. Every candidate gets an explicit
+   acceptance, rejection or duplicate decision.
+5. **Routing gate.** Python routes each validated finding, ignoring any route an agent supplied.
+6. **Feedback Author.** Explains the accepted findings for developers. It cannot change routing or severity;
+   Python renders the canonical evidence and routing.
 
-The specialist agents have separate contexts and are instructed not to consult each
-other's findings. They currently execute **sequentially**, keeping CAO step ordering
-predictable and limiting resource contention on a shared server. Independence does not
-require simultaneous execution. Parallel scheduling is not implemented in this version.
+The specialist agents have separate contexts and are told not to consult each other's findings. They run one
+after another, which keeps CAO step ordering predictable and avoids contention on a shared server; independence
+does not need simultaneous execution. Parallel scheduling is not supported.
 
-## Routing policy
+### Routing policy
 
-A finding is `AUTO_FIX` only if **all** these conditions hold:
+A finding is `AUTO_FIX` only if every condition holds. Otherwise it is `HUMAN_REQUIRED`, with explicit reasons.
 
-- Severity is `LOW` or `MEDIUM`.
-- Source evidence substantiates a PR-introduced or worsened defect.
-- Confidence is at least **0.90** (for both low and medium severity).
-- Intended behavior is clear from source contracts and usage.
-- The fix is local and bounded.
-- A specific deterministic verification method is available to the fixer.
-- Neither the finding nor the mapper identifies a protected boundary.
+```mermaid
+flowchart TD
+    F["Validated finding<br/>(source evidence shows a defect the PR introduced or worsened)"] --> A1{"Severity LOW or MEDIUM?"}
+    A1 -- no --> H[HUMAN_REQUIRED]
+    A1 -- yes --> A2{"Confidence at least 0.90?"}
+    A2 -- no --> H
+    A2 -- yes --> A3{"Intended behavior clear,<br/>fix local and bounded,<br/>a deterministic check exists?"}
+    A3 -- no --> H
+    A3 -- yes --> A4{"Protected boundary<br/>involved?"}
+    A4 -- yes --> H
+    A4 -- no --> AF[AUTO_FIX]
+```
 
-Otherwise the route is `HUMAN_REQUIRED`, with explicit reasons. Protected categories
-include architecture, public API/event contracts, schema changes, authentication and
-authorization, cryptography/secrets, data loss, concurrency/transactions, critical
-business rules, infrastructure topology and significant dependency changes. The
-mapper's file-level protected classification is conservative: it forces human handling
-even if the reviewer claims a local fix is eligible.
+Protected categories include architecture, public API and event contracts, schema changes, authentication and
+authorization, cryptography and secrets, data loss, concurrency and transactions, critical business rules,
+infrastructure topology and significant dependency changes. The mapper's file-level protected classification is
+conservative: it forces human handling even when a reviewer claims a local fix is eligible.
 
-Unsupported speculation is rejected, not automatically converted into a human defect.
-Coverage uncertainties are recorded separately. A confirmed defect whose *fix* requires
-judgment remains a finding and goes to a human.
-
-The gate recomputes routing from validated fields, disregarding any agent-supplied route.
-Model confidence is an estimate, not a calibrated probability or proof. Source semantics
-and sensitive-boundary detection still depend on the agents; the gate enforces their
-validated evidence fields rather than proving program correctness.
-
-Examples:
+Unsupported speculation is rejected, not turned into a human defect. Coverage uncertainties are recorded
+separately. A confirmed defect whose fix needs judgment stays a finding and goes to a human. Model confidence is an
+estimate, not a calibrated probability: the gate enforces validated evidence fields and does not prove correctness.
 
 | Finding | Route | Why |
 |---|---|---|
-| Off-by-one slice violates an explicit function contract | `AUTO_FIX` | Local change and focused regression test |
-| Missing owner check in account access | `HUMAN_REQUIRED` | Authorization boundary, regardless of patch size |
-| Caller expectations conflict about idempotency | `HUMAN_REQUIRED` | Intended behavior requires a decision |
+| Off-by-one slice violates an explicit function contract | `AUTO_FIX` | Local change and a focused regression test |
+| Missing owner check in account access | `HUMAN_REQUIRED` | Authorization boundary, whatever the patch size |
+| Callers disagree about idempotency | `HUMAN_REQUIRED` | Intended behavior needs a decision |
 | Suspicion contradicted by an existing guard | Rejected | No substantiated defect |
 
-See [the policy](../policies/source-review.md) for the normative rules.
+The normative rules are in [the policy](../policies/source-review.md). The thresholds are fixed by
+that policy and are not configurable.
 
-## Prerequisites
+## Before you run it
 
-- A running CAO server, `cao` CLI and configured `claude_code` provider.
-- Python 3.10+ for this workflow's code (the repository declares Python 3.14+).
-- Git and GitHub CLI (`gh`) on the CAO server host.
-- For GitHub mode, authenticated `gh` read access to the PR and Git HTTPS read access
-  to its repository. Configure the Git credential helper separately if necessary;
-  `gh auth setup-git` is one option. The workflow never changes credentials.
-- The repository root and fixture paths must be accessible **on the server host**.
+1. A running CAO server, the `cao` CLI and a configured `claude_code` provider.
+2. Git and the GitHub CLI (`gh`) on the CAO server host. In GitHub mode `gh` needs read access to the PR, and Git
+   needs HTTPS read access to its repository (`gh auth setup-git` is one way). The workflow never changes credentials.
+3. The repository root and any fixture paths must be reachable **on the server host**.
+4. Install the workflow and its five profiles:
 
-The initial live validation used the available CAO server and its Claude Code provider.
-CAO's profile validator may warn that `fs_write` is unrecognized; the installed Claude
-Code tool mapping supports it and live answer-file delivery exercises it. Do not solve
-that warning by granting `execute_bash`, `*` or broader tools.
+   ```bash
+   bash .agentic-sdlc/cao/workflows/install_source_review.sh "$PWD"
+   ```
 
-## Installation
+   The installer builds the workflow and its shared modules into one standalone artifact, validates it, and adds
+   only `~/.aws/cli-agent-orchestrator/workflows/source_review.py` and the profiles `sdlc_source_mapper`,
+   `sdlc_source_correctness`, `sdlc_source_security`, `sdlc_source_validator` and `sdlc_source_feedback`. It does not
+   touch the other workflows, their profiles or the repository hook.
 
-From this branch/worktree's root:
+   It **refuses to overwrite** an installed `source_review` or any of the five profiles, so an ordinary reinstall
+   cannot replace definitions another run is using. Installation is not transactional across the profile installs:
+   if it fails part way, inspect the new names before retrying and do not delete unrelated profiles. To upgrade,
+   wait for `source_review` runs to finish, archive the installed workflow, manage its five profiles explicitly,
+   and then reinstall. Other workflows need not stop.
+
+CAO's profile validator may warn that `fs_write` is unrecognized. The Claude Code mapping supports it, and the
+answer-file delivery relies on it. Do not silence the warning by granting `execute_bash`, `*` or broader tools.
+
+## Inputs
+
+| Input | Required | Meaning |
+|---|---|---|
+| `repository_root` | yes | An existing directory where the run's evidence is stored. Its working tree is not the review source. |
+| `pr_url` | GitHub mode | A GitHub.com pull request URL. |
+| `source_repository` | fixture mode | A local committed repository. |
+| `base_sha`, `head_sha` | fixture mode | Exact 40-character commit SHAs. |
+
+Choose GitHub mode **or** fixture mode; mixing them is rejected. GitHub Enterprise, SHA-256 Git repositories,
+configurable routing thresholds and automatic fixing are not supported.
+
+## Run
+
+Use a fresh run ID for every invocation.
 
 ```bash
-bash .agentic-sdlc/cao/workflows/install_source_review.sh "$PWD"
-```
-
-The installer builds `sdlc_workflows/source_review.py` and its shared dependencies
-into a standalone artifact, then validates and adds only:
-
-- `~/.aws/cli-agent-orchestrator/workflows/source_review.py`
-- `sdlc_source_mapper`, `sdlc_source_correctness`, `sdlc_source_security`,
-  `sdlc_source_validator`, `sdlc_source_feedback` profiles.
-
-It does not change `dev_plan`, `deliver`, their profiles or repository hooks. It refuses
-to overwrite an existing Workflow 3 installation or existing source-review profiles.
-This prevents an ordinary reinstall from replacing definitions another run may use.
-Installation is not transactional across profile installs: if it fails partway through,
-inspect the new names before retrying; do not delete unrelated profiles.
-
-For an upgrade, wait for Workflow 3 runs to finish, archive the installed workflow,
-and explicitly manage its five profiles before reinstalling. Never replace definitions
-while another operator is using them. Other workflows do not need to be stopped.
-
-## Review a GitHub PR
-
-Use a fresh run ID for **every** invocation:
-
-```bash
-cao workflow run source_review \
-  --run-id source-review-pr42-20260918-1 \
+cao workflow run source_review --run-id source-review-pr42-1 \
   --input repository_root="$PWD" \
   --input pr_url=https://github.com/OWNER/REPO/pull/42
 ```
 
-Add `--detach` to submit without waiting. Monitor only your run:
+Add `--detach` to submit without waiting, and follow only your run with `cao workflow status <run-id>`,
+`cao workflow events <run-id> --follow` and `cao workflow result <run-id>`.
 
-```bash
-cao workflow status source-review-pr42-20260918-1
-cao workflow events source-review-pr42-20260918-1 --follow
-cao workflow result source-review-pr42-20260918-1
+The review never touches your checkout:
+
+```mermaid
+flowchart LR
+    PR["GitHub PR<br/>(may be from a fork)"] --> OS["Private bare object store<br/>for this run"]
+    OS --> MB["Merge base to<br/>the pinned head"]
+    MB --> EX["Export base and head files<br/>as plain data"]
+    EX --> WS["Isolated run workspace"]
 ```
 
-`repository_root` controls where evidence is stored; its working tree is not the review
-source. The workflow retrieves the PR into a **private bare object store**, compares
-merge-base to pinned HEAD, and exports base/head files as plain data into an isolated
-workspace. The PR may come from a fork. It neither checks out a branch in the developer
-repository nor fetches into that repository's refs or index. Uncommitted edits are ignored.
+The PR is fetched into a private bare object store, the merge base is compared with the pinned head, and both trees
+are exported as plain data. The developer repository is not checked out or fetched into, and uncommitted edits are
+ignored. When the run completes, the base tip and head are checked again.
 
-The base tip and HEAD are checked again on completion. If either moved or the PR closed,
-the artifact is `STALE` and must not be acted upon as the current review. Start a fresh run.
+## Results
 
-### Inputs
-
-| Input | Meaning |
-|---|---|
-| `repository_root` | Required existing directory for run evidence |
-| `pr_url` | GitHub.com PR URL for normal operation |
-| `source_repository` | Local committed repository for fixture/offline mode |
-| `base_sha` | Exact 40-character commit SHA; fixture mode only |
-| `head_sha` | Exact 40-character commit SHA; fixture mode only |
-
-Choose GitHub mode **or** local fixture mode. Mixing them is rejected. GitHub Enterprise,
-SHA-256 Git repositories, configurable routing thresholds and automatic fixes are not
-implemented in this version.
-
-## Output and agentic development handoff
-
-Artifacts are isolated by run ID and Git-ignored:
+Artifacts are isolated by run ID and ignored by Git:
 
 ```text
 .agentic-sdlc/runtime/source-review/<run-id>/
-├── code-review.json       # canonical, routed feedback
-├── comments.md           # concise review with commit-specific source links
-├── publication.json      # optional GitHub review receipt
-├── failure.json          # only if orchestration failed
-├── objects.git/          # this run's private Git objects
+├── code-review.json       canonical, routed feedback
+├── comments.md            concise review with commit-specific source links
+├── publication.json       GitHub review receipt, only after publishing
+├── failure.json           only if orchestration failed
+├── objects.git/           this run's private Git objects
 └── workspace/
     ├── source/base/ and source/head/
     ├── diff.patch and snapshot.json
-    ├── mapping.json and candidates.json
-    ├── adjudication.json and routed-findings.json
-    └── .agentic-sdlc/runtime/<role>/
-        └── answer, raw output and stabilization evidence
+    ├── mapping.json, candidates.json, adjudication.json, routed-findings.json
+    └── .agentic-sdlc/runtime/<role>/    each agent's answer, raw output and stabilization log
 ```
 
-Archive the complete run directory if durable audit retention is needed. No shared
-`agentic-sdlc-records/<ticket>` directory is overwritten and there is no global “latest review.”
+Archive the whole run directory if you need durable audit retention. There is no shared per-ticket record and no
+global "latest review".
 
-`code-review.json` includes:
+`code-review.json` contains:
 
-- `schema_version`, `policy_version`, `run_id`;
-- `snapshot`: PR identity, base/head/merge-base SHAs and changed paths;
-- `status`: `REVIEWED` or `STALE` (neither means PR approval);
+- `schema_version`, `policy_version` and `run_id`;
+- `snapshot`: the PR identity, the base, head and merge-base SHAs and the changed paths;
+- `status`: `REVIEWED` or `STALE`. Neither means the PR is approved;
 - `coverage_status`: `COMPLETE` or `INCOMPLETE`, with explicit `coverage_gaps`;
-- `findings`, each with source location, severity, confidence, trigger, evidence,
-  consequence, fix direction, verification method, eligibility fields and routing reasons;
+- `findings`, each with location, severity, confidence, trigger, evidence, consequence, fix direction,
+  verification method, eligibility fields and routing reasons;
 - `queues.AUTO_FIX` and `queues.HUMAN_REQUIRED`: finding IDs;
-- `comments_sha256`, binding the publication text to the artifact.
+- `comments_sha256`, which binds the publication text to the artifact.
 
-Each finding carries a `stable_id` and `reviewed_head_sha`. IDs hash PR identity, path,
-symbol, category and failure scenario, excluding HEAD and line numbers. This preserves
-IDs when only lines move. Reworded scenarios, renamed files/symbols or reclassified issues
-can receive new IDs; there is no semantic cross-run reconciliation in this version.
-Do not interpret an absent ID on re-review as proof that its defect was fixed.
+Each finding carries a `stable_id` and `reviewed_head_sha`. The ID hashes the PR identity, path, symbol, category
+and failure scenario, but not the head or line numbers, so it survives moved lines. A reworded scenario or a renamed
+file or symbol can get a new ID, and there is no semantic reconciliation across runs, so an ID missing from a later
+review does not prove that its defect was fixed.
 
-A development agent should:
+## When a run stops early
 
-1. Require `status == REVIEWED`, assess coverage gaps, and verify its checkout matches
-   `snapshot.head_sha`. Never automatically consume a stale or failed result.
-2. Select findings listed in `queues.AUTO_FIX`, using their canonical evidence and
-   verification method. Coverage gaps require assessment before claiming review completion.
-3. Attempt only the bounded fix. Run verification in the development workflow.
-4. Escalate to a human if scope expands, intended behavior is unclear, verification
-   fails or the same finding persists. Human findings must not be auto-fixed.
-5. Commit changes and start a **new review run** against the new PR HEAD. Track repeated
-   findings by ID where stable, supplemented by human/development-agent comparison.
+| Outcome | Meaning | What to do |
+|---|---|---|
+| `status: STALE` | The base tip or head moved, or the PR closed, before completion. | Do not act on it; start a fresh run. |
+| `coverage_status: INCOMPLETE` | Some files could not be reviewed (binary or non-UTF-8 files, control files, symlinks, submodules, files over 2 MB, or more than 100 MB per tree). | Assess the `coverage_gaps` before treating the review as complete. An empty findings list can still be `INCOMPLETE`. |
+| The run fails and `failure.json` exists | Orchestration failed, for example incomplete agent execution or a diff over 2 MB (which fails instead of being truncated). | Keep the evidence and use a fresh run ID. |
+| A reused run ID is refused | Each run creates its directory exclusively; reuse and resume are deliberately refused. | Use a fresh ID. |
 
-`HUMAN_REQUIRED` is Workflow 3's equivalent of Workflow 2's `DEVELOPER_REQUIRED` route.
-The JSON contracts differ: do not pass this artifact straight into Workflow 2's existing
-remediator. An adapter must select findings, preserve the SHA binding and map fields.
-No existing delivery integration has been changed implicitly.
+`COMPLETE` means no gaps were reported within a source-only review; it is not proof of correctness.
 
-## Optional GitHub publication
+## Human decisions
 
-Publication is a separate command and defaults to preview. It creates one `COMMENT`
-review containing the finding comments and commit-specific source links. These are
-**not inline diff threads**; base-side/deleted-code findings remain linkable without
-inventing an inline anchor.
+A development agent should treat the artifact this way:
+
+```mermaid
+flowchart TD
+    R["code-review.json"] --> C{"status REVIEWED and<br/>checkout matches snapshot.head_sha?"}
+    C -- no --> X["Do not use it:<br/>start a fresh run"]
+    C -- yes --> Q{Queue}
+    Q -- AUTO_FIX --> F["Bounded fix, verified<br/>in the development workflow"]
+    Q -- HUMAN_REQUIRED --> HU["A person decides"]
+    F --> E{"Verified and<br/>still in scope?"}
+    E -- no --> HU
+    E -- yes --> CM["Commit, then run a new review<br/>against the new PR head"]
+```
+
+1. Require `status == REVIEWED`, assess the coverage gaps, and confirm the checkout matches `snapshot.head_sha`.
+   Never consume a stale or failed result automatically.
+2. Take the findings in `queues.AUTO_FIX`, using their canonical evidence and verification method.
+3. Attempt only the bounded fix and verify it in the development workflow.
+4. Escalate to a person if the scope grows, the intended behavior is unclear, verification fails or the same finding
+   persists. `HUMAN_REQUIRED` findings are never auto-fixed.
+5. Commit and start a **new** review run against the new head, tracking repeated findings by stable ID and by comparison.
+
+`HUMAN_REQUIRED` corresponds to Delivery's `DEVELOPER_REQUIRED` route, but the JSON contracts differ, so this
+artifact cannot be passed straight to Delivery's remediator. An adapter must select findings, keep the SHA binding
+and map the fields.
+
+### Publishing to GitHub
+
+Publication is a separate command and defaults to a preview. It posts one `COMMENT` review that contains the finding
+comments with commit-specific source links. These are **not** inline diff threads, so findings on deleted code stay
+linkable without inventing an anchor.
 
 ```bash
-RUN_DIR=.agentic-sdlc/runtime/source-review/source-review-pr42-20260918-1
+RUN_DIR=.agentic-sdlc/runtime/source-review/source-review-pr42-1
 
 # Preview the exact request; no GitHub write.
 python3 .agentic-sdlc/scripts/publish_source_review.py "$RUN_DIR"
@@ -239,79 +245,76 @@ python3 .agentic-sdlc/scripts/publish_source_review.py "$RUN_DIR"
 python3 .agentic-sdlc/scripts/publish_source_review.py "$RUN_DIR" --publish
 ```
 
-The publisher requires GitHub pull-request write permission. It verifies the comments
-hash, rechecks the open PR's base/HEAD, and uses an exact `commit_id` with `event=COMMENT`.
-It never approves or requests changes on behalf of a human. It lists all review pages
-and reuses a prior review carrying the same base/HEAD marker on retry. It stores the
-receipt locally and uses a local exclusive lock to prevent concurrent publication of
-the same run. After a process crash, inspect GitHub before removing `publication.lock`.
-Serialize publication across different run directories for the same PR; the GitHub API
-has no transactional compare-and-post/idempotency operation. A push can race the final
-check, but the posted review remains bound to its original commit.
+```mermaid
+flowchart LR
+    RUN["Reviewed run directory"] --> PRE["Preview<br/>no GitHub write"]
+    PRE --> POST["--publish"]
+    POST --> CHK["Check the comments hash<br/>and the open PR's base and head"]
+    CHK --> REVW["One COMMENT review<br/>at the exact commit"]
+    REVW --> REC["publication.json receipt"]
+```
 
-Reference: [GitHub's create-review API](https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request).
+Publishing needs GitHub pull-request write permission. It verifies the comments hash, rechecks that the PR is open
+at the same base and head, and posts with an exact `commit_id` and `event=COMMENT`. It never approves or requests
+changes. It lists all review pages and reuses an earlier review that carries the same base and head marker, so a
+retry does not duplicate. A local exclusive lock stops concurrent publication of the same run; after a crash, inspect
+GitHub before removing `publication.lock`. The GitHub API has no transactional post-if-unchanged operation, so
+serialize publication across run directories for the same PR. A push can race the final check, but the posted review
+stays bound to its original commit. See [GitHub's create-review API](https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request).
 
-## Local live fixture
+## Configuration
 
-The fixture contains a clearly bounded off-by-one regression and a missing authorization
-check. It creates its own repository and never modifies an existing repository:
+Source review has no configuration file. What you choose is the mode and the inputs above, and the routing policy is
+fixed. To try it without a real PR, use fixture mode.
+
+### Local fixture
+
+The fixture contains a clearly bounded off-by-one regression and a missing authorization check. The script creates
+its own repository and never modifies an existing one:
 
 ```bash
 python3 agentic-sdlc-local-inputs/source-review/create_fixture.py /tmp/my-source-review-fixture
-```
 
-Use the returned paths and SHAs:
-
-```bash
-cao workflow run source_review \
-  --run-id source-review-fixture-1 \
+cao workflow run source_review --run-id source-review-fixture-1 \
   --input repository_root="$PWD" \
   --input source_repository=/tmp/my-source-review-fixture \
   --input base_sha=BASE_SHA_FROM_FIXTURE \
   --input head_sha=HEAD_SHA_FROM_FIXTURE
 ```
 
-Expected semantic outcome: the slice defect is eligible for `AUTO_FIX`; the missing
-ownership check is `HUMAN_REQUIRED`. Agent wording, candidate counts and duplicate
-handling may differ. Fixture artifacts cannot be published to GitHub.
+Expect the slice defect to be `AUTO_FIX` and the missing ownership check to be `HUMAN_REQUIRED`. Agent wording,
+candidate counts and duplicate handling can differ. Fixture artifacts cannot be published to GitHub.
 
-## Isolation, limits and failure handling
+## Safety boundaries
 
-- Each invocation exclusively creates its run directory. **Resume/reuse of a run ID is
-  deliberately refused** to avoid replacing evidence or reusing partial snapshots.
-  After cancellation/failure, keep the evidence and use a fresh ID.
-- PR source never supplies active hooks or agent settings. Agent-control files are
-  excluded; symlinks and submodules are not materialized. Shell, network and subagent
-  tools are not granted to reviewer profiles. A generated trusted hook allows writes
-  only inside that run workspace's answer-artifact tree.
-- The hook is a write guard, not an OS-level read sandbox. Review agents run under the
-  configured provider account and inherit its global configuration. Use a dedicated
-  provider account/container if hostile-repository isolation is required.
-- Both snapshots are UTF-8 text exports. Binary/non-UTF8 files, control files, symlinks,
-  submodules, files over 2 MB and exports exceeding 100 MB per tree create coverage gaps.
-  A diff over 2 MB fails explicitly instead of silently truncating. Repositories with
-  excluded files can be `INCOMPLETE` even if no source finding is reported.
-- `COMPLETE` means no gaps were reported within the source-only review, not proof of
-  correctness. An empty findings array can coexist with `INCOMPLETE`.
-- Agent answers use Workflow 1's proven file-stabilization protocol. Incomplete execution
-  never becomes an empty review. JSON/contract defects get one repair attempt; execution
-  failure writes `failure.json` and causes CAO failure.
-- Only this workflow's step terminals are cleaned up. No CAO server restart, shared
-  terminal cleanup or developer checkout modification is performed.
+- PR source never supplies active hooks or agent settings. Agent-control files are excluded, and symlinks and
+  submodules are not materialized. Reviewer profiles get no shell, network or subagent tools. A generated, trusted hook
+  allows writes only inside the run workspace's answer tree; see [Agent answers and write scope](../reference/write-scope-hook.md).
+- The hook is a write guard, not an operating-system read sandbox. The review agents run under the configured provider
+  account and inherit its global configuration. Use a dedicated provider account or container if you must isolate
+  a hostile repository.
+- Both snapshots are UTF-8 text exports; whatever cannot be exported becomes a coverage gap.
+- Incomplete agent execution never becomes an empty review. A JSON or contract defect gets one repair attempt;
+  an execution failure writes `failure.json` and fails the CAO run.
+- Only this run's step terminals are cleaned up. The workflow never restarts the CAO server, cleans up shared
+  terminals or modifies a developer checkout.
 
-## Verification
+## Tests
+
+The suite covers routing overrides, contracts, validation accounting, deduplication, source export from real Git
+commits, preservation of a dirty checkout, write-guard symlink escapes, the five-stage pipeline, coverage
+propagation, stale or tampered publication, publication retries and failed-run evidence:
 
 ```bash
 python3 -m unittest discover -s tests -v
 bash -n .agentic-sdlc/cao/workflows/install_source_review.sh
 ```
 
-The tests cover routing overrides, contracts, validation accounting, deduplication,
-source export from real Git commits, concurrent dirty-checkout preservation, write-guard
-symlink escapes, the five-stage pipeline, coverage propagation, stale/tampered publication,
-publication retries and failed-run evidence. Existing hook tests need local socket access.
+The hook tests need local socket access. The live fixture exercises the CAO and provider integration; it does not
+replace the regression suite or measure review accuracy on real PRs. The
+[live verification record](../verification/source-review-live.md) has results and limits.
 
-The live fixture exercises CAO/provider integration; it is not a substitute for the
-regression suite or an evaluation of review accuracy on representative real PRs.
+## See also
 
-See the [implementation verification record](../verification/source-review-live.md) for test and live-run evidence.
+[Delivery](delivery.md) · [Agent profiles](../reference/agent-profiles.md) ·
+[Source-review contract](../contracts/source-review-workflow.md) · [Source-review policy](../policies/source-review.md)
