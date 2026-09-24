@@ -279,7 +279,8 @@ def review_contract(value: Any, work: Path, snapshot: dict, mapping: dict) -> di
     return value
 
 
-def adjudication_contract(value: Any, candidates: list[dict], work: Path, snapshot: dict, mapping: dict) -> dict:
+def adjudication_contract(value: Any, candidates: list[dict], work: Path, snapshot: dict, mapping: dict,
+                          reported_gaps: list[dict] = ()) -> dict:
     require(isinstance(value, dict) and isinstance(value.get("decisions"), list), "decisions array required")
     available = {f["candidate_id"] for f in candidates}
     seen = set()
@@ -302,7 +303,18 @@ def adjudication_contract(value: Any, candidates: list[dict], work: Path, snapsh
             duplicates.append(decision.get("duplicate_of"))
     require(seen == available, "Validator must account for every candidate")
     require(all(cid in accepted for cid in duplicates), "Duplicates must reference accepted candidates")
-    strings(value.get("coverage_gaps"), "coverage_gaps")
+    # Merging reworded gaps is an agent decision; Python only guarantees none is lost.
+    require(isinstance(value.get("coverage_gaps"), list), "coverage_gaps: array required")
+    accounted = []
+    for entry in value["coverage_gaps"]:
+        require(isinstance(entry, dict), "Coverage gap must be an object")
+        string(entry.get("gap"), "coverage gap")
+        accounted += strings(entry.get("covers"), "covers")
+    restated = strings(value.get("snapshot_restatements", []), "snapshot_restatements")
+    require(not restated or bool(snapshot["coverage_gaps"]), "No snapshot coverage gap to restate")
+    accounted += restated
+    require(len(accounted) == len(set(accounted)) and set(accounted) == {g["id"] for g in reported_gaps},
+            "Validator must account for every reported coverage gap exactly once")
     return value
 
 
@@ -353,6 +365,12 @@ Scope: defects introduced/worsened in source and test code only. No plan/require
 compliance, CI, deployment, style nits, speculative cleanups or pre-existing defects.
 Inspect surrounding code and callers to establish reachable failure scenarios.
 Report incomplete coverage explicitly. Empty findings do not imply approval.
+A coverage gap is a limitation of this review: context outside the snapshot that the
+changed code depends on (callers, configuration, external systems or contracts), or
+source you could not assess. Report each one you find. Do not restate snapshot.json
+coverage_gaps (the workflow always reports them), do not report that the review is
+static or source-only (inherent to this workflow), and do not report an issue you
+leave to another reviewer.
 Allowed categories: {sorted(CATEGORIES)}. Protected categories: {sorted(PROTECTED)}.
 Severity MUST be LOW, MEDIUM or HIGH; never CRITICAL or other values.
 PUBLIC_API means a published/external interface requiring a contract change to fix,
@@ -378,7 +396,8 @@ Output {"summary":"...", "files":[{"file":"...", "scope":"SOURCE|TEST|OUT_OF_SCO
 Identify sensitive boundaries conservatively, including affected callers.''',
         lambda value: mapping_contract(value, snapshot))
     _write_json(work / "mapping.json", mapping)
-    candidates, gaps = [], []
+    candidates = []
+    reported = [("mapper", gap) for gap in mapping["coverage_gaps"]]
     # Independent contexts, serial execution to keep CAO replay ordering stable
     # and avoid claiming shared server capacity needed by other active agents.
     for role, focus in [("correctness", "logic, edge cases, compatibility and regression test source"),
@@ -392,23 +411,31 @@ Do not claim runtime verification. Human judgment required on sensitive boundari
         for finding in reviewed["findings"]:
             finding["candidate_id"] = role + ":" + finding["candidate_id"]
         candidates.extend(reviewed["findings"])
-        gaps.extend(reviewed["coverage_gaps"])
+        reported += [(role, gap) for gap in reviewed["coverage_gaps"]]
     _write_json(work / "candidates.json", candidates)
-    adjudicated = call("validator", f"""Read mapping.json and candidates.json.
+    reported_gaps = [{"id": f"G{index}", "source": role, "gap": gap}
+                     for index, (role, gap) in enumerate(reported, start=1)]
+    _write_json(work / "reported-gaps.json", reported_gaps)
+    adjudicated = call("validator", f"""Read mapping.json, candidates.json and reported-gaps.json.
 Independently challenge every candidate against actual source, reachability,
 existing guards, and base/head behavior. Reject speculation; deduplicate shared root causes.
 Return {{"decisions":[{{"candidate_id":"exact input id", "disposition":"ACCEPT|REJECT|DUPLICATE",
 "reason":"evidence-based decision", "duplicate_of":"accepted candidate id (DUPLICATE only)",
-"finding":{json.dumps(FINDING_SHAPE)}}}], "coverage_gaps":[]}}.
+"finding":{json.dumps(FINDING_SHAPE)}}}], "coverage_gaps":[{{"gap":"one limitation", "covers":["G1"]}}],
+"snapshot_restatements":[]}}.
 Include finding only for ACCEPT and preserve its candidate_id. Account for every candidate.
 Reassess severity, confidence and ALL eligibility booleans independently.
-Do not add new findings here; record newly suspected areas as coverage gaps.
-""", lambda value: adjudication_contract(value, candidates, work, snapshot, mapping))
+Do not add new findings here; record newly suspected areas as coverage gaps with covers [].
+Consolidate reported-gaps.json: merge gaps that describe the same limitation into one
+entry whose covers lists all their ids, keeping every distinct limitation. Put ids that
+only restate a snapshot.json coverage gap in snapshot_restatements. Every reported id
+must appear exactly once across covers and snapshot_restatements.
+""", lambda value: adjudication_contract(value, candidates, work, snapshot, mapping, reported_gaps))
     _write_json(work / "adjudication.json", adjudicated)
     findings = [route_finding(d["finding"], snapshot, mapping)
                 for d in adjudicated["decisions"] if d["disposition"] == "ACCEPT"]
     require(len({f["stable_id"] for f in findings}) == len(findings), "Unresolved duplicate findings")
-    gaps = sorted(set(snapshot["coverage_gaps"] + mapping["coverage_gaps"] + gaps + adjudicated["coverage_gaps"]))
+    gaps = sorted(set(snapshot["coverage_gaps"] + [entry["gap"] for entry in adjudicated["coverage_gaps"]]))
     draft = {"findings": findings, "coverage_gaps": gaps}
     _write_json(work / "routed-findings.json", draft)
 

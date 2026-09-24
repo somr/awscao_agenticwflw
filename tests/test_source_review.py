@@ -144,7 +144,7 @@ class ReviewTests(unittest.TestCase):
             if role == 'security':
                 value['coverage_gaps'] = ['caller unavailable']
             if role == 'validator':
-                value = {'decisions': [], 'coverage_gaps': []}
+                value = {'decisions': [], 'coverage_gaps': [{'gap': 'caller unavailable', 'covers': ['G1']}]}
             if role == 'feedback':
                 value = {'summary': 'Incomplete', 'comments': []}
             return kwargs['validator'](value)
@@ -152,6 +152,43 @@ class ReviewTests(unittest.TestCase):
             report = mod.run_agents(self.work, self.snapshot)
         self.assertEqual(report['coverage_status'], 'INCOMPLETE')
         self.assertEqual(report['coverage_gaps'], ['caller unavailable'])
+
+    def test_validator_merges_reworded_gaps_and_keeps_snapshot_gaps(self):
+        snapshot = {**self.snapshot, 'coverage_gaps': ['Agent control file excluded: .claude/settings.json']}
+        reported = {'mapper': ['Host HTTP layer is outside the repository'],
+                    'correctness': ['Caller of handle() is not in the snapshot'],
+                    'security': ['.claude/settings.json was excluded and not reviewed']}
+        def fake(**kwargs):
+            role = kwargs['agent'].removeprefix('sdlc_source_')
+            if role == 'mapper':
+                value = {**copy.deepcopy(self.mapping), 'coverage_gaps': reported['mapper']}
+            elif role in ('correctness', 'security'):
+                value = {'findings': [], 'coverage_gaps': reported[role]}
+            elif role == 'validator':
+                gaps = json.loads((self.work / 'reported-gaps.json').read_text())
+                self.assertEqual([(g['id'], g['source']) for g in gaps],
+                                 [('G1', 'mapper'), ('G2', 'correctness'), ('G3', 'security')])
+                value = {'decisions': [], 'snapshot_restatements': ['G3'],
+                         'coverage_gaps': [{'gap': 'The HTTP caller of handle() is outside the repository', 'covers': ['G1', 'G2']}]}
+            else:
+                value = {'summary': 'Incomplete', 'comments': []}
+            return kwargs['validator'](value)
+        with patch.object(mod, '_run_json_contract_step', side_effect=fake):
+            report = mod.run_agents(self.work, snapshot)
+        self.assertEqual(report['coverage_gaps'], ['Agent control file excluded: .claude/settings.json',
+                                                   'The HTTP caller of handle() is outside the repository'])
+
+    def test_validator_must_account_for_every_reported_gap_once(self):
+        reported = [{'id': 'G1', 'source': 'mapper', 'gap': 'a'}, {'id': 'G2', 'source': 'security', 'gap': 'b'}]
+        for value in ({'coverage_gaps': [{'gap': 'a', 'covers': ['G1']}]},
+                      {'coverage_gaps': [{'gap': 'a', 'covers': ['G1', 'G2']}, {'gap': 'b', 'covers': ['G2']}]},
+                      {'coverage_gaps': [{'gap': 'a', 'covers': ['G1', 'G9']}, {'gap': 'b', 'covers': ['G2']}]},
+                      {'coverage_gaps': ['a', 'b']},
+                      {'coverage_gaps': [{'gap': 'a', 'covers': ['G1']}], 'snapshot_restatements': ['G2']}):
+            with self.subTest(value=value), self.assertRaises(mod.WorkflowContractError):
+                mod.adjudication_contract({'decisions': [], **value}, [], self.work, self.snapshot, self.mapping, reported)
+        merged = {'decisions': [], 'coverage_gaps': [{'gap': 'a and b', 'covers': ['G1', 'G2']}, {'gap': 'new', 'covers': []}]}
+        self.assertIs(mod.adjudication_contract(merged, [], self.work, self.snapshot, self.mapping, reported), merged)
 
     def write_report(self):
         report = {'status': 'REVIEWED', 'snapshot': self.snapshot,

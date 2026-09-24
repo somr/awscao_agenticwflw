@@ -18,8 +18,9 @@ HEAD. Source exports, diff and agent answers are isolated per unique run ID.
 Context mapping → independent correctness and security reviews → independent candidate
 validation/deduplication → deterministic eligibility gate → feedback authoring.
 Source semantics are agent decisions; routing, JSON validation, provenance and artifact
-publication are deterministic orchestration. Account for every changed path and every
-candidate. Reject unsupported findings; retain coverage limitations separately.
+publication are deterministic orchestration. Account for every changed path, every
+candidate and every reported coverage gap. Reject unsupported findings; retain coverage
+limitations separately, merging only gaps that describe the same limitation.
 
 ## Outputs and states
 

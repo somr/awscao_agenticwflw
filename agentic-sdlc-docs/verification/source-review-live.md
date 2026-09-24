@@ -98,6 +98,24 @@ appears up to four times in different wording (18 entries for about six distinct
 One entry is really a note on scope ("left to the correctness reviewer"), not a gap. The
 published comment repeats the whole list.
 
+### Merging duplicate coverage gaps
+
+After this run, the Finding Validator was changed to merge reworded coverage gaps against
+numbered `reported-gaps.json` entries. Python rejects an answer that leaves out any reported
+gap. The shared prompt also stops agents from repeating snapshot gaps or reporting that the
+review is static. The workflow was reinstalled with the new upgrade procedure. Both checks
+reused PR #1's commits in fixture mode, with the first run's object store as the source,
+because the closed PR can no longer be reviewed in GitHub mode.
+
+- `source-review-gapdedup-1`: same findings and routes, but the agents reported no gaps at
+  all. The first prompt only listed what not to report, and they dropped real limitations
+  too. The prompt was reworded to define a coverage gap and ask for each one.
+- `source-review-gapdedup-2` (3 min 33 s, no repairs): same findings and routes. The mapper
+  and both reviewers reported six gaps, the same two limitations three times each. The
+  validator merged them into two and accounted for every ID. The final list has four
+  gaps: the two snapshot exclusions plus the host HTTP layer and the provider's signing
+  contract.
+
 Limits of the live PR run: stale-head handling and retry after a crash are still
 covered only by local tests with mocked API responses. One live PR with two planted defects shows the reviewer and routing
 behave correctly on a real GitHub PR. It does not measure precision or recall across

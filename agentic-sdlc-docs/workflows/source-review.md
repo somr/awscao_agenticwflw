@@ -43,7 +43,8 @@ flowchart TD
    resource lifetime.
 4. **Finding Validator.** Re-reads the source, checks guards and base and head behavior, rejects speculation,
    merges findings that share a root cause and reassesses fix eligibility. Every candidate gets an explicit
-   acceptance, rejection or duplicate decision.
+   acceptance, rejection or duplicate decision. It also merges coverage gaps that other agents reported in different
+   words.
 5. **Routing gate.** Python routes each validated finding, ignoring any route an agent supplied.
 6. **Feedback Author.** Explains the accepted findings for developers. It cannot change routing or severity;
    Python renders the canonical evidence and routing.
@@ -107,12 +108,35 @@ that policy and are not configurable.
 
    It **refuses to overwrite** an installed `source_review` or any of the five profiles, so an ordinary reinstall
    cannot replace definitions another run is using. Installation is not transactional across the profile installs:
-   if it fails part way, inspect the new names before retrying and do not delete unrelated profiles. To upgrade,
-   wait for `source_review` runs to finish, archive the installed workflow, manage its five profiles explicitly,
-   and then reinstall. Other workflows need not stop.
+   if it fails part way, inspect the new names before retrying and do not delete unrelated profiles. To replace an
+   installed version, follow [Upgrading](#upgrading).
 
 CAO's profile validator may warn that `fs_write` is unrecognized. The Claude Code mapping supports it, and the
 answer-file delivery relies on it. Do not silence the warning by granting `execute_bash`, `*` or broader tools.
+
+### Upgrading
+
+Because the installer never replaces an installed definition, an upgrade removes the old one first. CAO keeps each
+installed profile as `agent-context/<name>.md`. `cao profile remove` only manages the local agent store
+(`agent-store/`), so it cannot remove these profiles. Delete the files instead. Other workflows need not stop.
+
+1. Wait until no `source_review` run is active (`cao workflow runs`).
+2. Keep the installed workflow for rollback. The profiles can also be reinstalled from the repository.
+3. Remove the installed workflow and the five profiles, then reinstall:
+
+   ```bash
+   CAO_HOME=~/.aws/cli-agent-orchestrator
+   ROLLBACK=$(mktemp -d)
+   cp -p "$CAO_HOME/workflows/source_review.py" "$CAO_HOME"/agent-context/sdlc_source_*.md "$ROLLBACK"/
+   rm "$CAO_HOME/workflows/source_review.py"
+   rm "$CAO_HOME"/agent-context/sdlc_source_{mapper,correctness,security,validator,feedback}.md
+   bash .agentic-sdlc/cao/workflows/install_source_review.sh "$PWD"
+   ```
+
+4. [Check that CAO matches the repository](../build-and-install.md#check-that-cao-matches-the-repository).
+
+To roll back, remove the new files the same way and copy the saved ones back from `$ROLLBACK`. The paths are CAO's
+defaults; `CAO_WORKFLOW_DIR` moves the workflows.
 
 ## Inputs
 
@@ -167,7 +191,7 @@ Artifacts are isolated by run ID and ignored by Git:
 └── workspace/
     ├── source/base/ and source/head/
     ├── diff.patch and snapshot.json
-    ├── mapping.json, candidates.json, adjudication.json, routed-findings.json
+    ├── mapping.json, candidates.json, reported-gaps.json, adjudication.json, routed-findings.json
     └── .agentic-sdlc/runtime/<role>/    each agent's answer, raw output and stabilization log
 ```
 
@@ -179,7 +203,9 @@ global "latest review".
 - `schema_version`, `policy_version` and `run_id`;
 - `snapshot`: the PR identity, the base, head and merge-base SHAs and the changed paths;
 - `status`: `REVIEWED` or `STALE`. Neither means the PR is approved;
-- `coverage_status`: `COMPLETE` or `INCOMPLETE`, with explicit `coverage_gaps`;
+- `coverage_status`: `COMPLETE` or `INCOMPLETE`, with explicit `coverage_gaps`. These are the snapshot's own gaps
+  plus the agents' gaps after the Finding Validator merges reworded duplicates. Python checks that every reported
+  gap is kept, merged or matched to a snapshot gap, so none is lost;
 - `findings`, each with location, severity, confidence, trigger, evidence, consequence, fix direction,
   verification method, eligibility fields and routing reasons;
 - `queues.AUTO_FIX` and `queues.HUMAN_REQUIRED`: finding IDs;
