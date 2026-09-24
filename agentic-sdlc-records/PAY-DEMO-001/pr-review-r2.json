@@ -1,0 +1,43 @@
+{
+  "findings": [
+    {
+      "automation_eligibility": "DEVELOPER_REQUIRED",
+      "category": "TESTING",
+      "confidence": 0.75,
+      "consequence": "There is no evidence of the plan-mandated verification behind the NFR-2 concurrency claim or the CON-1/CON-2/CON-4/NFR-1 deterministic checks. The plan made the repeated run part of how correctness of the concurrency/transaction semantics is established.",
+      "deterministically_verifiable": true,
+      "failure_scenario": "The verification evidence for HEAD efa6055 has one compileall run and one full unittest run. Plan T7 and the Developer verification strategy also require: running test_callback_concurrency.py 20 times to catch SQLite lock-timeout flakiness; grep for threading/Lock in app/payment_service (CON-1/CON-2); grep for UPDATE/status in repository.py (CON-4); and an empty git diff of callback_controller.py/models.py/fulfilment_service.py against 109a0a7 (AC-2/NFR-1). None of these appear. An intermittent 'database is locked' OperationalError in the 8-thread barrier test would go unnoticed after a single passing run.",
+      "file": "app/tests/test_callback_concurrency.py",
+      "id": "PR-001",
+      "impact": "MEDIUM",
+      "localized_and_bounded": false,
+      "location": "whole module; plan T7 / Developer verification strategy vs supplied verification evidence",
+      "policy_overrode_agent_classification": false,
+      "pr_head_sha_reviewed": "efa6055ca0695596e220478e0c6d1df99049b7ac",
+      "reason": "This finding is about missing verification evidence. The remediator cannot run commands, and editing files under the source roots cannot resolve it. It is carried over unchanged from round 1 (same finding ID).",
+      "related_acceptance_criterion": "AC-1",
+      "remediation_direction": "The workflow or a developer should run the plan's T7 verification against this HEAD: the 20-iteration concurrency loop, the grep checks and the baseline diff of the unchanged files. Record the results as verification evidence."
+    },
+    {
+      "automation_eligibility": "DEVELOPER_REQUIRED",
+      "category": "CONCURRENCY",
+      "confidence": 0.5,
+      "consequence": "After a failed release, other requests' claim writes can stall until the busy timeout expires. They then fail as claim-write errors rather than being processed. There is no double fulfilment.",
+      "deterministically_verifiable": false,
+      "failure_scenario": "record_if_new rolls back after any sqlite3 error so that a failed write does not keep holding the database write lock. release_claim has no matching handling. If the DELETE succeeds in taking a RESERVED lock but commit() then fails (for example 'database is locked' under contention), the connection keeps an open write transaction until close(). Through CallbackRequestHandler this ends at close() in the finally block. A long-lived PaymentRepository, like the one the existing unit tests share across calls, would keep blocking other writers, and its next record_if_new would run inside the stale transaction.",
+      "file": "app/payment_service/repository.py",
+      "id": "PR-004",
+      "impact": "LOW",
+      "localized_and_bounded": true,
+      "location": "PaymentRepository.release_claim",
+      "policy_overrode_agent_classification": false,
+      "pr_head_sha_reviewed": "efa6055ca0695596e220478e0c6d1df99049b7ac",
+      "reason": "The code change is small, but it touches transaction semantics, which the PR review policy lists as protected. Lock-holding behaviour under contention is also hard to verify deterministically with the current tests. It is carried over unchanged from round 1 (same finding ID), because it was routed to a developer and was not in scope for the remediation round.",
+      "related_acceptance_criterion": null,
+      "remediation_direction": "Apply the same pattern as record_if_new: on sqlite3.Error in release_claim, attempt self._conn.rollback() (suppressing any rollback error) and re-raise the original error."
+    }
+  ],
+  "has_auto_fix": false,
+  "has_developer_required": true,
+  "summary": "Re-reviewed PR HEAD efa6055ca0695596e220478e0c6d1df99049b7ac against the approved PAY-DEMO-001 plan. Round-1 findings PR-002 and PR-003 are resolved. test_release_failure_propagates_original_error_and_logs_error now asserts that the claim row stays and that a later delivery returns fulfilled=False with no further release call. The new test_request_handler_closes_repository_and_propagates_error_on_failure asserts that the repository is closed and that the original exception propagates through CallbackRequestHandler. The production code matches the plan: T1 to T3 are implemented as designed, fulfilment is claim-gated, the original error is re-raised, CallbackRequestHandler builds and closes a repository per request, and the controller, models, fulfilment service and CREATE TABLE are untouched. No acceptance criterion is missed or weakened. The remediation round introduced no new defects. Two round-1 findings are still open because they were routed to a developer and not to the remediator. First, the supplied evidence still has only one compileall and one unittest run, without the plan's T7 20-iteration concurrency loop, grep checks or baseline diff. Second, release_claim still does not roll back on a failed DELETE or commit, unlike record_if_new."
+}

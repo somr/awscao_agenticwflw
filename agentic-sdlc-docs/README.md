@@ -56,5 +56,5 @@ Implementation design history; use the workflow guides above for current operati
 
 - [Payment-service application](../app/README.md)
 - [PAY-DEMO-001 requirements fixture](../agentic-sdlc-local-inputs/PAY-DEMO-001/)
-- [PAY-DEMO-001 demonstration records](../agentic-sdlc-local-inputs/PAY-DEMO-001/records/README.md)
+- [PAY-DEMO-001 records of a complete Planning and Delivery cycle](../agentic-sdlc-records/PAY-DEMO-001/) (the delivered code is on the local branch `sdlc/PAY-DEMO-001`, not on `main`)
 - [Source-review fixture instructions](workflows/source-review.md#local-fixture)

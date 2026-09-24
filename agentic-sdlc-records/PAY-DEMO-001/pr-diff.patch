@@ -1,0 +1,637 @@
+diff --git a/app/README.md b/app/README.md
+index cf938d1..e29c10d 100644
+--- a/app/README.md
++++ b/app/README.md
+@@ -6,6 +6,12 @@ the approved-plan, implementation, verification and review stages have real Pyth
+ source to inspect. The repository uses an in-memory/SQLite-style stand-in rather than
+ an external payment provider.
+ 
++`payment_service.request_handler.CallbackRequestHandler` is the request-scoped entry
++point: each `handle(body)` call opens a fresh `PaymentRepository` (its own database
++connection), builds a `PaymentService` and `CallbackController` around it, returns the
++controller's response unchanged, and closes the repository when the request ends. The
++`FulfilmentService` is shared across requests.
++
+ Run the test suite from the repository root:
+ 
+ ```bash
+diff --git a/app/payment_service/payment_service.py b/app/payment_service/payment_service.py
+index cd6cda6..b57d0fe 100644
+--- a/app/payment_service/payment_service.py
++++ b/app/payment_service/payment_service.py
+@@ -1,8 +1,15 @@
+ """Orchestrates persistence + fulfilment for a payment provider callback.
+ 
+-Known gap (tracked by PAY-DEMO-001): a duplicate callback for the same
+-provider_event_id currently triggers fulfilment again instead of being
+-recognized as already processed.
++Callbacks are idempotent per provider_event_id. The repository claim on the
++event ID gates fulfilment: only the delivery that newly claims the event runs
++fulfilment, and any duplicate (after completion or while the original is
++still in flight) is logged as a duplicate and acknowledged without fulfilling
++again. If the claim write fails for any reason other than a duplicate, the
++error propagates and fulfilment is not run. If fulfilment fails, the claim is
++released so a provider retry can process the event, and the original
++fulfilment error propagates. If releasing the claim also fails, that failure
++is logged at ERROR, the event stays claimed, and the original fulfilment
++error still propagates.
+ """
+ from __future__ import annotations
+ 
+@@ -21,7 +28,37 @@ class PaymentService:
+         self._fulfilment_service = fulfilment_service
+ 
+     def process_callback(self, event: CallbackEvent) -> ProcessingResult:
+-        self._repository.record_if_new(event.provider_event_id, event.payment_id)
+-        self._fulfilment_service.fulfil(event.payment_id)
+-        logger.info("callback processed for provider_event_id=%s", event.provider_event_id)
++        # A claim-write failure other than a duplicate propagates from here:
++        # no fulfilment and no release.
++        claimed = self._repository.record_if_new(event.provider_event_id, event.payment_id)
++        if not claimed:
++            logger.info(
++                "duplicate callback ignored for provider_event_id=%s payment_id=%s",
++                event.provider_event_id,
++                event.payment_id,
++            )
++            return ProcessingResult(payment_id=event.payment_id, fulfilled=False)
++
++        try:
++            self._fulfilment_service.fulfil(event.payment_id)
++        except Exception as fulfil_error:
++            try:
++                self._repository.release_claim(event.provider_event_id)
++            except Exception:
++                logger.exception(
++                    "failed to release claim after fulfilment failure for provider_event_id=%s",
++                    event.provider_event_id,
++                )
++            else:
++                logger.warning(
++                    "fulfilment failed; claim released for retry for provider_event_id=%s",
++                    event.provider_event_id,
++                )
++            raise fulfil_error
++
++        logger.info(
++            "callback processed for provider_event_id=%s payment_id=%s",
++            event.provider_event_id,
++            event.payment_id,
++        )
+         return ProcessingResult(payment_id=event.payment_id, fulfilled=True)
+diff --git a/app/payment_service/repository.py b/app/payment_service/repository.py
+index 11e4a7d..74e6011 100644
+--- a/app/payment_service/repository.py
++++ b/app/payment_service/repository.py
+@@ -2,17 +2,25 @@
+ 
+ Uses sqlite3 (stdlib, no external dependency) as a stand-in for the
+ PostgreSQL system of record described in the PAY-DEMO-001 fixture. The
+-idempotency primitive is a UNIQUE constraint on provider_event_id: the first
+-INSERT for a given event ID succeeds, every subsequent one raises
+-sqlite3.IntegrityError. This is a database-constraint check, not a
+-distributed lock, per the fixture's explicit constraint against introducing
+-a lock service solely for callback idempotency.
++idempotency primitive is a UNIQUE constraint on provider_event_id: a
++committed row in processed_callbacks is the claim on that event. The first
++INSERT for a given event ID succeeds and claims it; every subsequent one
++violates the constraint and is reported as a duplicate. A claim can be
++released (its row deleted) so a callback whose fulfilment failed can be
++retried. This is a database-constraint check, not a distributed lock, per
++the fixture's explicit constraint against introducing a lock service solely
++for callback idempotency.
+ """
+ from __future__ import annotations
+ 
+ import sqlite3
+ from pathlib import Path
+ 
++# SQLite's error text for a uniqueness violation on the claim key. Python
++# 3.10 has no sqlite_errorname, so duplicates are recognised by message; a
++# PostgreSQL implementation would check SQLSTATE 23505 plus the constraint.
++_DUPLICATE_EVENT_MESSAGE = "UNIQUE constraint failed: processed_callbacks.provider_event_id"
++
+ 
+ class PaymentRepository:
+     def __init__(self, db_path: str | Path):
+@@ -28,7 +36,15 @@ class PaymentRepository:
+         self._conn.commit()
+ 
+     def record_if_new(self, provider_event_id: str, payment_id: str) -> bool:
+-        """Return True if this event is being recorded for the first time."""
++        """Claim this event ID by inserting its processed_callbacks row.
++
++        Returns True when the event is newly claimed and False only when the
++        event ID is already claimed (uniqueness violation on
++        provider_event_id). Any other failure, including other integrity
++        errors such as a NOT NULL violation on payment_id, is raised. The
++        failed insert's transaction is rolled back before returning or
++        raising so it does not keep holding the database write lock.
++        """
+         try:
+             self._conn.execute(
+                 "INSERT INTO processed_callbacks (provider_event_id, payment_id) VALUES (?, ?)",
+@@ -36,8 +52,34 @@ class PaymentRepository:
+             )
+             self._conn.commit()
+             return True
+-        except sqlite3.IntegrityError:
+-            return False
++        except sqlite3.IntegrityError as exc:
++            self._conn.rollback()
++            if self._is_duplicate_event(exc):
++                return False
++            raise
++        except sqlite3.Error:
++            try:
++                self._conn.rollback()
++            except sqlite3.Error:
++                pass
++            raise
++
++    def release_claim(self, provider_event_id: str) -> bool:
++        """Release the claim on this event ID by deleting its row.
++
++        Returns True if a claimed row was removed, False if none existed.
++        """
++        cursor = self._conn.execute(
++            "DELETE FROM processed_callbacks WHERE provider_event_id = ?",
++            (provider_event_id,),
++        )
++        self._conn.commit()
++        return cursor.rowcount == 1
++
++    @staticmethod
++    def _is_duplicate_event(exc: sqlite3.IntegrityError) -> bool:
++        """Return True if exc is the uniqueness violation on provider_event_id."""
++        return str(exc) == _DUPLICATE_EVENT_MESSAGE
+ 
+     def close(self) -> None:
+         self._conn.close()
+diff --git a/app/payment_service/request_handler.py b/app/payment_service/request_handler.py
+new file mode 100644
+index 0000000..811c7f7
+--- /dev/null
++++ b/app/payment_service/request_handler.py
+@@ -0,0 +1,39 @@
++"""Request-scoped entry point for payment provider callbacks.
++
++Each call to CallbackRequestHandler.handle builds its own PaymentRepository
++(and therefore its own database connection), PaymentService and
++CallbackController, and closes the repository when the request finishes
++(CON-5). Only the FulfilmentService is shared across requests. The response
++is exactly the dict returned by CallbackController.handle (AC-2), and any
++exception propagates to the caller unchanged.
++"""
++from __future__ import annotations
++
++from pathlib import Path
++from typing import Any, Callable
++
++from .callback_controller import CallbackController
++from .fulfilment_service import FulfilmentService
++from .payment_service import PaymentService
++from .repository import PaymentRepository
++
++
++class CallbackRequestHandler:
++    def __init__(
++        self,
++        db_path: str | Path,
++        fulfilment_service: FulfilmentService,
++        repository_factory: Callable[[str | Path], PaymentRepository] = PaymentRepository,
++    ):
++        self._db_path = db_path
++        self._fulfilment_service = fulfilment_service
++        self._repository_factory = repository_factory
++
++    def handle(self, body: dict[str, Any]) -> dict[str, Any]:
++        repository = self._repository_factory(self._db_path)
++        try:
++            service = PaymentService(repository, self._fulfilment_service)
++            controller = CallbackController(service)
++            return controller.handle(body)
++        finally:
++            repository.close()
+diff --git a/app/tests/test_callback_concurrency.py b/app/tests/test_callback_concurrency.py
+new file mode 100644
+index 0000000..6fecea8
+--- /dev/null
++++ b/app/tests/test_callback_concurrency.py
+@@ -0,0 +1,109 @@
++import tempfile
++import threading
++import unittest
++from pathlib import Path
++
++from payment_service.fulfilment_service import FulfilmentService
++from payment_service.repository import PaymentRepository
++from payment_service.request_handler import CallbackRequestHandler
++
++WAIT_TIMEOUT = 10.0
++THREAD_COUNT = 8
++
++
++class BlockingFulfilmentService(FulfilmentService):
++    """Test double: fulfil() signals that it started, then blocks until released."""
++
++    def __init__(self) -> None:
++        super().__init__()
++        self.started = threading.Event()
++        self.release = threading.Event()
++
++    def fulfil(self, payment_id: str) -> None:
++        self.started.set()
++        if not self.release.wait(WAIT_TIMEOUT):
++            raise RuntimeError("blocking fulfilment was never released")
++        super().fulfil(payment_id)
++
++
++class CallbackConcurrencyTest(unittest.TestCase):
++    def setUp(self):
++        self._tmpdir = tempfile.TemporaryDirectory()
++        self.db_path = Path(self._tmpdir.name) / "payments.db"
++        # Pre-create the table so concurrent requests do not race on schema creation.
++        PaymentRepository(self.db_path).close()
++
++    def tearDown(self):
++        self._tmpdir.cleanup()
++
++    def test_in_flight_duplicate_is_acknowledged_without_refulfilment(self):
++        fulfilment_service = BlockingFulfilmentService()
++        handler = CallbackRequestHandler(self.db_path, fulfilment_service)
++        body = {"provider_event_id": "evt-inflight", "payment_id": "pay-inflight"}
++        expected = {"status": "ok", "payment_id": "pay-inflight"}
++        original_responses: list[dict] = []
++        original_errors: list[BaseException] = []
++
++        def deliver_original():
++            try:
++                original_responses.append(handler.handle(body))
++            except BaseException as exc:
++                original_errors.append(exc)
++
++        original = threading.Thread(target=deliver_original, daemon=True)
++        original.start()
++        try:
++            self.assertTrue(
++                fulfilment_service.started.wait(WAIT_TIMEOUT),
++                "original delivery never reached fulfilment",
++            )
++            duplicate_response = handler.handle(body)
++            self.assertEqual(duplicate_response, expected)
++            self.assertEqual(fulfilment_service.ledger, [])
++        finally:
++            fulfilment_service.release.set()
++            original.join(WAIT_TIMEOUT)
++
++        self.assertFalse(original.is_alive(), "original delivery did not finish")
++        self.assertEqual(original_errors, [])
++        self.assertEqual(original_responses, [expected])
++        self.assertEqual(fulfilment_service.fulfilment_count("pay-inflight"), 1)
++
++    def test_concurrent_duplicates_fulfil_exactly_once(self):
++        fulfilment_service = FulfilmentService()
++        handler = CallbackRequestHandler(self.db_path, fulfilment_service)
++        body = {"provider_event_id": "evt-concurrent", "payment_id": "pay-concurrent"}
++        barrier = threading.Barrier(THREAD_COUNT)
++        responses: list[dict] = []
++        errors: list[BaseException] = []
++
++        def deliver():
++            try:
++                barrier.wait(WAIT_TIMEOUT)
++                responses.append(handler.handle(body))
++            except BaseException as exc:
++                errors.append(exc)
++
++        threads = [threading.Thread(target=deliver, daemon=True) for _ in range(THREAD_COUNT)]
++        with self.assertLogs("payment_service.payment_service", level="INFO") as captured:
++            for thread in threads:
++                thread.start()
++            for thread in threads:
++                thread.join(WAIT_TIMEOUT)
++
++        self.assertFalse(any(thread.is_alive() for thread in threads), "a delivery did not finish")
++        self.assertEqual(errors, [])
++        self.assertEqual(len(responses), THREAD_COUNT)
++        expected = {"status": "ok", "payment_id": "pay-concurrent"}
++        self.assertTrue(all(response == expected for response in responses))
++        self.assertEqual(fulfilment_service.fulfilment_count("pay-concurrent"), 1)
++
++        messages = [record.getMessage() for record in captured.records]
++        duplicates = [message for message in messages if "duplicate" in message.lower()]
++        processed = [message for message in messages if "callback processed" in message]
++        self.assertEqual(len(duplicates), THREAD_COUNT - 1)
++        self.assertEqual(len(processed), 1)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/app/tests/test_payment_service.py b/app/tests/test_payment_service.py
+index b72da68..c310efe 100644
+--- a/app/tests/test_payment_service.py
++++ b/app/tests/test_payment_service.py
+@@ -1,12 +1,79 @@
+ import logging
++import sqlite3
+ import tempfile
+ import unittest
+ from pathlib import Path
+ 
+ from payment_service.callback_controller import CallbackController
+ from payment_service.fulfilment_service import FulfilmentService
++from payment_service.models import CallbackEvent
+ from payment_service.payment_service import PaymentService
+ from payment_service.repository import PaymentRepository
++from payment_service.request_handler import CallbackRequestHandler
++
++
++class FailOnceFulfilmentService(FulfilmentService):
++    """Test double: the first fulfil() call raises, later calls succeed."""
++
++    def __init__(self) -> None:
++        super().__init__()
++        self.failures_remaining = 1
++
++    def fulfil(self, payment_id: str) -> None:
++        if self.failures_remaining:
++            self.failures_remaining -= 1
++            raise RuntimeError("fulfilment failed")
++        super().fulfil(payment_id)
++
++
++class AlwaysFailingFulfilmentService(FulfilmentService):
++    """Test double: every fulfil() call raises the same exception instance."""
++
++    def __init__(self) -> None:
++        super().__init__()
++        self.error = RuntimeError("fulfilment failed")
++
++    def fulfil(self, payment_id: str) -> None:
++        raise self.error
++
++
++class RecordingRepository(PaymentRepository):
++    """Test double: a real repository that records release_claim and close calls."""
++
++    def __init__(self, db_path):
++        super().__init__(db_path)
++        self.release_calls: list[str] = []
++        self.closed = False
++
++    def release_claim(self, provider_event_id: str) -> bool:
++        self.release_calls.append(provider_event_id)
++        return super().release_claim(provider_event_id)
++
++    def close(self) -> None:
++        self.closed = True
++        super().close()
++
++
++class ReleaseFailingRepository(RecordingRepository):
++    """Test double: release_claim always raises."""
++
++    def release_claim(self, provider_event_id: str) -> bool:
++        self.release_calls.append(provider_event_id)
++        raise sqlite3.OperationalError("release failed")
++
++
++class ClaimFailingOnceRepository(RecordingRepository):
++    """Test double: the first record_if_new call raises OperationalError."""
++
++    def __init__(self, db_path):
++        super().__init__(db_path)
++        self.claim_failures_remaining = 1
++
++    def record_if_new(self, provider_event_id: str, payment_id: str) -> bool:
++        if self.claim_failures_remaining:
++            self.claim_failures_remaining -= 1
++            raise sqlite3.OperationalError("database is locked")
++        return super().record_if_new(provider_event_id, payment_id)
+ 
+ 
+ class PaymentServiceTest(unittest.TestCase):
+@@ -49,6 +116,143 @@ class PaymentServiceTest(unittest.TestCase):
+         joined = "\n".join(captured.output)
+         self.assertIn("duplicate", joined.lower())
+ 
++    def _db_path(self) -> Path:
++        return Path(self._tmpdir.name) / "payments.db"
++
++    def _claim_row_count(self, provider_event_id: str) -> int:
++        conn = sqlite3.connect(str(self._db_path()))
++        try:
++            (count,) = conn.execute(
++                "SELECT COUNT(*) FROM processed_callbacks WHERE provider_event_id = ?",
++                (provider_event_id,),
++            ).fetchone()
++        finally:
++            conn.close()
++        return count
++
++    def _open_repository(self, repository_class):
++        repository = repository_class(self._db_path())
++        self.addCleanup(repository.close)
++        return repository
++
++    def test_fulfilment_failure_releases_claim_and_retry_fulfils_once(self):
++        fulfilment_service = FailOnceFulfilmentService()
++        service = PaymentService(self.repository, fulfilment_service)
++        event = CallbackEvent(provider_event_id="evt-a", payment_id="pay-a")
++
++        with self.assertLogs("payment_service.payment_service", level="WARNING") as captured:
++            with self.assertRaises(RuntimeError):
++                service.process_callback(event)
++        self.assertTrue(
++            any(
++                record.levelno == logging.WARNING and "evt-a" in record.getMessage()
++                for record in captured.records
++            )
++        )
++        self.assertEqual(self._claim_row_count("evt-a"), 0)
++        self.assertEqual(fulfilment_service.fulfilment_count("pay-a"), 0)
++
++        result = service.process_callback(event)
++        self.assertTrue(result.fulfilled)
++        self.assertEqual(fulfilment_service.fulfilment_count("pay-a"), 1)
++        self.assertEqual(self._claim_row_count("evt-a"), 1)
++
++    def test_release_failure_propagates_original_error_and_logs_error(self):
++        repository = self._open_repository(ReleaseFailingRepository)
++        fulfilment_service = AlwaysFailingFulfilmentService()
++        service = PaymentService(repository, fulfilment_service)
++        event = CallbackEvent(provider_event_id="evt-b", payment_id="pay-b")
++
++        with self.assertLogs("payment_service.payment_service", level="ERROR") as captured:
++            with self.assertRaises(RuntimeError) as raised:
++                service.process_callback(event)
++        self.assertIs(raised.exception, fulfilment_service.error)
++        self.assertEqual(repository.release_calls, ["evt-b"])
++        self.assertTrue(
++            any(
++                record.levelno == logging.ERROR and "evt-b" in record.getMessage()
++                for record in captured.records
++            )
++        )
++        self.assertEqual(self._claim_row_count("evt-b"), 1)
++
++        # The event stays claimed, so a later delivery is a duplicate and never
++        # reaches the (always failing) fulfilment service.
++        result = service.process_callback(event)
++        self.assertFalse(result.fulfilled)
++        self.assertEqual(repository.release_calls, ["evt-b"])
++
++    def test_none_payment_id_propagates_without_fulfilment_or_release(self):
++        repository = self._open_repository(RecordingRepository)
++        service = PaymentService(repository, self.fulfilment_service)
++        event = CallbackEvent(provider_event_id="evt-c", payment_id=None)
++
++        with self.assertRaises(sqlite3.IntegrityError):
++            service.process_callback(event)
++        self.assertEqual(self.fulfilment_service.ledger, [])
++        self.assertEqual(repository.release_calls, [])
++
++    def test_claim_write_error_propagates_and_valid_retry_fulfils_once(self):
++        repository = self._open_repository(ClaimFailingOnceRepository)
++        service = PaymentService(repository, self.fulfilment_service)
++        event = CallbackEvent(provider_event_id="evt-d", payment_id="pay-d")
++
++        with self.assertRaises(sqlite3.OperationalError):
++            service.process_callback(event)
++        self.assertEqual(self.fulfilment_service.ledger, [])
++        self.assertEqual(repository.release_calls, [])
++
++        result = service.process_callback(event)
++        self.assertTrue(result.fulfilled)
++        self.assertEqual(self.fulfilment_service.fulfilment_count("pay-d"), 1)
++        self.assertEqual(repository.release_calls, [])
++
++    def test_first_delivery_log_is_not_marked_duplicate(self):
++        with self.assertLogs("payment_service.payment_service", level="INFO") as captured:
++            self.controller.handle({"provider_event_id": "evt-e", "payment_id": "pay-e"})
++        joined = "\n".join(captured.output)
++        self.assertIn("evt-e", joined)
++        self.assertNotIn("duplicate", joined.lower())
++
++    def test_request_handler_builds_and_closes_a_repository_per_request(self):
++        created: list[RecordingRepository] = []
++
++        def repository_factory(db_path):
++            repository = RecordingRepository(db_path)
++            created.append(repository)
++            return repository
++
++        handler = CallbackRequestHandler(
++            self._db_path(), self.fulfilment_service, repository_factory=repository_factory
++        )
++        first = handler.handle({"provider_event_id": "evt-f1", "payment_id": "pay-f1"})
++        second = handler.handle({"provider_event_id": "evt-f2", "payment_id": "pay-f2"})
++
++        self.assertEqual(first, {"status": "ok", "payment_id": "pay-f1"})
++        self.assertEqual(second, {"status": "ok", "payment_id": "pay-f2"})
++        self.assertEqual(len(created), 2)
++        self.assertIsNot(created[0], created[1])
++        self.assertTrue(all(repository.closed for repository in created))
++
++    def test_request_handler_closes_repository_and_propagates_error_on_failure(self):
++        created: list[RecordingRepository] = []
++
++        def repository_factory(db_path):
++            repository = RecordingRepository(db_path)
++            created.append(repository)
++            return repository
++
++        fulfilment_service = AlwaysFailingFulfilmentService()
++        handler = CallbackRequestHandler(
++            self._db_path(), fulfilment_service, repository_factory=repository_factory
++        )
++        with self.assertRaises(RuntimeError) as raised:
++            handler.handle({"provider_event_id": "evt-g", "payment_id": "pay-g"})
++
++        self.assertIs(raised.exception, fulfilment_service.error)
++        self.assertEqual(len(created), 1)
++        self.assertTrue(created[0].closed)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/app/tests/test_repository.py b/app/tests/test_repository.py
+new file mode 100644
+index 0000000..7de81c5
+--- /dev/null
++++ b/app/tests/test_repository.py
+@@ -0,0 +1,73 @@
++import sqlite3
++import tempfile
++import unittest
++from pathlib import Path
++
++from payment_service.repository import PaymentRepository
++
++
++class PaymentRepositoryTest(unittest.TestCase):
++    def setUp(self):
++        self._tmpdir = tempfile.TemporaryDirectory()
++        self.db_path = Path(self._tmpdir.name) / "payments.db"
++        self.repository = PaymentRepository(self.db_path)
++        self._extra_repositories = []
++
++    def tearDown(self):
++        for repository in self._extra_repositories:
++            repository.close()
++        self.repository.close()
++        self._tmpdir.cleanup()
++
++    def _open_repository(self):
++        repository = PaymentRepository(self.db_path)
++        self._extra_repositories.append(repository)
++        return repository
++
++    def _row_count(self, provider_event_id):
++        conn = sqlite3.connect(str(self.db_path))
++        try:
++            (count,) = conn.execute(
++                "SELECT COUNT(*) FROM processed_callbacks WHERE provider_event_id = ?",
++                (provider_event_id,),
++            ).fetchone()
++        finally:
++            conn.close()
++        return count
++
++    def test_first_record_claims_event(self):
++        self.assertTrue(self.repository.record_if_new("evt-1", "pay-1"))
++        self.assertEqual(self._row_count("evt-1"), 1)
++
++    def test_duplicate_event_is_rejected_and_leaves_one_row(self):
++        self.assertTrue(self.repository.record_if_new("evt-1", "pay-1"))
++        self.assertFalse(self.repository.record_if_new("evt-1", "pay-1"))
++        self.assertEqual(self._row_count("evt-1"), 1)
++
++    def test_non_duplicate_integrity_error_is_raised_and_leaves_no_row(self):
++        with self.assertRaises(sqlite3.IntegrityError):
++            self.repository.record_if_new("evt-1", None)
++        self.assertEqual(self._row_count("evt-1"), 0)
++
++    def test_release_claim_removes_row_once(self):
++        self.repository.record_if_new("evt-1", "pay-1")
++        self.assertTrue(self.repository.release_claim("evt-1"))
++        self.assertEqual(self._row_count("evt-1"), 0)
++        self.assertFalse(self.repository.release_claim("evt-1"))
++
++    def test_event_can_be_reclaimed_after_release(self):
++        self.assertTrue(self.repository.record_if_new("evt-1", "pay-1"))
++        self.assertTrue(self.repository.release_claim("evt-1"))
++        self.assertTrue(self.repository.record_if_new("evt-1", "pay-1"))
++        self.assertEqual(self._row_count("evt-1"), 1)
++
++    def test_duplicate_rejection_releases_write_lock(self):
++        self.assertTrue(self.repository.record_if_new("evt-1", "pay-1"))
++        self.assertFalse(self.repository.record_if_new("evt-1", "pay-1"))
++        other = self._open_repository()
++        self.assertTrue(other.record_if_new("evt-2", "pay-2"))
++        self.assertEqual(self._row_count("evt-2"), 1)
++
++
++if __name__ == "__main__":
++    unittest.main()

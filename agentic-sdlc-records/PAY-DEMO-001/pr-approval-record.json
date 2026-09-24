@@ -1,0 +1,10 @@
+{
+  "approval_reference": "Looks ok to me",
+  "approved_at": "2026-09-24T22:04:56.372529Z",
+  "approved_by": "Sergio",
+  "decision": "APPROVED",
+  "pr_head_sha": "efa6055ca0695596e220478e0c6d1df99049b7ac",
+  "pr_reference": null,
+  "schema_version": "1.0",
+  "ticket_id": "PAY-DEMO-001"
+}
