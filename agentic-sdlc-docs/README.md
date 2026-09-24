@@ -58,7 +58,3 @@ Implementation design history; use the workflow guides above for current operati
 - [PAY-DEMO-001 requirements fixture](../agentic-sdlc-local-inputs/PAY-DEMO-001/)
 - [PAY-DEMO-001 demonstration records](../agentic-sdlc-local-inputs/PAY-DEMO-001/records/README.md)
 - [Source-review fixture instructions](workflows/source-review.md#local-fixture)
-
-## Archive
-
-[Historical handoffs and superseded documentation](archive/README.md).
