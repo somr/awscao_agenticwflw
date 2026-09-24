@@ -1,0 +1,12 @@
+{
+  "approval_reference": "PAY-DEMO-001",
+  "approved_at": "2026-09-24T21:23:28.585001Z",
+  "approved_by": "Sergio",
+  "decision": "APPROVED",
+  "guidance_sha256": null,
+  "plan_path": "agentic-sdlc-records/PAY-DEMO-001/development-plan.md",
+  "plan_sha256": "a1e213d5291cd2393d2798bb8b2d06d851ee068e70bdaacaf3febcc775291c89",
+  "repository_baseline_sha": "109a0a79b0f37b4a05f93b90e34e56c1e4b79207",
+  "schema_version": "1.0",
+  "ticket_id": "PAY-DEMO-001"
+}

@@ -1,0 +1,85 @@
+{
+  "context_version": 1,
+  "review": {
+    "findings": [
+      {
+        "category": "REQUIREMENTS",
+        "confidence": 0.8,
+        "description": "The HD-1 default leaves the event claimed when release_claim fails after a fulfilment failure. Every later provider retry is then acknowledged with the ok body and never fulfilled. The plan calls this 'the same end state as the accepted crash-before-outcome limitation', but CONF:4934 accepts only the crash case (and the in-flight-duplicate case) as a known limitation. It does not accept a handled release failure, and OQ-4's own reason says so. The choice trades duplicate-fulfilment risk for lost-fulfilment risk, which is a business decision. The plan surfaces it as HD-1, and the validated context marks OQ-4 non-blocking, so this does not block review. The human approver should know that approving this plan also accepts this extension of the limitation.",
+        "disposition": "ADVISORY",
+        "evidence": [
+          "CONF:4934 Constraints paragraph 4 (only the crash case is accepted) and paragraph 5",
+          "planning-context-v1.json OQ-4 reason: 'CONF:4934 accepts only the crash-before-outcome-recorded case as a known limitation'",
+          "plan-r1.md A4, HD-1 and Risks 'Accepted limitations'"
+        ],
+        "id": "PLAN-001",
+        "impact": "MEDIUM",
+        "plan_section": "Assumptions A4 / Unresolved human decisions HD-1 / Risks (accepted limitations)",
+        "required_action": "Optional: in HD-1, state plainly that approving the plan accepts the release-failure stuck-claim case as a new, un-sourced limitation that sends lost-fulfilment ok acknowledgements to the provider. Also state that the ERROR log is the only signal for manual reconciliation."
+      },
+      {
+        "category": "TESTING",
+        "confidence": 0.7,
+        "description": "The in-flight test is described as deterministic, but it names only one threading.Event, the one that releases the blocked fulfilment. Unless the test also waits for a second 'fulfilment entered' signal from the background thread before it sends the duplicate from the main thread, the main-thread request can claim first. The main thread then blocks inside the fulfilment double, which is a deadlock or a timeout, and the test no longer exercises FR-4.",
+        "disposition": "ADVISORY",
+        "evidence": [
+          "plan-r1.md T5 (a): 'a blocking fulfilment double waits on threading.Event, the duplicate is sent through the handler from the main thread'"
+        ],
+        "id": "PLAN-002",
+        "impact": "LOW",
+        "plan_section": "T5 (a) in-flight duplicate test",
+        "required_action": "Specify an 'entered' Event that the fulfilment double sets before it blocks, and wait on it with a timeout before sending the duplicate. Also use timeouts on every wait and join, so a regression fails instead of hanging."
+      },
+      {
+        "category": "TESTING",
+        "confidence": 0.6,
+        "description": "The CON-4 check greps repository.py case-insensitively for 'UPDATE|status'. T1 also updates the repository docstring. If the new docstring says, for example, 'no mutable status column', the check reports a false hit, and the implementer or verifier then has to interpret it by hand.",
+        "disposition": "ADVISORY",
+        "evidence": [
+          "plan-r1.md: grep -niE 'UPDATE|status' app/payment_service/repository.py",
+          "plan-r1.md T1: 'update the docstring'"
+        ],
+        "id": "PLAN-003",
+        "impact": "LOW",
+        "plan_section": "Developer verification strategy / Other deterministic checks (CON-4 grep)",
+        "required_action": "Narrow the check to SQL, for example grep -nE 'UPDATE +processed_callbacks|ALTER TABLE|status +TEXT', or state that matches in prose are acceptable."
+      },
+      {
+        "category": "DATA",
+        "confidence": 0.75,
+        "description": "In SQLite, a non-INTEGER 'TEXT PRIMARY KEY' on a rowid table accepts NULL values, and it accepts more than one of them. A callback whose provider_event_id is None is therefore claimed successfully on every delivery and fulfilled each time. The baseline behaves the same way, and a missing event ID is outside the stable-ID dependency, so this is not a regression. The plan's FR-3 hardening covers NULL payment_id but does not mention NULL provider_event_id.",
+        "disposition": "ADVISORY",
+        "evidence": [
+          "app/payment_service/repository.py:22-25 (provider_event_id TEXT PRIMARY KEY, no NOT NULL)",
+          "app/payment_service/callback_controller.py:19-22 (body values passed through unchecked)",
+          "planning-context-v1.json dependencies[0] (stable provider event ID)"
+        ],
+        "id": "PLAN-004",
+        "impact": "LOW",
+        "plan_section": "Proposed design / PaymentRepository (T1)",
+        "required_action": "Optional: record this as a known limitation or add it to the risks list. Any validation would change the response for malformed payloads, so it needs care under AC-2. Do not change the schema, because of CON-6."
+      },
+      {
+        "category": "CONTEXT",
+        "confidence": 0.65,
+        "description": "CON-6 says the SQLite implementation 'must be kept as-is'. The raw source says only that it 'is in scope to keep using as-is', which is a permission, not an obligation. The plan's A6 reads CON-6 narrowly, as keeping the backend and schema, which fits the raw text, so the design is unaffected. A strict reading of the normalized wording could conflict with FR-2, which requires a release path in the repository.",
+        "disposition": "ADVISORY",
+        "evidence": [
+          "CONF_4934.md Persistence: 'is in scope to keep using as-is'",
+          "planning-context-v1.json CON-6: 'must be kept as-is'",
+          "plan-r1.md A6"
+        ],
+        "id": "PLAN-005",
+        "impact": "LOW",
+        "plan_section": "CONTEXT (CON-6) / Assumption A6",
+        "required_action": "No plan change is needed. On a future re-normalization, align the CON-6 wording with the source's permissive phrasing."
+      }
+    ],
+    "prior_findings": [],
+    "review_status": "PASS",
+    "summary": "The plan maps AC-1..AC-3, FR-1..FR-6, NFR-1..NFR-3 and CON-1..CON-8 to concrete tasks and checks, and it matches the baseline code (payment_service.py ignores the record_if_new result; repository.py catches every IntegrityError and has no release path; the controller always returns the ok dict). The design uses the existing provider_event_id PRIMARY KEY as the only idempotency primitive, releases a claim by delete-then-reinsert, narrows duplicate detection for FR-3, rolls back after a failed insert, and adds a per-request composition point for CON-5. The SQLite reasoning holds on Python 3.10: the INSERT is the first statement of each implicit transaction, so the busy handler applies, and the claim is committed before fulfilment. No blocking defects were found. The advisories cover: HD-1 extending an accepted business limitation, a missing entry signal in the in-flight test, a brittle grep check, NULL provider_event_id being accepted by a TEXT PRIMARY KEY, and a slight strengthening of CON-6 during normalization."
+  },
+  "review_round": 1,
+  "reviewed_plan_sha256": "a1e213d5291cd2393d2798bb8b2d06d851ee068e70bdaacaf3febcc775291c89",
+  "schema_version": "1.0"
+}
