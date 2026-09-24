@@ -122,7 +122,7 @@ The supervisor proposes 1–16 ordered assignments; Python validates worker name
 
 [`specialists.json`](../.agentic-sdlc/cao/specialists.json) connects workers to profiles, skills and verification suites. Hybrid verification uses the deduplicated union of selected worker and skill commands; single mode uses the `application` suite. Python runs commands without a shell, with timeouts, and repeats verification after repair or remediation. The registry currently ships one general `developer` worker and AngularJS/Spark skills; those skill suites need their own project files and toolchains.
 
-Protected or high-impact findings go to human handling. Exhausting automatic remediation also leads to a brief with unresolved findings. Some exceptions currently end the CAO run as `failed` without updating the manifest to `BLOCKED`; the [Delivery guide](workflows/delivery.md) documents those outcomes. See [hybrid delivery](workflows/hybrid-delivery.md) for extension procedures.
+Protected or high-impact findings go to human handling. Exhausting automatic remediation also leads to a brief with unresolved findings, and so does a remediation round that changes nothing: its findings are escalated to the human. Some exceptions currently end the CAO run as `failed` without updating the manifest to `BLOCKED`; the [Delivery guide](workflows/delivery.md) documents those outcomes. See [hybrid delivery](workflows/hybrid-delivery.md) for extension procedures.
 
 ### Source review: an independent PR snapshot
 

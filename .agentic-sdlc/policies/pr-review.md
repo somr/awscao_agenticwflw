@@ -19,6 +19,8 @@ Each review finding must contain:
 
 ## Routing policy
 
+A finding is `AUTO_FIX` only if an edit to files under the configured source roots can resolve it. The remediator cannot run commands or edit workflow records, so a finding that asks for verification evidence or a change to the PR artifacts is `DEVELOPER_REQUIRED`.
+
 ### Low impact
 
 Normally eligible for automatic remediation when the requested change is deterministic and local.
@@ -74,4 +76,5 @@ Escalate to a developer when:
 - the same finding reopens;
 - review/fix agents disagree repeatedly;
 - verification cannot establish correctness;
-- the proposed remediation grows beyond its original local scope.
+- the proposed remediation grows beyond its original local scope;
+- a remediation round changes no source file for its findings.

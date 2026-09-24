@@ -357,6 +357,31 @@ class GitBranchRootingTest(unittest.TestCase):
             self.assertEqual(before, after, "resuming an existing delivery branch must not discard its commits")
 
 
+class EscalateUnremediatedFindingsTest(unittest.TestCase):
+    def test_only_attempted_auto_fix_findings_are_escalated(self):
+        auto = {"id": "A1", "automation_eligibility": "AUTO_FIX", "reason": "evidence missing"}
+        other_auto = {"id": "A2", "automation_eligibility": "AUTO_FIX", "reason": "later"}
+        human = {"id": "H1", "automation_eligibility": "DEVELOPER_REQUIRED", "reason": "protected"}
+        review = {"summary": "s", "findings": [auto, other_auto, human], "has_developer_required": True, "has_auto_fix": True}
+        result = mod.escalate_unremediated_findings(review, [auto], {"deviations": ["cannot run commands"]})
+        by_id = {f["id"]: f for f in result["findings"]}
+        self.assertEqual(by_id["A1"]["automation_eligibility"], "DEVELOPER_REQUIRED")
+        self.assertTrue(by_id["A1"]["escalated_after_remediation"])
+        self.assertIn("cannot run commands", by_id["A1"]["reason"])
+        self.assertEqual(by_id["A2"], other_auto)
+        self.assertEqual(by_id["H1"], human)
+        self.assertTrue(result["has_auto_fix"])
+        self.assertEqual(auto["automation_eligibility"], "AUTO_FIX")  # input is not mutated
+
+    def test_missing_reason_is_stated(self):
+        auto = {"id": "A1", "automation_eligibility": "AUTO_FIX", "reason": "r"}
+        review = {"summary": "s", "findings": [auto], "has_developer_required": False, "has_auto_fix": True}
+        result = mod.escalate_unremediated_findings(review, [auto], {"deviations": []})
+        self.assertIn("gave no reason", result["findings"][0]["reason"])
+        self.assertFalse(result["has_auto_fix"])
+        self.assertTrue(result["has_developer_required"])
+
+
 class RenderHumanReviewBriefTest(unittest.TestCase):
     def _review(self, findings: list[dict]) -> dict:
         has_dev = any(f["automation_eligibility"] == "DEVELOPER_REQUIRED" for f in findings)

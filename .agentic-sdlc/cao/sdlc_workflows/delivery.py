@@ -391,6 +391,7 @@ Delivery workflow contract: {contract}
 Governance policy: {governance}
 PR review and remediation policy: {pr_review_policy}
 PR HEAD SHA under review: {pr_head_sha}
+Source roots (the only places the remediator may edit): {", ".join(_source_roots(repo))}
 
 Verification evidence (already run independently by the workflow, not by you):
 {json.dumps(verification, indent=2)}
@@ -400,7 +401,7 @@ Candidate diff (already computed by the workflow; do not run git yourself):
 {diff_text}
 ```
 
-Classify every finding per the PR review and remediation policy. Be honest about impact/category/confidence — the workflow independently enforces the policy's routing rules regardless of what you claim."""
+Classify every finding per the PR review and remediation policy. Mark a finding AUTO_FIX only when an edit to files under the source roots can resolve it: the remediator cannot run commands, and a finding about missing verification evidence or about the PR artifacts is DEVELOPER_REQUIRED. Be honest about impact/category/confidence — the workflow independently enforces the policy's routing rules regardless of what you claim."""
 
 
 def classify_pr_review(value: Any, *, pr_head_sha: str) -> dict[str, Any]:
@@ -501,6 +502,34 @@ Findings to fix (already filtered to AUTO_FIX-eligible only by the workflow):
 Fix exactly these findings. Do not weaken, skip, or delete any test assertion to make a finding go away — if a finding cannot legitimately be fixed, say so in your output as a deviation instead. Do not touch files or code unrelated to these findings."""
 
 
+def escalate_unremediated_findings(
+    review: dict[str, Any],
+    attempted: list[dict[str, Any]],
+    remediation_completion: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-route AUTO_FIX findings the remediator left untouched to DEVELOPER_REQUIRED,
+    carrying the remediator's stated reasons into the finding the human reads."""
+    attempted_ids = {f["id"] for f in attempted}
+    deviations = remediation_completion.get("deviations", [])
+    explanation = " ".join(deviations) if deviations else "The remediator gave no reason."
+    findings = []
+    for finding in review["findings"]:
+        if finding["id"] in attempted_ids and finding["automation_eligibility"] == "AUTO_FIX":
+            finding = {
+                **finding,
+                "automation_eligibility": "DEVELOPER_REQUIRED",
+                "escalated_after_remediation": True,
+                "reason": f"{finding['reason']} Escalated: automatic remediation changed no source file. {explanation}",
+            }
+        findings.append(finding)
+    return {
+        **review,
+        "findings": findings,
+        "has_developer_required": any(f["automation_eligibility"] == "DEVELOPER_REQUIRED" for f in findings),
+        "has_auto_fix": any(f["automation_eligibility"] == "AUTO_FIX" for f in findings),
+    }
+
+
 def _remediator_completion_validator(value: Any) -> Any:
     value = _require_dict(value, "remediator completion summary")
     for key in ("findings_addressed", "files_changed", "assumptions", "deviations"):
@@ -536,10 +565,17 @@ def render_human_review_brief(
     tasks = ", ".join(final_completion.get("tasks_completed", [])) or "(none reported)"
     files = ", ".join(final_completion.get("files_changed", [])) or "(none reported)"
     implementation_summary = f"Implements the approved Development Plan (tasks: {tasks}). Files changed: {files}."
-    if remediation_history:
+    fix_rounds = [h for h in remediation_history if h.get("commit_sha")]
+    if fix_rounds:
         implementation_summary += (
-            f" {len(remediation_history)} autonomous remediation round(s) applied additional fixes"
+            f" {len(fix_rounds)} autonomous remediation round(s) applied additional fixes"
             " for findings the workflow classified as auto-eligible."
+        )
+    escalated = [finding_id for h in remediation_history for finding_id in h.get("escalated_findings", [])]
+    if escalated:
+        implementation_summary += (
+            f" Automatic remediation changed no source file for {', '.join(escalated)},"
+            " so those findings were escalated to the human reviewer."
         )
 
     if developer_required:
@@ -869,9 +905,22 @@ def main() -> None:
         _write_json(remediating_dir / f"{remediation_step_id}-completion.json", remediation_completion)
 
         if not _source_changes(repo, source_roots).strip():
-            raise WorkflowContractError(
-                f"{remediation_step_id} completed but left no changes under the source roots ({', '.join(source_roots)})"
-            )
+            # pr-review.md convergence rule: escalate when verification cannot
+            # establish correctness. A remediator that changes nothing is
+            # saying no source change can fix these findings (for example
+            # missing verification evidence), so they go to the human
+            # instead of failing a run whose HEAD already passed verification.
+            review = escalate_unremediated_findings(review, auto_fix_findings, remediation_completion)
+            remediation_history.append({
+                "round": review_round,
+                "remediation_step_id": remediation_step_id,
+                "findings_addressed": [],
+                "commit_sha": None,
+                "verification_passed": None,
+                "escalated_findings": [f["id"] for f in auto_fix_findings],
+                "remediator_deviations": remediation_completion.get("deviations", []),
+            })
+            break
         _stage_source_changes(repo, source_roots)
         addressed = ", ".join(remediation_completion.get("findings_addressed", [])) or "(none reported)"
         _git(["commit", "-m", f"[{ticket_id}] Remediate findings ({addressed})"], cwd=repo)
@@ -911,6 +960,9 @@ def main() -> None:
     delivery_manifest["latest_review_has_developer_required"] = review["has_developer_required"]
     delivery_manifest["latest_review_has_auto_fix"] = review["has_auto_fix"]
     delivery_manifest["remediation_history"] = remediation_history
+    delivery_manifest["escalated_findings"] = [
+        finding_id for h in remediation_history for finding_id in h.get("escalated_findings", [])
+    ]
     delivery_manifest["convergence_limit_reached"] = convergence_limit_reached
 
     if blocked_reason is not None:
@@ -976,6 +1028,7 @@ def main() -> None:
         "has_auto_fix_findings": review["has_auto_fix"],
         "convergence_limit_reached": convergence_limit_reached,
         "remediation_rounds": len(remediation_history),
+        "escalated_findings": delivery_manifest["escalated_findings"],
         "human_review_brief": str(brief_path),
         "delivery_manifest": str(delivery_manifest_path),
         "next_action": "Human reviews human-review-brief.md and records HUMAN_APPROVED or REJECTED with record_pr_approval.py.",

@@ -195,6 +195,51 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 self.assertEqual(delivery_manifest['source_roots'], ['app', 'extra/module'])
                 self.assertFalse((repo / 'extra').exists())
 
+    def test_remediation_without_source_changes_escalates_to_human_review(self):
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.plan(Path(temp), modular)
+                delivery, transport = load('deliver', modular)
+                evidence = {'id': 'A1', 'file': 'app/value.py', 'location': 'T7', 'category': 'TESTING',
+                    'impact': 'LOW', 'confidence': .9, 'failure_scenario': 'Flakiness loop was never run',
+                    'consequence': 'Unverified', 'remediation_direction': 'Run the loop',
+                    'automation_eligibility': 'AUTO_FIX', 'reason': 'Evidence missing',
+                    'localized_and_bounded': True, 'deterministically_verifiable': True}
+                def respond(agent, step_id, prompt):
+                    if agent == 'sdlc_code_supervisor':
+                        return {'tasks': [{'id': 'T1', 'worker': 'developer', 'plan_reference': 'T1',
+                            'instructions': 'Implement value', 'depends_on': [], 'skills': []}]}
+                    if agent == delivery.IMPLEMENTER:
+                        (repo / 'app/value.py').write_text('def value():\n    return 2\n')
+                        return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
+                    if agent == delivery.REMEDIATOR:
+                        return {'findings_addressed': [], 'files_changed': [], 'assumptions': [],
+                                'deviations': ['A1 needs commands this role cannot run.']}
+                    return {'summary': 'Synthetic review', 'findings': [evidence]}
+                calls, output = self.drive(delivery, transport, {'repository_root': str(repo), 'ticket_id': 'T-1'}, respond, 'delivery-escalation')
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW')
+                self.assertEqual(output['escalated_findings'], ['A1'])
+                self.assertTrue(output['has_developer_required_findings'])
+                self.assertFalse(output['has_auto_fix_findings'])
+                self.assertFalse(output['convergence_limit_reached'])
+                # One review, one remediation attempt, no second review: nothing changed to re-review.
+                self.assertEqual([c for c in calls if c[0] in (delivery.REMEDIATOR, delivery.PR_REVIEWER)],
+                                 [(delivery.PR_REVIEWER, 'pr-review-r1'), (delivery.REMEDIATOR, 'remediate-r1')])
+                self.assertEqual(output['pr_head_sha'], git('rev-parse', 'HEAD'))
+                self.assertEqual(git('log', '--format=%s', '-1'), '[T-1] Implement approved plan (hybrid)')
+                manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual(manifest['state'], 'AWAITING_HUMAN_REVIEW')
+                self.assertEqual(manifest['escalated_findings'], ['A1'])
+                self.assertIsNone(manifest['remediation_history'][0]['commit_sha'])
+                brief = (records / 'human-review-brief.md').read_text()
+                self.assertIn('### 1. A1', brief)
+                self.assertIn('A1 needs commands this role cannot run.', brief)
+                self.assertIn('Automatically remediated: 0', brief)
+                self.assertNotIn('applied additional fixes', brief)
+                # The reviewer's own record stays as the reviewer wrote it.
+                review = json.loads((records / 'pr-review-r1.json').read_text())
+                self.assertEqual(review['findings'][0]['automation_eligibility'], 'AUTO_FIX')
+
     def test_delivery_rejects_changed_plan_before_any_agent_runs(self):
         for modular in (False, True):
             with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:

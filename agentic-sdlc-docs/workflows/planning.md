@@ -165,6 +165,8 @@ python3 .agentic-sdlc/scripts/approve_plan.py --repository-root "$PWD" --ticket-
 The script refuses if the plan, or the guidance it was built with, changed after review. It records the plan
 hash, the baseline and the guidance digest in `plan-approval-record.json`. A decision on an exact plan is
 immutable, and `--decision REJECTED` is recorded the same way. Only an approved plan can be delivered.
+A new planning run for a ticket whose plan is already approved fails before any agent runs, so an approved plan is
+never overwritten. To plan the ticket again, move `agentic-sdlc-records/<ticket>/` out of the way first.
 
 ## Configuration
 

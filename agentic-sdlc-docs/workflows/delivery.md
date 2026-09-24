@@ -37,7 +37,9 @@ flowchart TD
     PR --> REV[Independent PR Reviewer]
     REV --> F{"Auto-fixable findings<br/>and rounds left?"}
     F -- yes --> REM[Remediator]
-    REM --> V2[Verify again]
+    REM -- "changed nothing" --> ESC["Escalate those findings<br/>to the human"]
+    ESC --> BRIEF
+    REM -- changed code --> V2[Verify again]
     V2 -- failed --> BL
     V2 -- passed --> REV
     F -- no --> BRIEF[Human Review Brief]
@@ -56,7 +58,10 @@ flowchart TD
    policy, so an agent's own classification is never trusted: high-impact and protected-category findings always go
    to a human, and only findings that meet the auto-fix conditions are remediated.
 7. **Remediate.** The remediator fixes exactly the auto-fixable findings, Python verifies again, and the new head is
-   reviewed afresh. This repeats at most three times.
+   reviewed afresh. This repeats at most three times. If the remediator changes no file under the source roots, no
+   code change can resolve those findings (for example, the finding asks for verification evidence that only a
+   command could produce). Python then marks them `DEVELOPER_REQUIRED`, adds the remediator's reasons to them, and
+   goes straight to the brief. The verified head is unchanged, so it is not reviewed again.
 8. **Brief.** Python renders the Human Review Brief from the manifest and the reviews.
 
 ## Before you run it
@@ -139,9 +144,35 @@ stateDiagram-v2
 | `BLOCKED`, `hybrid_implementation_failed: ...` | An implementation step broke its contract. Partial edits stay in the working tree. | Inspect them, reconcile or discard, then run again with a fresh run ID. |
 | `BLOCKED`, `verification_failed_after_one_repair_attempt` | Verification still failed after one repair turn. | Read the verification logs; fix the plan, the code or the registry's commands. |
 | `BLOCKED`, `verification_failed_after_remediation` | A remediation round broke verification. | Same as above. |
-| Run state `failed` | A check stopped the run: the plan is not approved or changed after review, the baseline is no longer an ancestor, the source-root configuration is invalid, the source roots are dirty, or a repair or remediation step changed nothing inside the source roots. | `cao workflow result <run-id> --json` carries the traceback in its `warnings` field. |
+| Run state `failed` | A check stopped the run: the plan is not approved or changed after review, the baseline is no longer an ancestor, the source-root configuration is invalid, the source roots are dirty, or a single-mode implementation or repair step changed nothing inside the source roots. | `cao workflow result <run-id> --json` carries the traceback in its `warnings` field. |
 | `AWAITING_HUMAN_REVIEW` with `has_developer_required_findings` | The review found items only a human may decide, such as high-impact or protected categories. | Read the brief. |
+| `AWAITING_HUMAN_REVIEW` with `escalated_findings` | The reviewer marked these findings auto-fixable, but the remediator changed nothing for them. The brief shows each one with the remediator's reason. | Read the brief; each escalated finding is a developer finding. |
 | `convergence_limit_reached` | Automatic remediation used all three rounds and auto-fixable findings remain. | Read the brief; decide or fix by hand. |
+
+### After a `BLOCKED` run
+
+A `BLOCKED` run cannot be approved: `record_pr_approval.py` accepts only `AWAITING_HUMAN_REVIEW`. The manifest, the
+runtime evidence and any commits on `sdlc/<ticket>` stay in place.
+
+1. Read `reason` in the run output (`cao workflow result <run-id> --json`) and the evidence behind it: the agents'
+   answer files under `.agentic-sdlc/runtime/<ticket>/<run-id>/implementation/agent-output/` and the verification
+   logs under `.agentic-sdlc/runtime/<ticket>/<run-id>/verification/`.
+2. Decide where the fault is:
+   - **The plan** is wrong or cannot be implemented as written: plan again (see [Planning](planning.md)). Planning
+     refuses to overwrite an approved plan, so first move `agentic-sdlc-records/<ticket>/` out of the way; committed
+     records stay in Git history. Approve the new plan, then deliver on a fresh branch.
+   - **The registry's verification commands** are wrong, for example a missing toolchain: fix
+     `.agentic-sdlc/cao/specialists.json` on the base branch.
+   - **The agents' code** is wrong while the plan and the commands are sound: run Delivery again on a fresh branch.
+3. Start the next attempt from a fresh branch. Move the old one aside first, for example
+   `git branch -m sdlc/<ticket> archive/sdlc-<ticket>-<run-id>`, so its commits stay available for comparison.
+4. Remove the old run's untracked PR artifacts from `agentic-sdlc-records/<ticket>/` (keep the plan, its review, its
+   manifest and `plan-approval-record.json`), then run Delivery with a fresh run ID.
+
+A run on an existing `sdlc/<ticket>` branch does not resume where the previous run stopped: it implements the plan
+again on top of what the branch already holds. On a branch that already implements the plan the workers have
+nothing to change, and the run ends `BLOCKED` with `hybrid_implementation_failed`. That is why every new attempt
+starts from a fresh branch.
 
 A plan that names files outside the configured source roots cannot be implemented. The agents are told to report
 those tasks as deviations instead of writing them, and the hook denies the write anyway.
@@ -155,8 +186,11 @@ python3 .agentic-sdlc/scripts/record_pr_approval.py --repository-root "$PWD" --t
   --decision APPROVED --approved-by "<your name>" --reference "<PR link or note>"
 ```
 
-It refuses unless the state is `AWAITING_HUMAN_REVIEW` and the delivery branch is still at the reviewed head commit
-(if anyone committed since, run Delivery again). A decision on an exact head is immutable; an earlier decision on a
+It refuses unless the state is `AWAITING_HUMAN_REVIEW` and the delivery branch is still at the reviewed head commit.
+For each finding in the brief's "Human attention required" section, either accept it as it stands (say so in
+`--reference`) or reject the delivery. Fixing a finding by hand moves the branch head, and the workflow cannot
+review a hand-made change: record the decision on the reviewed head first and make the fix as follow-up work, or
+reject and start again as described in [After a `BLOCKED` run](#after-a-blocked-run). A decision on an exact head is immutable; an earlier decision on a
 different head is archived under `approval-history/`. The state becomes `HUMAN_APPROVED` or `REJECTED`. Merging, or
 opening a real pull request, is outside the workflow.
 
