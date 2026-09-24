@@ -50,3 +50,55 @@ GitHub transport metadata and publication are covered by mocked API responses pl
 real Git object retrieval in local tests. No live GitHub write was performed. The live
 fixture demonstrates orchestration and routing, not measured precision/recall across
 real PRs. Missing context can still cause conservative coverage gaps or human routing.
+
+## Live GitHub PR
+
+Run `source-review-live-pr1-1` (2026-09-24) reviewed a real GitHub.com pull request in
+GitHub mode: draft [PR #1](https://github.com/somr/awscao_agenticwflw/pull/1), branch
+`test/source-review-live-pr` (head `65ece4d`) against `main` (`74e0cdb`). The PR is a
+test PR that must never be merged. It adds webhook signature verification and a
+diagnostics helper to `app/`, with two planted defects and three new tests that miss
+both. The answer key was kept out of the PR, and the agents do not read the PR body.
+
+Before the run, the installed `source_review` was still the single-file version from
+`90795c4`. The installer refuses to overwrite it, so it was never rebuilt after the
+modular split in `39c6d10`. Compared with a build of `main`, it behaved the same: 55 of
+its 58 top-level definitions were unchanged. The two changed functions only reworded an
+error message and added a parameter that `source_review` does not pass, and the one
+removed function was never called. The five profiles already matched the repository.
+The workflow was still upgraded with the documented procedure, so the run used exactly
+the build of `main`, and the run's frozen bundle was checked against the build. The old
+bundle was then deleted; it is recoverable from `90795c4`. `cao profile remove` cannot
+remove these profiles: they are stored only in
+`~/.aws/cli-agent-orchestrator/agent-context/`, which it does not check. They had to be
+deleted there before the installer would accept them.
+
+| Answer key | Result |
+|---|---|
+| `_recent_fulfilments` slices `[: limit + 1]` (internal helper, documented contract) → `AUTO_FIX` | Found: LOW, 0.96, `AUTO_FIX` |
+| Missing or empty signature skips HMAC verification when a secret is configured → `HUMAN_REQUIRED` | Found: HIGH, 0.97, `HUMAN_REQUIRED` (authentication, secrets, public API) |
+| Existing duplicate-refulfilment gap on `main`, not introduced by the PR → no finding | Not reported |
+
+Every stage completed on its first attempt, and the run took 3 min 46 s. The pinned base, head and
+merge base matched the PR, and the changed paths were exactly the three edited files.
+Both reviewers raised the signature bypass. The validator merged the correctness
+candidate into the security candidate as a duplicate and accepted all three candidates
+(two findings). Precision and recall were both 2/2 on this answer key. Status was
+`REVIEWED`. Coverage was `INCOMPLETE` because the snapshot excludes the repository's own
+`.claude/` files and the reviewers noted context outside the repository, such as the host
+HTTP layer and the provider signing scheme.
+
+Publication was checked live. The preview matched the review. `--publish` posted one
+`COMMENT` review ([review 5310975043](https://github.com/somr/awscao_agenticwflw/pull/1#pullrequestreview-5310975043))
+with `commit_id` `65ece4d` and the base:head marker. An immediate second `--publish`
+reused that review, and the PR still has exactly one review.
+
+Observation: `coverage_gaps` is a union of every agent's free-text gaps, so the same gap
+appears up to four times in different wording (18 entries for about six distinct gaps).
+One entry is really a note on scope ("left to the correctness reviewer"), not a gap. The
+published comment repeats the whole list.
+
+Limits of the live PR run: stale-head handling and retry after a crash are still
+covered only by local tests with mocked API responses. One live PR with two planted defects shows the reviewer and routing
+behave correctly on a real GitHub PR. It does not measure precision or recall across
+realistic PRs. Missing context can still cause conservative coverage gaps or human routing.

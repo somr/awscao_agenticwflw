@@ -310,9 +310,9 @@ python3 -m unittest discover -s tests -v
 bash -n .agentic-sdlc/cao/workflows/install_source_review.sh
 ```
 
-The hook tests need local socket access. The live fixture exercises the CAO and provider integration; it does not
-replace the regression suite or measure review accuracy on real PRs. The
-[live verification record](../verification/source-review-live.md) has results and limits.
+The hook tests need local socket access. The live fixture and a live test PR with planted defects exercise the CAO,
+provider and GitHub integration, including publication. They do not replace the regression suite or measure review
+accuracy across real PRs. The [live verification record](../verification/source-review-live.md) has results and limits.
 
 ## See also
 
