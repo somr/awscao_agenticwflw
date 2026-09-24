@@ -15,3 +15,8 @@ class FulfilmentService:
 
     def fulfilment_count(self, payment_id: str) -> int:
         return self.ledger.count(payment_id)
+
+    def _recent_fulfilments(self, limit: int) -> list[str]:
+        """Internal helper: the newest ``limit`` fulfilled payment IDs, newest
+        first. ``limit`` is non-negative; only used for diagnostics logging."""
+        return list(reversed(self.ledger))[: limit + 1]
