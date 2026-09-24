@@ -141,58 +141,137 @@ stateDiagram-v2
 
 | Outcome | Meaning | What to do |
 |---|---|---|
-| `BLOCKED`, `hybrid_implementation_failed: ...` | An implementation step broke its contract. Partial edits stay in the working tree. | Inspect them, reconcile or discard, then run again with a fresh run ID. |
-| `BLOCKED`, `verification_failed_after_one_repair_attempt` | Verification still failed after one repair turn. | Read the verification logs; fix the plan, the code or the registry's commands. |
-| `BLOCKED`, `verification_failed_after_remediation` | A remediation round broke verification. | Same as above. |
+| `BLOCKED`, `hybrid_implementation_failed: ...` | An implementation step broke its contract. Partial edits stay in the working tree. | See [After a `BLOCKED` run](#after-a-blocked-run). |
+| `BLOCKED`, `verification_failed_after_one_repair_attempt` | Verification still failed after one repair turn. | See [After a `BLOCKED` run](#after-a-blocked-run). |
+| `BLOCKED`, `verification_failed_after_remediation` | A remediation round broke verification. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | Run state `failed` | A check stopped the run: the plan is not approved or changed after review, the baseline is no longer an ancestor, the source-root configuration is invalid, the source roots are dirty, or a single-mode implementation or repair step changed nothing inside the source roots. | `cao workflow result <run-id> --json` carries the traceback in its `warnings` field. |
-| `AWAITING_HUMAN_REVIEW` with `has_developer_required_findings` | The review found items only a human may decide, such as high-impact or protected categories. | Read the brief. |
-| `AWAITING_HUMAN_REVIEW` with `escalated_findings` | The reviewer marked these findings auto-fixable, but the remediator changed nothing for them. The brief shows each one with the remediator's reason. | Read the brief; each escalated finding is a developer finding. |
-| `convergence_limit_reached` | Automatic remediation used all three rounds and auto-fixable findings remain. | Read the brief; decide or fix by hand. |
+| `AWAITING_HUMAN_REVIEW` with `has_developer_required_findings` | The review found items only a human may decide, such as high-impact or protected categories. | Read the brief. See [Human decisions](#human-decisions). |
+| `AWAITING_HUMAN_REVIEW` with `escalated_findings` | The reviewer marked these findings auto-fixable, but the remediator changed nothing for them. The brief shows each one with the remediator's reason. | Read the brief; each escalated finding is a developer finding. See [Human decisions](#human-decisions). |
+| `convergence_limit_reached` | Automatic remediation used all three rounds and auto-fixable findings remain. | Read the brief; treat the remaining findings as developer findings. See [Human decisions](#human-decisions). |
 
 ### After a `BLOCKED` run
 
-A `BLOCKED` run cannot be approved: `record_pr_approval.py` accepts only `AWAITING_HUMAN_REVIEW`. The manifest, the
-runtime evidence and any commits on `sdlc/<ticket>` stay in place.
+No command moves a delivery out of `BLOCKED`, and `record_pr_approval.py` refuses it. You leave `BLOCKED` by fixing
+the cause and starting a new Delivery run, which writes a new manifest. The failed run's manifest, its runtime
+evidence and its commits on `sdlc/<ticket>` stay in place until you move them.
 
-1. Read `reason` in the run output (`cao workflow result <run-id> --json`) and the evidence behind it: the agents'
-   answer files under `.agentic-sdlc/runtime/<ticket>/<run-id>/implementation/agent-output/` and the verification
-   logs under `.agentic-sdlc/runtime/<ticket>/<run-id>/verification/`.
-2. Decide where the fault is:
-   - **The plan** is wrong or cannot be implemented as written: plan again (see [Planning](planning.md)). Planning
-     refuses to overwrite an approved plan, so first move `agentic-sdlc-records/<ticket>/` out of the way; committed
-     records stay in Git history. Approve the new plan, then deliver on a fresh branch.
-   - **The registry's verification commands** are wrong, for example a missing toolchain: fix
-     `.agentic-sdlc/cao/specialists.json` on the base branch.
-   - **The agents' code** is wrong while the plan and the commands are sound: run Delivery again on a fresh branch.
-3. Start the next attempt from a fresh branch. Move the old one aside first, for example
-   `git branch -m sdlc/<ticket> archive/sdlc-<ticket>-<run-id>`, so its commits stay available for comparison.
-4. Remove the old run's untracked PR artifacts from `agentic-sdlc-records/<ticket>/` (keep the plan, its review, its
-   manifest and `plan-approval-record.json`), then run Delivery with a fresh run ID.
+**1. Find the cause.** Read `reason` in the run output and the evidence behind it:
 
-A run on an existing `sdlc/<ticket>` branch does not resume where the previous run stopped: it implements the plan
-again on top of what the branch already holds. On a branch that already implements the plan the workers have
-nothing to change, and the run ends `BLOCKED` with `hybrid_implementation_failed`. That is why every new attempt
-starts from a fresh branch.
+```bash
+cao workflow result <run-id> --json
+ls .agentic-sdlc/runtime/<ticket>/<run-id>/implementation/agent-output/   # agents' answers
+ls .agentic-sdlc/runtime/<ticket>/<run-id>/verification/                  # verification logs
+```
+
+**2. Fix it where it belongs.**
+
+| `reason` | Usual cause | Fix |
+|---|---|---|
+| `hybrid_implementation_failed: ...` | An agent broke its contract, for example invalid output or a write outside the source roots. Its partial edits stay uncommitted in the working tree. | Usually none: retry. If the same step fails again, check the plan and the registry. |
+| `verification_failed_after_one_repair_attempt` | The code still fails the verification commands after one repair turn. | Commands wrong (missing toolchain, bad command): fix `.agentic-sdlc/cao/specialists.json` and commit it on the base branch. Plan wrong: plan again (step 3b). Code wrong: retry. |
+| `verification_failed_after_remediation` | A remediation round broke verification. | Read the review finding it was fixing; usually retry. |
+
+**3a. Retry with the same approved plan.** From the repository root:
+
+```bash
+git restore --staged --worktree -- app              # only after hybrid_implementation_failed: drop partial edits
+git clean -fd -- app                                #   and the new files they created
+git checkout main                                   # Delivery leaves you on sdlc/<ticket>
+git branch -m sdlc/<ticket> archive/sdlc-<ticket>-<run-id>
+cd agentic-sdlc-records/<ticket> && rm -f delivery-manifest.json human-review-brief.md pr-* && cd -
+cao workflow run sdlc_deliver --wait --json --run-id <new-run-id> \
+  --input ticket_id=<ticket> --input repository_root="$PWD" --input base_branch=main
+```
+
+- Use your configured source roots in place of `app`. Hybrid mode needs them clean and the Git index empty.
+- Renaming the branch, rather than deleting it, keeps the failed attempt for comparison. A run on an existing
+  `sdlc/<ticket>` does not resume where the previous run stopped: it implements the plan again on top of what the
+  branch holds, and on an already implemented branch the workers have nothing to change, so the run ends `BLOCKED`
+  with `hybrid_implementation_failed`.
+- The new run overwrites most PR artifacts, but a stale `pr-review-r<N>.json` or `human-review-brief.md` from the
+  failed run would survive if you did not remove them. The plan files (`development-plan.md`, `plan-review.json`,
+  `execution-manifest.json`, `plan-approval-record.json`) stay.
+
+**3b. Change the plan instead.** Planning refuses to overwrite an approved plan, so move the ticket's records aside
+first. Committed records stay in Git history.
+
+```bash
+git checkout main
+git rm -r -q agentic-sdlc-records/<ticket>     # the committed plan records
+rm -rf agentic-sdlc-records/<ticket>           # the failed run's untracked delivery records
+git commit -m "Supersede the <ticket> plan"
+```
+
+Then run [Planning](planning.md#run), approve the new plan with `approve_plan.py`, commit the new records, and continue
+with step 3a from the branch rename.
+
+**4. Check the new outcome.** `AWAITING_HUMAN_REVIEW` continues in [Human decisions](#human-decisions); `BLOCKED`
+again means back to step 1. Every retry implements the whole plan again, so a failure that keeps coming back needs a
+change to the plan or the registry, not another retry. A fix you make by hand on a `BLOCKED` branch cannot be reviewed
+or approved by the workflow.
 
 A plan that names files outside the configured source roots cannot be implemented. The agents are told to report
 those tasks as deviations instead of writing them, and the hook denies the write anyway.
 
 ## Human decisions
 
-When the state is `AWAITING_HUMAN_REVIEW`, review the branch and the brief, then record your decision:
+When a run ends `AWAITING_HUMAN_REVIEW`, the automated part is finished and the delivery waits for you. The branch
+`sdlc/<ticket>` is checked out and holds the reviewed code; the records under `agentic-sdlc-records/<ticket>/` are
+not committed yet.
+
+**1. Read the brief.** `agentic-sdlc-records/<ticket>/human-review-brief.md` lists the verification results, what
+was remediated automatically, and every finding that needs you under "Human attention required". The run output
+tells you which kind you have:
+
+| Output field | Meaning |
+|---|---|
+| `has_developer_required_findings: false` | Nothing is left for a human to decide; review the change as you would any PR. |
+| `has_developer_required_findings: true` | Findings only a human may decide, such as high-impact or protected categories. |
+| `escalated_findings` | Findings the reviewer marked auto-fixable, but the remediator changed no source file for them, for example because they need a command to be run. Each shows the remediator's reason. |
+| `convergence_limit_reached: true` | Three remediation rounds ran and auto-fixable findings remain. Read them as developer findings. |
+
+**2. Review the change itself**, not only the brief:
 
 ```bash
-python3 .agentic-sdlc/scripts/record_pr_approval.py --repository-root "$PWD" --ticket-id PAY-DEMO-001 \
-  --decision APPROVED --approved-by "<your name>" --reference "<PR link or note>"
+git diff main...sdlc/<ticket>
+git log --oneline main..sdlc/<ticket>
 ```
 
-It refuses unless the state is `AWAITING_HUMAN_REVIEW` and the delivery branch is still at the reviewed head commit.
-For each finding in the brief's "Human attention required" section, either accept it as it stands (say so in
-`--reference`) or reject the delivery. Fixing a finding by hand moves the branch head, and the workflow cannot
-review a hand-made change: record the decision on the reviewed head first and make the fix as follow-up work, or
-reject and start again as described in [After a `BLOCKED` run](#after-a-blocked-run). A decision on an exact head is immutable; an earlier decision on a
-different head is archived under `approval-history/`. The state becomes `HUMAN_APPROVED` or `REJECTED`. Merging, or
-opening a real pull request, is outside the workflow.
+Run the verification commands again if you want your own evidence; they are listed in `delivery-manifest.json`
+under `verification`.
+
+**3. Decide each finding.** Accept it as it stands, plan a follow-up change, or reject the delivery. Do not commit a
+fix to `sdlc/<ticket>` before recording the decision: the workflow cannot review a hand-made change, and
+`record_pr_approval.py` refuses once the branch head has moved.
+
+**4. Record the decision** on the reviewed head:
+
+```bash
+python3 .agentic-sdlc/scripts/record_pr_approval.py --repository-root "$PWD" --ticket-id <ticket> \
+  --decision APPROVED --approved-by "<your name>" --reference "<PR link, or how each finding was settled>"
+```
+
+Use `--decision REJECTED` to reject. The script checks that the state is `AWAITING_HUMAN_REVIEW` and that the
+branch is still at the reviewed head, writes `pr-approval-record.json`, and sets the state to `HUMAN_APPROVED` or
+`REJECTED`. A decision on an exact head is immutable; an earlier decision on a different head is archived under
+`approval-history/`.
+
+**5. Finish outside the workflow.**
+
+- **Approved:** keep the records with the code. Commit them on the base branch, then merge the delivery branch, or
+  push it and open a real pull request:
+
+  ```bash
+  git checkout main
+  git add agentic-sdlc-records/<ticket>
+  git commit -m "Record the <ticket> delivery and its approval"
+  git merge --no-ff sdlc/<ticket>
+  ```
+
+  Make the follow-up fixes you accepted in step 3 as new work.
+- **Rejected:** commit the records on the base branch first if you want to keep the rejection, because the retry
+  steps remove them. Then decide why, as for a `BLOCKED` run: a plan problem means planning again (step 3b of
+  [After a `BLOCKED` run](#after-a-blocked-run)), a code problem means a new Delivery run on a fresh branch (step 3a).
 
 ## Configuration
 

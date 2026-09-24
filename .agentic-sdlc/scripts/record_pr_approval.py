@@ -71,7 +71,8 @@ def main() -> int:
         raise SystemExit(
             "The delivery branch has changed since the Human Review Brief was produced "
             f"(reviewed PR HEAD {expected_pr_head_sha}, current {actual_pr_head_sha}). "
-            "Do not approve a PR whose code changed after review; re-run the delivery workflow to re-review the new HEAD."
+            "Do not approve a PR whose code changed after review. Record the decision on the reviewed HEAD, "
+            "or start a new Delivery run from a fresh branch (see 'Human decisions' in the Delivery guide)."
         )
 
     if approval_path.exists():
