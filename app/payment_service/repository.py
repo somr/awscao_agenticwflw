@@ -34,7 +34,6 @@ class PaymentRepository:
                 "INSERT INTO processed_callbacks (provider_event_id, payment_id) VALUES (?, ?)",
                 (provider_event_id, payment_id),
             )
-            self._conn.commit()
             return True
         except sqlite3.IntegrityError:
             return False
