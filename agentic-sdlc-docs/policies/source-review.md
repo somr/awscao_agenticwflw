@@ -42,4 +42,5 @@ findings. Never silently reinterpret `HUMAN_REQUIRED` as automatic eligibility.
 No review result authorizes approval or merge. Re-review each changed HEAD; publishing
 after the HEAD moved places only findings whose lines are unchanged and lists the rest
 as needing a new review. What reaches GitHub is the human-edited draft, always as a
-non-blocking `COMMENT` review.
+non-blocking `COMMENT` review, one per review run. A development agent never consumes a
+`STALE` result; a person may publish one under the same per-finding check.

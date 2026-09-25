@@ -29,8 +29,9 @@ limitations separately, merging only gaps that describe the same limitation.
 Python places each finding beside the code only when its range lies within one changed
 section of the diff on its side; otherwise it goes in the general comment. The draft is
 the only human-editable artifact; the audit artifacts are never modified. Publication
-creates one `COMMENT` review and never approves or requests changes. After the PR moves,
-a finding is placed only if its lines are textually unchanged at the new head.
+creates one `COMMENT` review per run and never approves or requests changes. After the
+PR moves, including a `STALE` run, a finding is placed only if its lines are textually
+unchanged at the new head; a closed PR cannot be published.
 Successful orchestration emits `REVIEWED` or `STALE`, independently of coverage
 `COMPLETE`/`INCOMPLETE`. Execution failure writes `failure.json` and fails the run.
 A result with no findings is not an approval. Moving either PR tip invalidates currency.

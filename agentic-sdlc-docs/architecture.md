@@ -137,12 +137,13 @@ flowchart TD
     SEC --> VAL["Finding Validator<br/>accepts, rejects or deduplicates"]
     VAL --> GATE["Python routing gate"]
     GATE --> AUTHOR["Feedback Author"]
-    AUTHOR --> OUT["Python renders code-review.json<br/>and comments.md"]
+    AUTHOR --> OUT["Python places findings in the diff and renders<br/>code-review.json, comments.md and review-draft.md"]
     OUT --> AUTO["AUTO_FIX queue"]
     OUT --> HUMAN["HUMAN_REQUIRED queue"]
+    OUT --> PUB["A person edits the draft and publishes<br/>one COMMENT review (publish tool)"]
 ```
 
-The arrows show execution order. Correctness and security reviewers have separate contexts and are instructed not to consult each other's findings; the validator considers their combined candidates. Source review reads code and test source but does not run tests, establish requirements compliance or approve the PR. GitHub mode checks the remote base/head again at completion and marks changed snapshots `STALE`. Publication is a separate explicit action. See the [Source-review guide](workflows/source-review.md).
+The arrows show execution order. Correctness and security reviewers have separate contexts and are instructed not to consult each other's findings; the validator considers their combined candidates. Source review reads code and test source but does not run tests, establish requirements compliance or approve the PR. GitHub mode checks the remote base/head again at completion and marks changed snapshots `STALE`. Publication is a separate command run by a person: it posts the edited `review-draft.md` as one non-blocking `COMMENT` review, with comments beside the code where the diff allows, and after a PR moves it places only findings whose lines are unchanged. See the [Source-review guide](workflows/source-review.md).
 
 ## Build and deployment boundary
 
