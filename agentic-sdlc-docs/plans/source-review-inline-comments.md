@@ -213,6 +213,9 @@ judging semantic relevance after the head moves (that needs a new review run).
   `GONE`, a moved base and a rejected request are covered only by tests. The fallback that splits a very
   large review was not needed and is not built.
 - Milestone 6 (docs) is done: guide, contract, policy and README.
+- Receipt gap closed after the live run: `publication.json` now stores the exact request and reads back the
+  posted comments from `GET pulls/{n}/comments`, filtered by review ID. The per-review endpoint omits line
+  and side. This was verified live on PR #2 through the reuse path. The first-post path is covered by tests.
 - Follow-up idea: when a finding's range only partly overlaps a changed section (PR #2's repository
   finding), the placement could clip it to the overlap instead of using the general comment. For now the
   reviewer can re-anchor it in the draft.

@@ -348,29 +348,51 @@ class PublicationTests(unittest.TestCase):
                     publisher.gh(endpoint, payload=payload)
             run.assert_not_called()
 
-    def test_publish_posts_once_and_reuses_on_retry(self):
-        calls = []
+    def fake_github(self, reviews, calls):
+        stored = [{'id': 300, 'pull_request_review_id': 5, 'path': 'other.py', 'body': 'someone else'},
+                  {'id': 301, 'pull_request_review_id': 21, 'path': 'code.py', 'side': 'RIGHT', 'start_line': 2, 'line': 3,
+                   'commit_id': 'b' * 40, 'html_url': 'https://github.com/owner/repo/pull/7#discussion_r301', 'body': 'Explanation'}]
 
         def fake(endpoint, payload=None, paginate=False):
             calls.append((endpoint, payload))
             if endpoint.endswith('/files?per_page=100'):
                 return [self.files]
             if endpoint.endswith('/reviews?per_page=100'):
-                return [[{'id': 5, 'body': 'someone else'}]] if len(calls) < 5 else [[{'id': 21, 'body': posted['body']}]]
+                return [reviews]
+            if endpoint.endswith('/pulls/7/comments?per_page=100'):
+                return [stored]
             if payload is not None:
-                return {'id': 21, **payload}
+                reviews.append({'id': 21, 'body': payload['body']})
+                return {'id': 21, 'body': payload['body'], 'state': 'COMMENTED'}
             return self.metadata
-        with patch.object(publisher, 'gh', side_effect=fake):
+        return fake
+
+    def test_publish_posts_once_records_request_and_reuses_on_retry(self):
+        calls = []
+        with patch.object(publisher, 'gh', side_effect=self.fake_github([{'id': 5, 'body': 'someone else'}], calls)):
             first = publisher.publish(self.root)
             posted = next(p for _, p in calls if p is not None)
             second = publisher.publish(self.root)
-        self.assertFalse(first['reused_existing'])
-        self.assertTrue(second['reused_existing'])
         self.assertEqual(sum(p is not None for _, p in calls), 1)
         self.assertEqual(posted['event'], 'COMMENT')
+        self.assertEqual(first['request'], posted)
+        self.assertEqual([c['id'] for c in first['comments']], [301])
+        self.assertTrue(second['reused_existing'])
+        self.assertEqual((second['request'], second['decisions']), (posted, first['decisions']))
         receipt = json.loads((self.root / 'publication.json').read_text())
-        self.assertEqual(receipt['review']['id'], 21)
+        self.assertEqual((receipt['review']['id'], receipt['comments'][0]['html_url'][-4:]), (21, 'r301'))
         self.assertFalse((self.root / 'publication.lock').exists())
+
+    def test_reused_review_without_receipt_never_claims_todays_plan(self):
+        existing = [{'id': 21, 'body': 'earlier ' + publisher.marker(self.snapshot)}]
+        with patch.object(publisher, 'gh', side_effect=self.fake_github(existing, calls := [])):
+            receipt = publisher.publish(self.root)
+        self.assertTrue(receipt['reused_existing'])
+        self.assertIsNone(receipt['request'])
+        self.assertNotIn('decisions', receipt)
+        self.assertIn('read back from GitHub', receipt['note'])
+        self.assertEqual([c['id'] for c in receipt['comments']], [301])
+        self.assertFalse(any(p is not None for _, p in calls))
 
 
 class CurrencyTests(unittest.TestCase):

@@ -162,3 +162,8 @@ draft, each finding's outcome and the commit.
 
 Not exercised live (covered by the regression suite): `publish="no"`, the `GONE` result, a
 moved base, and a request rejected by GitHub.
+
+The receipt was then extended to store the exact request and to read back the posted comments.
+Rerunning `--publish` on PR #2 reused review 5316992580, kept the earlier outcomes, recorded
+`request` as `null` (the first receipt predates the field), and read back comments 4103970341
+(`repository.py` LEFT 37) and 4103970350 (`fulfilment_service.py` RIGHT 21-24) at `c78b8e2`.

@@ -27,7 +27,7 @@ FINDING_MARKER = re.compile(r"^<!-- finding (.*) -->$")
 ATTRIBUTE = re.compile(r'(\w+)="([^"]*)"')
 ANCHOR = re.compile(r"^(.+):(RIGHT|LEFT):([1-9][0-9]*)-([1-9][0-9]*)$")
 # The complete set of GitHub calls this tool may make; tests pin it.
-ALLOWED_CALLS = {("GET", "pulls"), ("GET", "files"), ("GET", "reviews"), ("POST", "reviews")}
+ALLOWED_CALLS = {("GET", "pulls"), ("GET", "files"), ("GET", "reviews"), ("GET", "comments"), ("POST", "reviews")}
 
 
 class DraftError(ValueError):
@@ -328,12 +328,32 @@ def publish(root: Path, *, include_context_changed: bool = False) -> dict:
     try:
         pages = gh(endpoint + "/reviews?per_page=100", paginate=True)
         existing = [review for page in pages for review in page if marker(report["snapshot"]) in (review.get("body") or "")]
-        # One atomic request: the general comment and every placed comment, or nothing.
-        review = existing[0] if existing else gh(endpoint + "/reviews", payload=plan["request"])
-        receipt = {"review": review, "reused_existing": bool(existing), "posted_at_commit": plan["request"]["commit_id"],
-                   "draft_sha256": plan["draft_sha256"], "draft_edited": plan["draft_edited"],
-                   "decisions": plan["decisions"], "omitted": plan["omitted"], "held": plan["held"]}
-        (root / "publication.json").write_text(json.dumps(receipt, indent=2) + "\n")
+        receipt_path = root / "publication.json"
+        previous = json.loads(receipt_path.read_text()) if receipt_path.is_file() else {}
+        if not existing:
+            # One atomic request: the general comment and every placed comment, or nothing.
+            review = gh(endpoint + "/reviews", payload=plan["request"])
+            receipt = {"review": review, "reused_existing": False,
+                       "posted_at_commit": plan["request"]["commit_id"], "request": plan["request"],
+                       "draft_sha256": plan["draft_sha256"], "draft_edited": plan["draft_edited"],
+                       "decisions": plan["decisions"], "omitted": plan["omitted"], "held": plan["held"]}
+        elif previous.get("review", {}).get("id") == existing[0]["id"]:
+            # Keep the record of what was sent the first time; today's plan was not posted.
+            review = existing[0]
+            receipt = {**previous, "review": review, "reused_existing": True}
+            receipt.setdefault("request", None)
+        else:
+            review = existing[0]
+            receipt = {"review": review, "reused_existing": True, "request": None,
+                       "note": "Posted by an earlier publication without a receipt in this run directory; "
+                               "the comments below are read back from GitHub."}
+        # GitHub's create-review response omits the comments; read back what it stored. The PR-level
+        # endpoint (unlike the per-review one) reports line and side.
+        receipt["comments"] = [
+            {key: comment.get(key) for key in ("id", "path", "side", "start_line", "line", "commit_id", "html_url", "body")}
+            for page in gh(f"{endpoint}/comments?per_page=100", paginate=True)
+            for comment in page if comment.get("pull_request_review_id") == review["id"]]
+        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
         return receipt
     finally:
         lock.unlink()

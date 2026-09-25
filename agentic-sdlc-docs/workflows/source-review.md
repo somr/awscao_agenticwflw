@@ -335,8 +335,12 @@ Guarantees:
 - A rerun finds the earlier review by its hidden base and head marker and reuses it instead of posting again.
 - A local exclusive lock stops concurrent publication of the same run. After a crash, inspect GitHub before removing
   `publication.lock`.
-- `publication.json` records the review, the commit it was posted at, and what happened to each finding (beside the
-  code, general comment, held or omitted, with the reason). It also records whether the draft was edited.
+- `publication.json` records the review and the exact request sent (`request`): the general comment and every comment
+  beside the code, including the notes the tool adds. It records the commit it was posted at, what happened to each
+  finding (beside the code, general comment, held or omitted, with the reason), and whether the draft was edited.
+  It also lists the comments as GitHub stored them (`comments`: ID, path, side, lines, commit and link), read back
+  after posting. A rerun keeps the original record. If the review was posted without a receipt in this run folder,
+  `request` is `null` and only the read-back comments are recorded.
 
 Publishing needs pull-request write permission for the `gh` account, and the review is posted as that account. If
 branch protection requires **conversation resolution before merging**, each comment beside the code must be resolved
