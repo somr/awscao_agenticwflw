@@ -39,4 +39,7 @@ Unsubstantiated candidates are rejected, not sent to a human as confirmed defect
 Require current reviewed HEAD, assess coverage gaps, and verify the proposed fix.
 Escalate expanding scope, ambiguous behavior, unsuccessful verification and repeated
 findings. Never silently reinterpret `HUMAN_REQUIRED` as automatic eligibility.
-No review result authorizes approval or merge. Re-review each changed HEAD.
+No review result authorizes approval or merge. Re-review each changed HEAD; publishing
+after the HEAD moved places only findings whose lines are unchanged and lists the rest
+as needing a new review. What reaches GitHub is the human-edited draft, always as a
+non-blocking `COMMENT` review.

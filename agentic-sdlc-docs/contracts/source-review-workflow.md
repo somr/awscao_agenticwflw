@@ -5,7 +5,8 @@
 Review an existing PR's source and test code for introduced or worsened defects.
 Produce evidence-based feedback routed to automatic fixing or human handling.
 The workflow does not implement fixes, execute project code/tests, assess a plan or
-CI, approve/merge a PR, or publish comments without a separate explicit command.
+CI, approve/merge a PR, or publish comments without a separate explicit command run
+by a person.
 
 ## Inputs and immutable evidence
 
@@ -24,7 +25,12 @@ limitations separately, merging only gaps that describe the same limitation.
 
 ## Outputs and states
 
-`code-review.json`, `comments.md`, candidate decisions and step evidence.
+`code-review.json`, `comments.md`, `review-draft.md`, candidate decisions and step evidence.
+Python places each finding beside the code only when its range lies within one changed
+section of the diff on its side; otherwise it goes in the general comment. The draft is
+the only human-editable artifact; the audit artifacts are never modified. Publication
+creates one `COMMENT` review and never approves or requests changes. After the PR moves,
+a finding is placed only if its lines are textually unchanged at the new head.
 Successful orchestration emits `REVIEWED` or `STALE`, independently of coverage
 `COMPLETE`/`INCOMPLETE`. Execution failure writes `failure.json` and fails the run.
 A result with no findings is not an approval. Moving either PR tip invalidates currency.

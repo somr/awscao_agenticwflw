@@ -5,8 +5,9 @@ and a human reviewer. It is independent of Planning and Delivery: no Jira ticket
 delivery manifest is needed.
 
 It reads source. It does not fix code, run tests, assess requirements compliance or deployment readiness,
-approve a pull request or merge it. Publishing to GitHub is a separate, explicit command; by default the
-workflow writes local artifacts only.
+approve a pull request or merge it. It writes local artifacts, including an editable publication draft. A
+person reviews and edits the draft, then runs a separate command that posts it as one non-blocking `COMMENT`
+review, with a comment beside the code for each finding it can place.
 
 ## At a glance
 
@@ -14,9 +15,9 @@ workflow writes local artifacts only.
 |---|---|
 | Registered name | `source_review` |
 | Agents | Context Mapper, Correctness Reviewer, Security Reviewer, Finding Validator, Feedback Author (five profiles) |
-| Done by Python | Pinning the PR, exporting the source, the routing gate, rendering the artifacts, publication |
+| Done by Python | Pinning the PR, exporting the source, the routing gate, placing findings in the diff, rendering the artifacts, publication |
 | Requires | A GitHub PR URL, or a local committed repository in fixture mode |
-| Human gate | Publishing is an explicit command; a person decides the `HUMAN_REQUIRED` findings. Nothing approves or merges the PR. |
+| Human gate | A person edits `review-draft.md` and runs the publish command; a person decides the `HUMAN_REQUIRED` findings. Nothing approves, requests changes on or merges the PR. |
 | Results | `.agentic-sdlc/runtime/source-review/<run-id>/` |
 | Write boundary | Each agent may write only the answer area of the run's isolated workspace, through a hook generated for that workspace |
 
@@ -184,7 +185,8 @@ Artifacts are isolated by run ID and ignored by Git:
 ```text
 .agentic-sdlc/runtime/source-review/<run-id>/
 ├── code-review.json       canonical, routed feedback
-├── comments.md            concise review with commit-specific source links
+├── comments.md            full local review with commit-specific source links (audit copy)
+├── review-draft.md        editable publication draft, ordered by what needs attention
 ├── publication.json       GitHub review receipt, only after publishing
 ├── failure.json           only if orchestration failed
 ├── objects.git/           this run's private Git objects
@@ -206,7 +208,8 @@ global "latest review".
 - `coverage_status`: `COMPLETE` or `INCOMPLETE`, with explicit `coverage_gaps`. These are the snapshot's own gaps
   plus the agents' gaps after the Finding Validator merges reworded duplicates. Python checks that every reported
   gap is kept, merged or matched to a snapshot gap, so none is lost;
-- `findings`, each with location, severity, confidence, trigger, evidence, consequence, fix direction,
+- `draft_sha256`, which shows whether `review-draft.md` was edited before publication;
+- `findings`, each with location, `placement` (see below), severity, confidence, trigger, evidence, consequence, fix direction,
   verification method, eligibility fields and routing reasons;
 - `queues.AUTO_FIX` and `queues.HUMAN_REQUIRED`: finding IDs;
 - `comments_sha256`, which binds the publication text to the artifact.
@@ -257,36 +260,87 @@ and map the fields.
 
 ### Publishing to GitHub
 
-Publication is a separate command and defaults to a preview. It posts one `COMMENT` review that contains the finding
-comments with commit-specific source links. These are **not** inline diff threads, so findings on deleted code stay
-linkable without inventing an anchor.
+Python places each finding before anything is written. A finding goes **beside the code** (`placement.mode` is
+`INLINE`) only when its whole line range falls inside one changed section of the diff, on its side: the head is
+GitHub's `RIGHT`, the base (deleted lines) is `LEFT`. GitHub accepts comments only there. Every other finding goes in the
+**general comment**, with a link to its lines at the reviewed commit and the reason.
+
+`review-draft.md` is what gets published. It starts with what needs your decision (`HUMAN_REQUIRED` findings, findings
+placed in the general comment, coverage gaps), then the general comment, then one block per finding, most important
+first. Only the marked blocks are read:
+
+```markdown
+<!-- general -->
+Summary, editable. Add your own remarks here.
+<!-- end general -->
+
+<!-- finding id="SR-4a25c4154b177682" publish="yes" anchor="app/payment_service/callback_controller.py:RIGHT:31-34" reason="" -->
+**Missing or empty signature skips webhook HMAC verification** (HIGH)
+
+Editable text addressed to the PR author. Internal routing details sit in a collapsed block.
+<!-- end finding -->
+```
+
+In the draft you can:
+- edit any text;
+- set `publish="no"`, with an optional `reason`, to leave a finding out;
+- change `anchor` to other lines inside the diff, such as the deleted line itself (`path:LEFT:37-37`);
+- send a finding to the general comment with `anchor="general"`.
+
+You cannot add findings, and you should not delete a block: the tool refuses both, with line-numbered errors.
+`code-review.json` and `comments.md` are never changed; the draft's hash shows whether it was edited.
 
 ```bash
 RUN_DIR=.agentic-sdlc/runtime/source-review/source-review-pr42-1
 
-# Preview the exact request; no GitHub write.
+# Check the draft and print the exact request; reads GitHub, writes nothing.
 python3 .agentic-sdlc/scripts/publish_source_review.py "$RUN_DIR"
 
-# Explicitly post the reviewed feedback.
+# Post it.
 python3 .agentic-sdlc/scripts/publish_source_review.py "$RUN_DIR" --publish
 ```
 
 ```mermaid
 flowchart LR
-    RUN["Reviewed run directory"] --> PRE["Preview<br/>no GitHub write"]
-    PRE --> POST["--publish"]
-    POST --> CHK["Check the comments hash<br/>and the open PR's base and head"]
-    CHK --> REVW["One COMMENT review<br/>at the exact commit"]
+    DR["review-draft.md<br/>(edited by a person)"] --> PARSE["Strict parse"]
+    PARSE --> PR{"PR head or base<br/>moved?"}
+    PR -- no --> LOC["Check each location<br/>against GitHub's current diff"]
+    PR -- yes --> CUR["Per finding: are its lines<br/>unchanged at the new head?"]
+    CUR --> LOC
+    LOC --> REVW["One atomic COMMENT review:<br/>general comment + comments beside the code"]
     REVW --> REC["publication.json receipt"]
 ```
 
-Publishing needs GitHub pull-request write permission. It verifies the comments hash, rechecks that the PR is open
-at the same base and head, and posts with an exact `commit_id` and `event=COMMENT`. It never approves or requests
-changes. It lists all review pages and reuses an earlier review that carries the same base and head marker, so a
-retry does not duplicate. A local exclusive lock stops concurrent publication of the same run; after a crash, inspect
-GitHub before removing `publication.lock`. The GitHub API has no transactional post-if-unchanged operation, so
-serialize publication across run directories for the same PR. A push can race the final check, but the posted review
-stays bound to its original commit. See [GitHub's create-review API](https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request).
+Before posting, the tool checks every location against GitHub's own diff for the PR (`pulls/{n}/files`). A location
+that no longer fits moves to the general comment instead of failing the review. The general comment and all
+comments beside the code are then created in **one request**, so a large PR produces one notification and never
+ends up half-posted. If GitHub still rejects the request, nothing is posted and a rerun is safe.
+
+If the PR's head or base **moved** after the review, the tool fetches the new tips into the run's private object
+store and checks each finding separately:
+
+| Result | Meaning | What is published |
+|---|---|---|
+| `CURRENT` | The commented lines are identical at the new head, possibly shifted | The comment at the shifted lines on the new head, noting both commits |
+| `CHANGED` | The commented lines were edited, or lines were inserted inside them | Listed in the general comment as needing a new review |
+| `CONTEXT_CHANGED` | Lines unchanged, but a file the mapper related to them changed | Held like `CHANGED`, unless you pass `--include-context-changed` |
+| `GONE` | The file was deleted or renamed | Listed in the general comment |
+
+This proves only that the commented code is textually unchanged. A change elsewhere can still fix or invalidate a
+finding; only a new review run can judge that.
+
+Guarantees:
+- The review is always `event=COMMENT`. The tool never approves, requests changes, dismisses, edits, deletes or
+  resolves anything. An allow-list refuses any other GitHub call.
+- A rerun finds the earlier review by its hidden base and head marker and reuses it instead of posting again.
+- A local exclusive lock stops concurrent publication of the same run. After a crash, inspect GitHub before removing
+  `publication.lock`.
+- `publication.json` records the review, the commit it was posted at, and what happened to each finding (beside the
+  code, general comment, held or omitted, with the reason). It also records whether the draft was edited.
+
+Publishing needs pull-request write permission for the `gh` account, and the review is posted as that account. If
+branch protection requires **conversation resolution before merging**, each comment beside the code must be resolved
+before the PR can merge; the general comment is not a thread. See [GitHub's create-review API](https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request).
 
 ## Configuration
 
@@ -329,7 +383,8 @@ candidate counts and duplicate handling can differ. Fixture artifacts cannot be 
 
 The suite covers routing overrides, contracts, validation accounting, deduplication, source export from real Git
 commits, preservation of a dirty checkout, write-guard symlink escapes, the five-stage pipeline, coverage
-propagation, stale or tampered publication, publication retries and failed-run evidence:
+propagation, placement in the diff, draft parsing and reviewer edits, the GitHub call allow-list, the per-finding
+check after the PR moves (with real Git commits), publication retries and failed-run evidence:
 
 ```bash
 python3 -m unittest discover -s tests -v

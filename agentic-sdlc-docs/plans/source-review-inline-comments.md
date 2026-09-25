@@ -1,7 +1,7 @@
 # Plan: source-review comments alongside the code on GitHub
 
-Status: accepted 2026-09-25 (all decisions in section 3 as written); implementation in progress on
-`feature/source-review-inline-comments`.
+Status: accepted 2026-09-25 (all decisions in section 3 as written); implemented and live-verified on
+`feature/source-review-inline-comments` (see section 9).
 
 ## 1. Goal and target flow
 
@@ -201,3 +201,19 @@ The source-review guide (Results, Human decisions, Publishing to GitHub), the co
 GitHub `suggestion` blocks or any code change (the workflow does not implement fixes),
 approving or requesting changes, resolving or replying to threads, GitHub Enterprise,
 judging semantic relevance after the head moves (that needs a new review run).
+
+## 9. Progress notes (2026-09-25)
+
+- Milestones 1-4 are done in one commit. `hunk_ranges` exists in both the workflow and the tool and is
+  parity-tested. The regression suite has 216 tests and passes in both test modes.
+- Deviation from section 4.3: `CHANGED` means the commented lines were edited or lines were inserted
+  inside them. The surrounding hunk is not considered. A final line-by-line comparison double-checks
+  every `CURRENT` result.
+- Milestone 5 was run live on PR #2 and recorded in `verification/source-review-live.md`. `publish="no"`,
+  `GONE`, a moved base and a rejected request are covered only by tests. The fallback that splits a very
+  large review was not needed and is not built.
+- Milestone 6 (docs) is done: guide, contract, policy and README.
+- Follow-up idea: when a finding's range only partly overlaps a changed section (PR #2's repository
+  finding), the placement could clip it to the overlap instead of using the general comment. For now the
+  reviewer can re-anchor it in the draft.
+

@@ -120,3 +120,45 @@ Limits of the live PR run: stale-head handling and retry after a crash are still
 covered only by local tests with mocked API responses. One live PR with two planted defects shows the reviewer and routing
 behave correctly on a real GitHub PR. It does not measure precision or recall across
 realistic PRs. Missing context can still cause conservative coverage gaps or human routing.
+
+## Comments beside the code (PR #2)
+
+Run `source-review-inline-pr2-1` (2026-09-25, 4 min 27 s) reviewed draft
+[PR #2](https://github.com/somr/awscao_agenticwflw/pull/2) at head `bc4a669` with the
+workflow from `feature/source-review-inline-comments`. The PR is a test PR that must never be
+merged. It carries PR #1's two planted defects plus a third: `self._conn.commit()` deleted
+from `PaymentRepository.record_if_new`.
+
+| Answer key | Found | Placement |
+|---|---|---|
+| Missing or empty signature skips HMAC verification | HIGH, `HUMAN_REQUIRED` | Beside the code, RIGHT 30-34 |
+| `_recent_fulfilments` off-by-one | LOW, `AUTO_FIX` | Beside the code, RIGHT 19-22 |
+| Deleted `commit()` loses idempotency inserts | HIGH, `HUMAN_REQUIRED` | General comment: the reviewer anchored the whole `try` block (head 30-42), which extends past the changed section |
+
+`review-draft.md` listed the two `HUMAN_REQUIRED` findings first and named the one placed in
+the general comment. Acting as the human reviewer, the draft was edited:
+- the general comment got a reviewer summary;
+- the off-by-one comment got a reviewer note;
+- the repository finding was re-anchored to the deleted line (`repository.py:LEFT:37-37`).
+
+A preview then placed all three findings beside the code.
+
+The PR was then moved on purpose (head `c78b8e2`): the signature-check line got a trailing
+comment, and two lines were inserted above the off-by-one helper. The preview reported:
+
+| Finding | Result |
+|---|---|
+| Signature bypass | `CHANGED`, held and listed as needing a new review |
+| Off-by-one | `CURRENT`, placed at the shifted lines 21-24 with a "reviewed at / unchanged at" note |
+| Deleted `commit()` | `CONTEXT_CHANGED`: the mapper related `callback_controller.py` to `repository.py`, and it changed |
+
+The change in `callback_controller.py` was only a code comment, so the reviewer published
+with `--include-context-changed`. One request created review 5316992580, `COMMENTED`, at
+`c78b8e2`. It holds the general comment and two comments beside the code: `repository.py`
+LEFT 37 (a deleted line) and `fulfilment_service.py` RIGHT 21-24. The held finding appears
+in the general comment. A second `--publish` reused the same review. Afterwards the PR
+showed no review decision and a `CLEAN` merge state. `publication.json` recorded the edited
+draft, each finding's outcome and the commit.
+
+Not exercised live (covered by the regression suite): `publish="no"`, the `GONE` result, a
+moved base, and a request rejected by GitHub.
