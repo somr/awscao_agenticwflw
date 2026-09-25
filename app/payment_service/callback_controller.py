@@ -28,7 +28,7 @@ class CallbackController:
         self._webhook_secret = webhook_secret
 
     def handle(self, body: dict[str, Any], signature: str | None = None) -> dict[str, Any]:
-        if self._webhook_secret is not None and signature:
+        if self._webhook_secret is not None and signature:  # verify signed callbacks
             expected = hmac.new(self._webhook_secret, _canonical_body(body), hashlib.sha256).hexdigest()
             if not hmac.compare_digest(expected, signature):
                 raise PermissionError("invalid callback signature")

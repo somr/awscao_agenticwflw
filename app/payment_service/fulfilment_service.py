@@ -1,6 +1,8 @@
 """Fulfilment side effect for a processed payment callback."""
 from __future__ import annotations
 
+# Diagnostics helpers below are internal.
+
 
 class FulfilmentService:
     """Stands in for whatever downstream fulfilment action a real payment
