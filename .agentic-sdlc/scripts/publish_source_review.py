@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 MAX_BODY = 65536
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -50,7 +51,11 @@ def gh(endpoint: str, *, payload: dict | None = None, paginate: bool = False):
     result = subprocess.run(args, input=json.dumps(payload) if payload is not None else None,
                             text=True, capture_output=True, timeout=120)
     if result.returncode:
-        raise ValueError(f"GitHub request failed: {result.stderr[:1000]}")
+        if payload is not None:
+            raise ValueError("GitHub rejected the review, so nothing was posted. Fix the cause and rerun "
+                             f"(a rerun is safe): {result.stderr[:1000]}")
+        raise ValueError(f"GitHub request failed ({endpoint}); check `gh auth status` and access to the PR: "
+                         f"{result.stderr[:1000]}")
     return json.loads(result.stdout)
 
 
@@ -186,12 +191,16 @@ def fetch_current(root: Path, snapshot: dict, head: str, base: str) -> str:
 # --- Plan the review ---------------------------------------------------------------
 def load(root: Path) -> tuple[dict, str]:
     report = json.loads((root / "code-review.json").read_text())
-    if report.get("status") != "REVIEWED":
-        raise ValueError("Only REVIEWED artifacts may be published; rerun stale/failed reviews")
+    # STALE only means the PR moved or closed before the run finished. A closed PR is refused
+    # later, and a moved one gets the same per-finding check as a move after the run.
+    if report.get("status") not in {"REVIEWED", "STALE"}:
+        raise ValueError("Only REVIEWED or STALE review results can be published")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}", str(report.get("run_id", ""))):
+        raise ValueError("code-review.json has no valid run_id")
     snapshot = report["snapshot"]
     repository, number = snapshot["repository"], snapshot["pr_number"]
     if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
-        raise ValueError("Publication requires a GitHub PR artifact")
+        raise ValueError("This run reviewed a local fixture, not a GitHub PR, so there is nothing to publish to")
     if not isinstance(number, str) or not re.fullmatch(r"[1-9][0-9]*", number):
         raise ValueError("Invalid PR number")
     for key in ("base_sha", "head_sha", "merge_base_sha"):
@@ -202,12 +211,15 @@ def load(root: Path) -> tuple[dict, str]:
         raise ValueError("comments.md differs from the reviewed artifact")
     draft_path = root / "review-draft.md"
     if not draft_path.is_file() or "draft_sha256" not in report:
-        raise ValueError("No review-draft.md: rerun the review with the current workflow")
+        raise ValueError("This run has no review-draft.md (it predates the publication draft); "
+                         "start a new review run with the current workflow")
     return report, draft_path.read_text()
 
 
-def marker(snapshot: dict) -> str:
-    return f"<!-- cao-source-review:{snapshot['base_sha']}:{snapshot['head_sha']} -->"
+def marker(report: dict) -> str:
+    """One review per run: a rerun of this run reuses it, a new run posts its own."""
+    snapshot = report["snapshot"]
+    return f"<!-- cao-source-review:{report['run_id']}:{snapshot['base_sha']}:{snapshot['head_sha']} -->"
 
 
 def link(repository: str, commit: str, path: str, start: int, end: int) -> str:
@@ -299,7 +311,7 @@ def plan_review(root: Path, report: dict, draft_text: str, metadata: dict, files
                      "\n".join(f"- `{h['id']}` ({h['status']}): {h['title']}" for h in held))
     if report["coverage_gaps"]:
         parts.append("## Coverage gaps\n\n" + "\n".join(f"- {gap}" for gap in report["coverage_gaps"]))
-    body = "\n\n".join(parts) + "\n\n" + marker(snapshot)
+    body = "\n\n".join(parts) + "\n\n" + marker(report)
     if len(body) > MAX_BODY:
         raise ValueError(f"General comment exceeds {MAX_BODY} characters; move findings beside the code or shorten it")
     request = {"commit_id": head, "event": "COMMENT", "body": body, "comments": comments}
@@ -327,7 +339,7 @@ def publish(root: Path, *, include_context_changed: bool = False) -> dict:
         pass
     try:
         pages = gh(endpoint + "/reviews?per_page=100", paginate=True)
-        existing = [review for page in pages for review in page if marker(report["snapshot"]) in (review.get("body") or "")]
+        existing = [review for page in pages for review in page if marker(report) in (review.get("body") or "")]
         receipt_path = root / "publication.json"
         previous = json.loads(receipt_path.read_text()) if receipt_path.is_file() else {}
         if not existing:
@@ -342,6 +354,8 @@ def publish(root: Path, *, include_context_changed: bool = False) -> dict:
             review = existing[0]
             receipt = {**previous, "review": review, "reused_existing": True}
             receipt.setdefault("request", None)
+            # Posted reviews are never edited, so later draft edits are not on GitHub.
+            receipt["unpublished_draft_edits"] = previous.get("draft_sha256") != plan["draft_sha256"]
         else:
             review = existing[0]
             receipt = {"review": review, "reused_existing": True, "request": None,
@@ -381,13 +395,25 @@ def main() -> None:
     root = args.run_directory.resolve()
     try:
         if args.publish:
-            print(json.dumps(publish(root, include_context_changed=args.include_context_changed), indent=2))
+            receipt = publish(root, include_context_changed=args.include_context_changed)
+            print(json.dumps(receipt, indent=2))
+            if receipt["reused_existing"]:
+                print(f"This run's review already exists ({receipt['review'].get('html_url', receipt['review']['id'])}); "
+                      "nothing new was posted.", file=sys.stderr)
+            if receipt.get("unpublished_draft_edits"):
+                print("review-draft.md changed after the review was posted; those edits are NOT on GitHub. "
+                      "Posted reviews are never edited: start a new review run to publish again.", file=sys.stderr)
         else:
             _, plan, _ = prepare(root, include_context_changed=args.include_context_changed)
             print(summary(plan))
             print(json.dumps(plan["request"], indent=2))
     except DraftError as exc:
         raise SystemExit(f"review-draft.md: {exc}")
+    except FileExistsError:
+        raise SystemExit(f"{root / 'publication.lock'} exists: another publication of this run is running or "
+                         "crashed. Check the PR on GitHub, then remove the lock and rerun.")
+    except (ValueError, OSError) as exc:
+        raise SystemExit(f"Not published: {exc}")
 
 
 if __name__ == "__main__":

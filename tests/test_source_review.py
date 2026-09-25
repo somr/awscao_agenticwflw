@@ -219,7 +219,7 @@ class PublicationTests(unittest.TestCase):
             routed = mod.route_finding(finding, self.snapshot, mapping)
             routed['placement'] = mod.place_finding(routed, hunks)
             self.findings.append(routed)
-        self.report = {'status': 'REVIEWED', 'snapshot': self.snapshot, 'summary': 'Three defects.',
+        self.report = {'status': 'REVIEWED', 'run_id': 'review-run-1', 'snapshot': self.snapshot, 'summary': 'Three defects.',
                        'findings': self.findings, 'coverage_gaps': ['Caller outside the snapshot'],
                        'coverage_status': 'INCOMPLETE',
                        'queues': {r: [f['stable_id'] for f in self.findings if f['route'] == r] for r in ('AUTO_FIX', 'HUMAN_REQUIRED')}}
@@ -278,7 +278,8 @@ class PublicationTests(unittest.TestCase):
         self.assertTrue(all(c['side'] == 'RIGHT' and c['path'] == 'code.py' for c in request['comments']))
         self.assertIn('## Findings not placed beside the code', request['body'])
         self.assertIn('Caller outside the snapshot', request['body'])
-        self.assertTrue(request['body'].endswith(publisher.marker(self.snapshot)))
+        self.assertTrue(request['body'].endswith(publisher.marker(self.report)))
+        self.assertIn('review-run-1', publisher.marker(self.report))
         self.assertFalse(plan['draft_edited'])
         for text in ('AUTO_FIX', 'HUMAN_REQUIRED'):
             self.assertNotIn(text, request['comments'][0]['body'].split('<details>')[0])
@@ -383,8 +384,50 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual((receipt['review']['id'], receipt['comments'][0]['html_url'][-4:]), (21, 'r301'))
         self.assertFalse((self.root / 'publication.lock').exists())
 
+    def test_new_run_on_same_pr_state_posts_its_own_review(self):
+        other_run = {**self.report, 'run_id': 'review-run-0'}
+        existing = [{'id': 20, 'body': 'older run ' + publisher.marker(other_run)}]
+        with patch.object(publisher, 'gh', side_effect=self.fake_github(existing, calls := [])):
+            receipt = publisher.publish(self.root)
+        self.assertFalse(receipt['reused_existing'])
+        self.assertEqual(sum(p is not None for _, p in calls), 1)
+
+    def test_edits_after_posting_are_reported_not_published(self):
+        with patch.object(publisher, 'gh', side_effect=self.fake_github([], calls := [])):
+            publisher.publish(self.root)
+            (self.root / 'review-draft.md').write_text(self.draft.replace('Explanation 1', 'Too late'))
+            again = publisher.publish(self.root)
+        self.assertTrue(again['reused_existing'])
+        self.assertTrue(again['unpublished_draft_edits'])
+        self.assertEqual(sum(p is not None for _, p in calls), 1)
+        self.assertNotIn('Too late', json.dumps(again['request']))
+
+    def test_stale_run_is_publishable_but_failed_or_unknown_is_not(self):
+        for status, allowed in (('STALE', True), ('FAILED', False), (None, False)):
+            report = {**self.report, 'status': status}
+            (self.root / 'code-review.json').write_text(json.dumps(report))
+            with self.subTest(status=status):
+                if allowed:
+                    self.assertEqual(publisher.load(self.root)[0]['status'], 'STALE')
+                else:
+                    with self.assertRaisesRegex(ValueError, 'REVIEWED or STALE'):
+                        publisher.load(self.root)
+
+    def test_cli_reports_errors_without_tracebacks(self):
+        (self.root / 'publication.lock').write_text('')
+        for argv, side_effect, expected in (
+                (['--publish'], None, 'publication.lock exists'),
+                ([], ValueError('GitHub request failed (x)'), 'Not published: GitHub request failed'),
+                ([], publisher.DraftError('line 9: bad anchor'), 'review-draft.md: line 9: bad anchor')):
+            with self.subTest(expected=expected), patch.object(sys, 'argv', ['publish', str(self.root), *argv]):
+                with patch.object(publisher, 'prepare', side_effect=side_effect,
+                                  return_value=(self.report, self.plan(), 'repos/owner/repo/pulls/7')):
+                    with self.assertRaises(SystemExit) as raised:
+                        publisher.main()
+                self.assertIn(expected, str(raised.exception.code))
+
     def test_reused_review_without_receipt_never_claims_todays_plan(self):
-        existing = [{'id': 21, 'body': 'earlier ' + publisher.marker(self.snapshot)}]
+        existing = [{'id': 21, 'body': 'earlier ' + publisher.marker(self.report)}]
         with patch.object(publisher, 'gh', side_effect=self.fake_github(existing, calls := [])):
             receipt = publisher.publish(self.root)
         self.assertTrue(receipt['reused_existing'])
@@ -447,7 +490,7 @@ class CurrencyTests(unittest.TestCase):
                    'line_end': 12, 'severity': 'LOW', 'confidence': 0.95, 'comment': 'Explain'}
         routed = mod.route_finding(finding, snapshot, mapping)
         routed['placement'] = mod.place_finding(routed, {'code.py': {'LEFT': [], 'RIGHT': [(1, 21)]}})
-        report = {'status': 'REVIEWED', 'snapshot': snapshot, 'summary': 'One', 'findings': [routed],
+        report = {'status': 'REVIEWED', 'run_id': 'run-1', 'snapshot': snapshot, 'summary': 'One', 'findings': [routed],
                   'coverage_gaps': [], 'coverage_status': 'COMPLETE', 'draft_sha256': ''}
         draft = mod.render_draft(report)
         metadata = {'state': 'open', 'head': {'sha': new}, 'base': {'sha': 'a' * 40}}
