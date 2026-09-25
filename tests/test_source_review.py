@@ -190,40 +190,254 @@ class ReviewTests(unittest.TestCase):
         merged = {'decisions': [], 'coverage_gaps': [{'gap': 'a and b', 'covers': ['G1', 'G2']}, {'gap': 'new', 'covers': []}]}
         self.assertIs(mod.adjudication_contract(merged, [], self.work, self.snapshot, self.mapping, reported), merged)
 
-    def write_report(self):
-        report = {'status': 'REVIEWED', 'snapshot': self.snapshot,
-                  'comments_sha256': mod.hashlib.sha256(b'Review\n').hexdigest()}
-        (self.root / 'code-review.json').write_text(json.dumps(report))
+
+def git_in(repo, *args):
+    return subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+class PublicationTests(unittest.TestCase):
+    """Draft rendering/parsing, placement and the single COMMENT review request."""
+
+    PATCH = '@@ -1,2 +1,3 @@\n def count(x):\n-    return x\n+    y = x\n+    return y + 1\n@@ -10,3 +11,4 @@\n a\n+b\n c\n d\n'
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.snapshot = {'repository': 'owner/repo', 'pr_number': '7', 'pr_url': 'https://github.com/owner/repo/pull/7',
+                         'base_sha': 'a' * 40, 'head_sha': 'b' * 40, 'merge_base_sha': 'a' * 40,
+                         'changed_files': ['code.py'], 'coverage_gaps': []}
+        mapping = {'files': [{'file': 'code.py', 'scope': 'SOURCE', 'sensitive_boundaries': [], 'related_files': []}]}
+        hunks = {'code.py': mod.hunk_ranges(self.PATCH)}
+        self.findings = []
+        for index, (severity, lines, side) in enumerate([('LOW', (2, 3), 'head'), ('HIGH', (12, 12), 'head'),
+                                                         ('MEDIUM', (20, 21), 'head')]):
+            finding = {**mod.FINDING_SHAPE, 'candidate_id': f'C{index}', 'file': 'code.py', 'side': side,
+                       'line_start': lines[0], 'line_end': lines[1], 'severity': severity, 'confidence': 0.95,
+                       'title': f'Defect {index}', 'failure_scenario': f'Scenario {index}', 'symbol': 'count',
+                       'comment': f'Explanation {index}'}
+            routed = mod.route_finding(finding, self.snapshot, mapping)
+            routed['placement'] = mod.place_finding(routed, hunks)
+            self.findings.append(routed)
+        self.report = {'status': 'REVIEWED', 'snapshot': self.snapshot, 'summary': 'Three defects.',
+                       'findings': self.findings, 'coverage_gaps': ['Caller outside the snapshot'],
+                       'coverage_status': 'INCOMPLETE',
+                       'queues': {r: [f['stable_id'] for f in self.findings if f['route'] == r] for r in ('AUTO_FIX', 'HUMAN_REQUIRED')}}
+        self.report['comments_sha256'] = mod.hashlib.sha256(b'Review\n').hexdigest()
+        self.draft = mod.render_draft(self.report)
+        self.report['draft_sha256'] = mod.hashlib.sha256(self.draft.encode()).hexdigest()
+        (self.root / 'code-review.json').write_text(json.dumps(self.report))
         (self.root / 'comments.md').write_text('Review\n')
+        (self.root / 'review-draft.md').write_text(self.draft)
+        self.metadata = {'state': 'open', 'head': {'sha': 'b' * 40}, 'base': {'sha': 'a' * 40}}
+        self.files = [{'filename': 'code.py', 'status': 'modified', 'patch': self.PATCH}]
 
-    def test_publication_refuses_stale_head_and_tampered_comments(self):
-        self.write_report()
-        with patch.object(publisher, 'gh', return_value={'state': 'open', 'head': {'sha': 'c'*40}, 'base': {'sha': 'a'*40}}) as api:
-            with self.assertRaisesRegex(ValueError, 'changed'):
-                publisher.publish(self.root)
-            self.assertEqual(api.call_count, 1)
-        (self.root / 'comments.md').write_text('Tampered')
+    def plan(self, draft=None, metadata=None, files=None, **kwargs):
+        return publisher.plan_review(self.root, self.report, draft if draft is not None else self.draft,
+                                     metadata or self.metadata, files if files is not None else self.files, **kwargs)
+
+    def test_hunk_ranges_match_github_rules_and_parity(self):
+        corpus = [self.PATCH, '@@ -0,0 +1,2 @@\n+a\n+b\n', '@@ -1,2 +0,0 @@\n-a\n-b\n', '@@ -3 +3 @@\n-a\n+b\n\\ No newline at end of file\n']
+        for patch_text in corpus:
+            self.assertEqual(mod.hunk_ranges(patch_text), publisher.hunk_ranges(patch_text))
+        self.assertEqual(mod.hunk_ranges(self.PATCH), {'LEFT': [(1, 2), (10, 12)], 'RIGHT': [(1, 3), (11, 14)]})
+        diff = ('diff --git a/new.py b/new.py\nnew file mode 100644\n--- /dev/null\n+++ b/new.py\n@@ -0,0 +1,2 @@\n+a\n+b\n'
+                'diff --git a/gone.py b/gone.py\ndeleted file mode 100644\n--- a/gone.py\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n'
+                'diff --git "a/odd\\tname" "b/odd\\tname"\n--- "a/odd\\tname"\n+++ "b/odd\\tname"\n@@ -1 +1 @@\n-a\n+b\n')
+        self.assertEqual(mod.diff_hunks(diff), {'new.py': {'LEFT': [], 'RIGHT': [(1, 2)]},
+                                                'gone.py': {'LEFT': [(1, 2)], 'RIGHT': []}})
+
+    def test_placement_requires_one_hunk_on_the_findings_side(self):
+        hunks = {'code.py': mod.hunk_ranges(self.PATCH)}
+        cases = [((2, 3), 'head', 'INLINE'), ((3, 12), 'head', 'GENERAL'), ((10, 10), 'base', 'INLINE'),
+                 ((4, 4), 'head', 'GENERAL'), ((13, 14), 'head', 'INLINE')]
+        for (start, end), side, mode in cases:
+            with self.subTest(lines=(start, end), side=side):
+                self.assertEqual(mod.place_finding({'file': 'code.py', 'side': side, 'line_start': start, 'line_end': end}, hunks)['mode'], mode)
+        self.assertEqual(mod.place_finding({'file': 'other.py', 'side': 'head', 'line_start': 1, 'line_end': 1}, hunks)['mode'], 'GENERAL')
+
+    def test_draft_orders_by_attention_and_round_trips(self):
+        high = self.findings[1]
+        self.assertEqual(high['route'], 'HUMAN_REQUIRED')
+        self.assertLess(self.draft.index(high['stable_id']), self.draft.index(self.findings[0]['stable_id']))
+        self.assertIn('## Needs your decision (1)', self.draft)
+        self.assertIn('## Placed in the general comment, not beside the code (1)', self.draft)
+        parsed = publisher.parse_draft(self.draft, self.report)
+        self.assertIn('Three defects.', parsed['general'])
+        by_id = {f['id']: f for f in parsed['findings']}
+        for finding in self.findings:
+            self.assertEqual(by_id[finding['stable_id']]['body'], mod.draft_comment(finding))
+            self.assertTrue(by_id[finding['stable_id']]['publish'])
+        self.assertIsNone(by_id[self.findings[2]['stable_id']]['anchor'])
+
+    def test_unedited_draft_builds_one_comment_review(self):
+        plan = self.plan()
+        request = plan['request']
+        self.assertEqual((request['event'], request['commit_id']), ('COMMENT', 'b' * 40))
+        self.assertEqual(sorted((c['line'], c.get('start_line')) for c in request['comments']), [(3, 2), (12, None)])
+        self.assertTrue(all(c['side'] == 'RIGHT' and c['path'] == 'code.py' for c in request['comments']))
+        self.assertIn('## Findings not placed beside the code', request['body'])
+        self.assertIn('Caller outside the snapshot', request['body'])
+        self.assertTrue(request['body'].endswith(publisher.marker(self.snapshot)))
+        self.assertFalse(plan['draft_edited'])
+        for text in ('AUTO_FIX', 'HUMAN_REQUIRED'):
+            self.assertNotIn(text, request['comments'][0]['body'].split('<details>')[0])
+
+    def test_reviewer_edits_are_published_and_recorded(self):
+        low, high, medium = (f['stable_id'] for f in self.findings)
+        draft = self.draft.replace('Explanation 1', 'Reworded by the reviewer')
+        draft = draft.replace(f'id="{low}" publish="yes"', f'id="{low}" publish="no"').replace(
+            f'id="{low}" publish="no" anchor="code.py:RIGHT:2-3" reason=""', f'id="{low}" publish="no" anchor="code.py:RIGHT:2-3" reason="false positive"')
+        draft = draft.replace(f'id="{high}" publish="yes" anchor="code.py:RIGHT:12-12"', f'id="{high}" publish="yes" anchor="code.py:RIGHT:13-14"')
+        draft = draft.replace('Three defects.', 'Three defects. Reviewer note: please add tests.')
+        plan = self.plan(draft)
+        self.assertTrue(plan['draft_edited'])
+        self.assertEqual(plan['omitted'], [{'id': low, 'reason': 'false positive'}])
+        [comment] = plan['request']['comments']
+        self.assertEqual((comment['start_line'], comment['line']), (13, 14))
+        self.assertIn('Reworded by the reviewer', comment['body'])
+        self.assertIn('Reviewer note', plan['request']['body'])
+        self.assertNotIn('Explanation 0', json.dumps(plan['request']))
+
+    def test_anchor_outside_current_diff_moves_to_general_not_failure(self):
+        high = self.findings[1]['stable_id']
+        draft = self.draft.replace(f'anchor="code.py:RIGHT:12-12"', 'anchor="code.py:RIGHT:5-6"')
+        plan = self.plan(draft)
+        self.assertEqual(len(plan['request']['comments']), 1)
+        self.assertIn({'id': high, 'outcome': 'GENERAL', 'reason': 'lines 5-6 are not within one changed section of the current diff'}, plan['decisions'])
+        without_patch = self.plan(files=[{'filename': 'code.py', 'status': 'modified'}])
+        self.assertEqual(without_patch['request']['comments'], [])
+
+    def test_draft_errors_are_line_numbered(self):
+        high = self.findings[1]['stable_id']
+        broken = {
+            'header': self.draft.replace('head="' + 'b' * 40, 'head="' + 'c' * 40),
+            'unknown id': self.draft.replace(f'id="{high}"', 'id="SR-0000000000000000"'),
+            'removed block': self.draft[:self.draft.index(f'<!-- finding id="{high}"')] + self.draft[self.draft.index('<!-- end finding -->', self.draft.index(high)) + 21:],
+            'bad publish': self.draft.replace(f'id="{high}" publish="yes"', f'id="{high}" publish="maybe"'),
+            'bad anchor': self.draft.replace('anchor="code.py:RIGHT:12-12"', 'anchor="code.py:12"'),
+            'unclosed': self.draft.rstrip().removesuffix('<!-- end finding -->'),
+            'empty body': self.draft.replace(mod.draft_comment(self.findings[1]), ''),
+            'extra attribute': self.draft.replace(f'id="{high}"', f'id="{high}" route="AUTO_FIX"'),
+            'no general': self.draft.replace('<!-- general -->', '').replace('<!-- end general -->', ''),
+        }
+        for name, text in broken.items():
+            with self.subTest(case=name), self.assertRaises(publisher.DraftError):
+                publisher.parse_draft(text, self.report)
+
+    def test_closed_pr_tampered_audit_and_missing_draft_are_refused(self):
+        with self.assertRaisesRegex(ValueError, 'closed'):
+            self.plan(metadata={**self.metadata, 'state': 'closed'})
+        (self.root / 'comments.md').write_text('Tampered\n')
         with self.assertRaisesRegex(ValueError, 'differs'):
-            publisher.build_payload(self.root)
+            publisher.load(self.root)
+        (self.root / 'comments.md').write_text('Review\n')
+        (self.root / 'review-draft.md').unlink()
+        with self.assertRaisesRegex(ValueError, 'review-draft.md'):
+            publisher.load(self.root)
 
-    def test_publication_deduplicates_existing_review(self):
-        self.write_report()
-        _, payload, marker = publisher.build_payload(self.root)
-        existing = {'id': 12, 'body': marker, 'commit_id': 'b'*40}
-        metadata = {'state': 'open', 'head': {'sha': 'b'*40}, 'base': {'sha': 'a'*40}}
-        with patch.object(publisher, 'gh', side_effect=[metadata, [[existing]]]) as api:
-            self.assertEqual(publisher.publish(self.root)['id'], 12)
-            self.assertEqual(api.call_count, 2)
-        self.assertEqual(payload['event'], 'COMMENT')
+    def test_gh_allows_only_reads_and_comment_reviews(self):
+        with patch.object(publisher.subprocess, 'run') as run:
+            for endpoint, payload in [('repos/o/r/pulls/7/comments', {'event': 'COMMENT'}),
+                                      ('repos/o/r/pulls/7/reviews', {'event': 'APPROVE'}),
+                                      ('repos/o/r/pulls/7/reviews', {'event': 'REQUEST_CHANGES'}),
+                                      ('repos/o/r/pulls/7/reviews', {'body': 'pending review'}),
+                                      ('repos/o/r/pulls/7/reviews/9/events', {'event': 'COMMENT'}),
+                                      ('repos/o/r/pulls/7/merge', {'event': 'COMMENT'})]:
+                with self.subTest(endpoint=endpoint, payload=payload), self.assertRaises(ValueError):
+                    publisher.gh(endpoint, payload=payload)
+            run.assert_not_called()
 
-    def test_publication_posts_only_comment_bound_to_head(self):
-        self.write_report()
-        metadata = {'state': 'open', 'head': {'sha': 'b'*40}, 'base': {'sha': 'a'*40}}
-        with patch.object(publisher, 'gh', side_effect=[metadata, [[]], {'id': 13}]) as api:
-            publisher.publish(self.root)
-            payload = api.call_args.kwargs['payload']
-            self.assertEqual(payload['event'], 'COMMENT')
-            self.assertEqual(payload['commit_id'], 'b'*40)
+    def test_publish_posts_once_and_reuses_on_retry(self):
+        calls = []
+
+        def fake(endpoint, payload=None, paginate=False):
+            calls.append((endpoint, payload))
+            if endpoint.endswith('/files?per_page=100'):
+                return [self.files]
+            if endpoint.endswith('/reviews?per_page=100'):
+                return [[{'id': 5, 'body': 'someone else'}]] if len(calls) < 5 else [[{'id': 21, 'body': posted['body']}]]
+            if payload is not None:
+                return {'id': 21, **payload}
+            return self.metadata
+        with patch.object(publisher, 'gh', side_effect=fake):
+            first = publisher.publish(self.root)
+            posted = next(p for _, p in calls if p is not None)
+            second = publisher.publish(self.root)
+        self.assertFalse(first['reused_existing'])
+        self.assertTrue(second['reused_existing'])
+        self.assertEqual(sum(p is not None for _, p in calls), 1)
+        self.assertEqual(posted['event'], 'COMMENT')
+        receipt = json.loads((self.root / 'publication.json').read_text())
+        self.assertEqual(receipt['review']['id'], 21)
+        self.assertFalse((self.root / 'publication.lock').exists())
+
+
+class CurrencyTests(unittest.TestCase):
+    """Per-finding check against a moved PR head, using real Git commits."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repo = self.root / 'objects.git'
+        self.repo.mkdir()
+        git_in(self.repo, 'init', '-q')
+        git_in(self.repo, 'config', 'user.name', 'Test')
+        git_in(self.repo, 'config', 'user.email', 'test@example.com')
+        self.lines = [f'line {i}' for i in range(1, 21)]
+        self.old = self.commit({'code.py': self.lines, 'helper.py': ['h = 1']})
+
+    def commit(self, files, remove=()):
+        for name, lines in files.items():
+            (self.repo / name).write_text('\n'.join(lines) + '\n')
+        for name in remove:
+            (self.repo / name).unlink()
+        git_in(self.repo, 'add', '-A')
+        git_in(self.repo, 'commit', '-qm', 'change')
+        return git_in(self.repo, 'rev-parse', 'HEAD')
+
+    def status(self, new, start=10, end=12):
+        return publisher.map_range(self.repo, self.old, new, 'code.py', start, end)
+
+    def test_unchanged_lines_follow_shifts(self):
+        new = self.commit({'code.py': ['inserted a', 'inserted b'] + self.lines[:15] + self.lines[16:]})
+        self.assertEqual(self.status(new), ('CURRENT', (12, 14)))
+
+    def test_edited_or_split_range_is_changed(self):
+        edited = self.commit({'code.py': self.lines[:10] + ['line 11 edited'] + self.lines[11:]})
+        self.assertEqual(self.status(edited)[0], 'CHANGED')
+        git_in(self.repo, 'checkout', '-q', self.old)
+        split = self.commit({'code.py': self.lines[:10] + ['wedge'] + self.lines[10:]})
+        self.assertEqual(self.status(split)[0], 'CHANGED')
+
+    def test_deleted_file_is_gone(self):
+        self.assertEqual(self.status(self.commit({}, remove=['code.py']))[0], 'GONE')
+
+    def test_moved_pr_places_current_holds_changed_and_context(self):
+        new = self.commit({'code.py': ['top'] + self.lines, 'helper.py': ['h = 2']})
+        snapshot = {'repository': 'owner/repo', 'pr_number': '7', 'pr_url': 'x', 'base_sha': 'a' * 40,
+                    'head_sha': self.old, 'merge_base_sha': 'a' * 40, 'changed_files': ['code.py'], 'coverage_gaps': []}
+        mapping = {'files': [{'file': 'code.py', 'scope': 'SOURCE', 'sensitive_boundaries': [], 'related_files': ['helper.py']}]}
+        (self.root / 'workspace').mkdir()
+        (self.root / 'workspace' / 'mapping.json').write_text(json.dumps(mapping))
+        finding = {**mod.FINDING_SHAPE, 'candidate_id': 'C1', 'file': 'code.py', 'side': 'head', 'line_start': 10,
+                   'line_end': 12, 'severity': 'LOW', 'confidence': 0.95, 'comment': 'Explain'}
+        routed = mod.route_finding(finding, snapshot, mapping)
+        routed['placement'] = mod.place_finding(routed, {'code.py': {'LEFT': [], 'RIGHT': [(1, 21)]}})
+        report = {'status': 'REVIEWED', 'snapshot': snapshot, 'summary': 'One', 'findings': [routed],
+                  'coverage_gaps': [], 'coverage_status': 'COMPLETE', 'draft_sha256': ''}
+        draft = mod.render_draft(report)
+        metadata = {'state': 'open', 'head': {'sha': new}, 'base': {'sha': 'a' * 40}}
+        files = [{'filename': 'code.py', 'status': 'modified', 'patch': '@@ -0,0 +1,21 @@\n'}]
+        with patch.object(publisher, 'fetch_current', return_value='a' * 40):
+            held = publisher.plan_review(self.root, report, draft, metadata, files)
+            placed = publisher.plan_review(self.root, report, draft, metadata, files, include_context_changed=True)
+        self.assertEqual(held['held'][0]['status'], 'CONTEXT_CHANGED')
+        self.assertIn('Not published because the code changed', held['request']['body'])
+        [comment] = placed['request']['comments']
+        self.assertEqual((comment['start_line'], comment['line'], placed['request']['commit_id']), (11, 13, new))
+        self.assertIn('these lines are unchanged', comment['body'])
 
 
 class SnapshotTests(unittest.TestCase):
@@ -320,6 +534,8 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(report['status'], 'REVIEWED')
         self.assertEqual(report['comments_sha256'], mod.hashlib.sha256((run / 'comments.md').read_bytes()).hexdigest())
         self.assertEqual(emit.call_args.args[0]['coverage_status'], 'INCOMPLETE')
+        self.assertEqual(report['draft_sha256'], mod.hashlib.sha256((run / 'review-draft.md').read_bytes()).hexdigest())
+        self.assertEqual(emit.call_args.args[0]['attention'], {'human_required': 0, 'general_only': 0, 'coverage_gaps': 1})
 
     def test_failed_agent_records_failure_not_clean_review(self):
         with patch.dict(os.environ, {'CAO_WORKFLOW_RUN_ID': 'test-failure'}), patch.object(mod, 'get_inputs', return_value=self.inputs), patch.object(mod, 'run_agents', side_effect=execution_error('missing answer')):

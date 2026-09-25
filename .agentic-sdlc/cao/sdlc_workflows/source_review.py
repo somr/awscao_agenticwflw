@@ -454,7 +454,9 @@ must appear exactly once across covers and snapshot_restatements.
 
     feedback = call("feedback", '''Read routed-findings.json. Write a concise source review summary
 and one plain-language explanation per finding. Preserve meaning; never invent fixes,
-change routing or claim approval/verification. Output {"summary":"...", "comments":[
+change routing or claim approval/verification. Address the PR author: each explanation
+may be posted beside the code on GitHub, so do not mention internal routing terms
+(AUTO_FIX, HUMAN_REQUIRED, routing, finding IDs) in it. Output {"summary":"...", "comments":[
 {"stable_id":"exact id", "explanation":"trigger, consequence and fix direction"}]}.
 Mention coverage limitations in the summary when present.''', feedback_contract)
     explanations = {c["stable_id"]: c["explanation"] for c in feedback["comments"]}
@@ -473,10 +475,7 @@ def render_comments(report: dict) -> str:
              f"Status: **{report['status']}**; coverage: **{report['coverage_status']}**.",
              "", report["summary"], "", "This review does not approve the PR or execute tests."]
     for finding in report["findings"]:
-        location = f"{finding['file']}:{finding['line_start']}-{finding['line_end']}"
-        if snapshot["repository"]:
-            commit = snapshot["head_sha"] if finding["side"] == "head" else snapshot["merge_base_sha"]
-            location = f"[{location}](https://github.com/{snapshot['repository']}/blob/{commit}/{quote(finding['file'], safe='/')}#L{finding['line_start']}-L{finding['line_end']})"
+        location = finding_link(finding, snapshot)
         lines.extend(["", f"## {finding['stable_id']} — {finding['severity']} — {finding['route']}",
                       "", f"**{finding['title']}** — {location}", "", finding["comment"], "",
                       f"Evidence: {finding['source_evidence']}",
@@ -487,6 +486,122 @@ def render_comments(report: dict) -> str:
                       "Routing: " + "; ".join(finding["routing_reasons"])])
     if report["coverage_gaps"]:
         lines.extend(["", "## Coverage gaps", ""] + [f"- {g}" for g in report["coverage_gaps"]])
+    return "\n".join(lines) + "\n"
+
+
+# --- Placement beside the code and the editable publication draft ------------
+HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+SEVERITY_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+
+
+def hunk_ranges(patch: str) -> dict[str, list[tuple[int, int]]]:
+    """Line ranges per side that GitHub accepts for review comments in one file's hunks.
+
+    RIGHT covers added and context lines of the head; LEFT covers removed and context
+    lines of the base. Keep in sync with publish_source_review.hunk_ranges.
+    """
+    ranges: dict[str, list[tuple[int, int]]] = {"LEFT": [], "RIGHT": []}
+    for line in patch.splitlines():
+        match = HUNK_HEADER.match(line)
+        if match:
+            for side, start, count in (("LEFT", match[1], match[2]), ("RIGHT", match[3], match[4])):
+                size = 1 if count is None else int(count)
+                if size:
+                    ranges[side].append((int(start), int(start) + size - 1))
+    return ranges
+
+
+def diff_hunks(diff: str) -> dict[str, dict[str, list[tuple[int, int]]]]:
+    """Split a git diff into per-file hunk ranges; quoted (unusual) paths are skipped."""
+    files: dict[str, dict[str, list[tuple[int, int]]]] = {}
+    path, old, body = None, None, []
+
+    def flush():
+        if path is not None and not path.startswith('"'):
+            files[path] = hunk_ranges("\n".join(body))
+
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            flush()
+            path, old, body = None, None, []
+        elif line.startswith("--- ") and path is None and not body:
+            old = line[4:].removeprefix("a/")
+        elif line.startswith("+++ ") and path is None and not body:
+            new = line[4:]
+            path = old if new == "/dev/null" else new.removeprefix("b/")
+        elif path is not None:
+            body.append(line)
+    flush()
+    return files
+
+
+def place_finding(finding: dict, hunks: dict) -> dict:
+    """Deterministic anchor: inline only when the whole range sits in one hunk on its side."""
+    side = "RIGHT" if finding["side"] == "head" else "LEFT"
+    start, end = finding["line_start"], finding["line_end"]
+    if finding["file"] not in hunks:
+        return {"mode": "GENERAL", "reason": "File has no changed lines in the diff"}
+    if not any(low <= start and end <= high for low, high in hunks[finding["file"]][side]):
+        return {"mode": "GENERAL", "reason": f"Lines {start}-{end} are not within one changed section of the diff"}
+    return {"mode": "INLINE", "path": finding["file"], "side": side, "line_start": start, "line_end": end}
+
+
+def attention_order(findings: list[dict]) -> list[dict]:
+    return sorted(findings, key=lambda f: (f["route"] != "HUMAN_REQUIRED", SEVERITY_ORDER[f["severity"]],
+                                          -f["confidence"], f["file"], f["line_start"]))
+
+
+def finding_link(finding: dict, snapshot: dict) -> str:
+    location = f"{finding['file']}:{finding['line_start']}-{finding['line_end']}"
+    if not snapshot["repository"]:
+        return location
+    commit = snapshot["head_sha"] if finding["side"] == "head" else snapshot["merge_base_sha"]
+    return (f"[{location}](https://github.com/{snapshot['repository']}/blob/{commit}/"
+            f"{quote(finding['file'], safe='/')}#L{finding['line_start']}-L{finding['line_end']})")
+
+
+def draft_comment(finding: dict) -> str:
+    """Text addressed to the PR author; internal routing stays in a collapsed block."""
+    details = [f"- Finding: `{finding['stable_id']}` ({finding['category']}, confidence {finding['confidence']:.2f})",
+               f"- Failure scenario: {finding['failure_scenario']}",
+               f"- Evidence: {finding['source_evidence']}",
+               f"- Consequence: {finding['consequence']}",
+               f"- Route: {finding['route']} ({'; '.join(finding['routing_reasons'])})"]
+    return "\n".join([f"**{finding['title']}** ({finding['severity']})", "", finding["comment"], "",
+                      f"**Fix direction:** {finding['remediation_direction']}", "",
+                      f"**Suggested verification:** {finding['verification_method']}", "",
+                      "<details><summary>Review details</summary>", "", *details, "", "</details>"])
+
+
+def render_draft(report: dict) -> str:
+    """Editable publication draft. Only the marked blocks are parsed and published."""
+    snapshot = report["snapshot"]
+    ordered = attention_order(report["findings"])
+    human = [f for f in ordered if f["route"] == "HUMAN_REQUIRED"]
+    general = [f for f in ordered if f["placement"]["mode"] == "GENERAL"]
+    pr = (f"{snapshot['repository']}#{snapshot['pr_number']}" if snapshot["repository"]
+          else "local fixture (cannot be published)")
+    lines = [f"<!-- cao-source-review-draft base=\"{snapshot['base_sha']}\" head=\"{snapshot['head_sha']}\" -->",
+             f"# Review draft: {pr} at `{snapshot['head_sha'][:12]}`", "",
+             "Edit the text inside the marked blocks. Per finding you may set `publish=\"no\"` (with an",
+             "optional `reason`), change `anchor` to another `path:RIGHT|LEFT:start-end` inside the diff,",
+             "or set `anchor=\"general\"`. Text outside the blocks is ignored. Adding findings is not",
+             "supported: put your own remarks in the general comment. Check with",
+             "`python3 .agentic-sdlc/scripts/publish_source_review.py <run-dir>` before `--publish`.", "",
+             f"## Needs your decision ({len(human)})", ""]
+    lines += [f"- `{f['stable_id']}` {f['severity']}: {f['title']} ({f['file']}:{f['line_start']})"
+              for f in human] or ["- None"]
+    lines += ["", f"## Placed in the general comment, not beside the code ({len(general)})", ""]
+    lines += [f"- `{f['stable_id']}`: {f['placement']['reason']}" for f in general] or ["- None"]
+    lines += ["", f"Coverage: {report['coverage_status']}, {len(report['coverage_gaps'])} gap(s), listed in the general comment.",
+              "", "<!-- general -->", report["summary"], "",
+              "This review does not approve the PR or execute tests.", "<!-- end general -->"]
+    for finding in ordered:
+        placement = finding["placement"]
+        anchor = ("general" if placement["mode"] == "GENERAL" else
+                  f"{placement['path']}:{placement['side']}:{placement['line_start']}-{placement['line_end']}")
+        lines += ["", f"<!-- finding id=\"{finding['stable_id']}\" publish=\"yes\" anchor=\"{anchor}\" reason=\"\" -->",
+                  draft_comment(finding), "<!-- end finding -->"]
     return "\n".join(lines) + "\n"
 
 
@@ -513,13 +628,22 @@ def main() -> None:
         report = run_agents(root / "workspace", snapshot)
         report["run_id"] = run_id
         report["status"] = "REVIEWED" if current_pr_matches(snapshot) else "STALE"
+        hunks = diff_hunks((root / "workspace" / "diff.patch").read_text(encoding="utf-8", errors="replace"))
+        for finding in report["findings"]:
+            finding["placement"] = place_finding(finding, hunks)
         comments = render_comments(report).rstrip() + "\n"
+        draft = render_draft(report)
         report["comments_sha256"] = hashlib.sha256(comments.encode()).hexdigest()
+        report["draft_sha256"] = hashlib.sha256(draft.encode()).hexdigest()
         _write_json(root / "code-review.json", report)
         _write_text(root / "comments.md", comments)
+        _write_text(root / "review-draft.md", draft)
         emit_output({"status": report["status"], "coverage_status": report["coverage_status"],
                      "review": str(root / "code-review.json"), "comments": str(root / "comments.md"),
-                     "queues": report["queues"]})
+                     "draft": str(root / "review-draft.md"), "queues": report["queues"],
+                     "attention": {"human_required": len(report["queues"]["HUMAN_REQUIRED"]),
+                                   "general_only": sum(f["placement"]["mode"] == "GENERAL" for f in report["findings"]),
+                                   "coverage_gaps": len(report["coverage_gaps"])}})
     except Exception as exc:
         _write_json(root / "failure.json", {"status": "FAILED", "coverage_status": "INCOMPLETE",
                                            "error": str(exc), "run_id": run_id})
