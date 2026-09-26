@@ -1,6 +1,6 @@
 ---
 name: sdlc_source_validator
-description: Source-only PR review validator for Workflow 3.
+description: Accepts, rejects or deduplicates each candidate finding against the source for the Source review workflow and reassesses fix eligibility.
 provider: claude_code
 role: reviewer
 allowedTools: ["fs_read", "fs_list", "fs_write"]

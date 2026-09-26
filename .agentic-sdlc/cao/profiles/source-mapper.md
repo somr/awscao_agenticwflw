@@ -1,6 +1,6 @@
 ---
 name: sdlc_source_mapper
-description: Source-only PR review mapper for Workflow 3.
+description: Maps a pinned PR's changed files, callers, coverage gaps and sensitive boundaries for the Source review workflow.
 provider: claude_code
 role: reviewer
 allowedTools: ["fs_read", "fs_list", "fs_write"]

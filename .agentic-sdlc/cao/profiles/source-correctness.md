@@ -1,6 +1,6 @@
 ---
 name: sdlc_source_correctness
-description: Source-only PR review correctness for Workflow 3.
+description: Independently reviews a pinned PR for correctness regressions in production and test source for the Source review workflow.
 provider: claude_code
 role: reviewer
 allowedTools: ["fs_read", "fs_list", "fs_write"]

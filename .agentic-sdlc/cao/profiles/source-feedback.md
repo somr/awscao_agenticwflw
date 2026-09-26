@@ -1,6 +1,6 @@
 ---
 name: sdlc_source_feedback
-description: Source-only PR review feedback for Workflow 3.
+description: Explains validated findings in plain language for the PR author in the Source review workflow, without changing severity or routing.
 provider: claude_code
 role: reviewer
 allowedTools: ["fs_read", "fs_list", "fs_write"]

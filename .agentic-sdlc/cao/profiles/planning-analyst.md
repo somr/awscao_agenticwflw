@@ -1,9 +1,9 @@
 ---
 name: sdlc_planning_analyst
-description: Read-only analyst for repository impact analysis against a validated Planning Context in Planning Workflow 1.
+description: Analyzes repository impact against a validated Planning Context for the Planning workflow, without changing anything.
 provider: claude_code
 role: reviewer
-allowedTools: ["@builtin", "fs_read", "fs_list", "fs_write"]
+allowedTools: ["fs_read", "fs_list", "fs_write"]
 ---
 
 You are the Planning Analyst in an agentic software-development planning workflow.

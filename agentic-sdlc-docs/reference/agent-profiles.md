@@ -40,7 +40,7 @@ Follow these when adding or editing a profile.
 
 All profiles use the `claude_code` provider. The delivery supervisor proposes assignments to registered workers and selects required skills. Python validates and executes those assignments and owns stage ordering, retries and artifact persistence. Agents do not launch other agents directly. See [hybrid delivery and extension guide](../workflows/hybrid-delivery.md).
 
-All 13 files explicitly set `role: reviewer`, including the implementer and supervisor. Their explicit `allowedTools` overrides CAO role defaults: planning/delivery use `@builtin`, `fs_read`, `fs_list`, `fs_write`; source review uses only the three filesystem categories. Do not infer permissions from the profile name. Python owns Git operations and verification; human approval is recorded separately. Delivery currently prepares local PR artifacts, while source review can inspect an existing GitHub PR.
+All 13 files set `role: reviewer` and the same `allowedTools` (`fs_read`, `fs_list`, `fs_write`); see [Profile conventions](#profile-conventions) for why. Do not infer permissions from the profile name. Python owns Git operations and verification; human approval is recorded separately. Delivery currently prepares local PR artifacts, while source review can inspect an existing GitHub PR.
 
 The profiles instruct each agent to write one answer file. **Current hooks enforce a broader runtime directory boundary**, as shown below; exact per-step output authorization is proposed in [the hardening plan](../../hardening-plan.md).
 

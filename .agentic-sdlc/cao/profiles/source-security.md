@@ -1,6 +1,6 @@
 ---
 name: sdlc_source_security
-description: Source-only PR review security for Workflow 3.
+description: Independently reviews a pinned PR for security and reliability regressions for the Source review workflow.
 provider: claude_code
 role: reviewer
 allowedTools: ["fs_read", "fs_list", "fs_write"]
