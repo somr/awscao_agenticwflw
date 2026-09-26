@@ -1,6 +1,7 @@
 # Plan: consistent, simpler agent profiles
 
-Status: decisions accepted 2026-09-26 (section 3), not started. Each step is done, verified and reviewed with the user
+Status: decisions accepted 2026-09-26 (section 3); steps 1-2 done, step 3 edited but not reinstalled or verified live
+(see section 7). Each step is done, verified and reviewed with the user
 before the next.
 
 ## 1. Goal
@@ -72,3 +73,19 @@ instruction (F6). The wording chosen for a shared rule in the first of these ste
 
 Renaming profiles, changing any tool permission or write scope, changing workflow JSON contracts, a shared-blocks
 file or drift test, and a profile build step.
+
+## 7. Progress notes
+
+- 2026-09-26, step 1 (`3c89a59`): conventions added to `reference/agent-profiles.md`. Baseline: all 13 installed
+  profiles matched the repository.
+- 2026-09-26, step 2 (`fa55612`): descriptions and tool lists updated. CAO blocks exactly the same eight Claude Code
+  tools for every profile before and after (`Agent`, `Bash`, `BashOutput`, `KillShell`, `Monitor`, `Task`, `WebFetch`,
+  `WebSearch`). Not reinstalled yet; nothing in this step reaches the agents.
+- 2026-09-26, step 3 (commit after `fa55612`): the five source-review profiles rewritten. Shared wording chosen here,
+  to reuse in steps 4 and 5: the "effectively read-only" write rule, "Never run tests, a build or any other command
+  yourself: you have no execution, network or subagent tools.", and the strict-JSON checklist ending with "Use exactly
+  the JSON shape given in the task." The runtime already appends the answer path and the one-line confirmation to
+  every task, so profiles do not repeat them.
+- **Next (planned for 2026-09-27):** reinstall the source-review profiles with the upgrade steps (and the other eight
+  profiles with `cao install` for step 2), then run the step 3 live check.
+
