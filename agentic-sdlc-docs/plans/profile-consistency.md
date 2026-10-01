@@ -1,6 +1,6 @@
 # Plan: consistent, simpler agent profiles
 
-Status: decisions accepted 2026-09-26 (section 3); steps 1-2 done, step 3 edited but not reinstalled or verified live
+Status: **done 2026-10-01**: all six steps committed, all 13 profiles reinstalled and live-verified
 (see section 7). Each step is done, verified and reviewed with the user
 before the next.
 
@@ -86,6 +86,19 @@ file or drift test, and a profile build step.
   yourself: you have no execution, network or subagent tools.", and the strict-JSON checklist ending with "Use exactly
   the JSON shape given in the task." The runtime already appends the answer path and the one-line confirmation to
   every task, so profiles do not repeat them.
-- **Next (planned for 2026-09-27):** reinstall the source-review profiles with the upgrade steps (and the other eight
-  profiles with `cao install` for step 2), then run the step 3 live check.
-
+- 2026-10-01, reinstall: the five source-review profiles reinstalled with the upgrade steps (bundle unchanged), the
+  eight planning and delivery profiles with `cao install`. All 13 installed copies and both bundles match the
+  repository. 221 tests pass.
+- 2026-10-01, step 3 live check (`source-review-profiles-1`, fixture on PR #1's commits): the same two findings and
+  routes as `source-review-gapdedup-2` (HIGH HMAC bypass, HUMAN_REQUIRED; LOW off-by-one, AUTO_FIX); 5 coverage gaps
+  instead of 4. The agent-written feedback addresses the PR author without routing terms (F6 fixed).
+- 2026-10-01, step 4 (`f4ae709`): `code-supervisor` given the standard outline; shared write and no-command wording in
+  all four delivery profiles; write-scope pointer added to `remediator` and `pr-reviewer`. Live check
+  (`deliver-profiles-1`, hybrid, throwaway clone): `AWAITING_HUMAN_REVIEW`, 7 workers, 2 remediation rounds
+  (approved run 10 had 1), one MEDIUM `DEVELOPER_REQUIRED` testing finding left; all app tests pass on the branch.
+- 2026-10-01, step 5 (`34b5cc1`): shared write and no-command wording in the four planning profiles (the outline
+  already matched). Live check (`plan-profiles-1`, throwaway clone): `PASS` in review round 1 with 4 advisory
+  findings, about 9 minutes, comparable to approved run 24 (`PASS`, 5 advisories).
+- 2026-10-01, step 6 (`e277231`): workflow numbering removed from the hook comments, `build-and-install.md` and
+  `reference/agent-profiles.md`; catalog row for `sdlc_source_feedback` updated. Left as is: the planning prompt in
+  `planning.py` still says "Planning Workflow 1" (prompt text, would need a bundle reinstall and a new live run).
