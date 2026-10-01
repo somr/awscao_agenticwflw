@@ -21,7 +21,7 @@ Assessment reference: **2026-09-21, HEAD `abcea97` plus uncommitted changes**. T
 
 ## Should: isolate concurrent delivery runs
 
-**Finding:** Delivery switches branches in a shared checkout and writes ticket-level records. Sequential workers within one run do not prevent another run or a developer from changing the same checkout. Clean-tree checks cannot enforce exclusivity throughout execution.
+**Finding:** Delivery switches branches in a shared checkout and writes ticket-level records. Isolating the workers of one run in worktrees does not prevent another run or a developer from changing the same checkout. Clean-tree checks cannot enforce exclusivity throughout execution.
 
 **Mitigation:** Enforce an exclusive checkout lock for the simpler operating model, or allocate a separate worktree/clone and branch per run. Keep evidence run-specific and serialize promotion of ticket-level results with expected-version checks and atomic publication. Define ownership, stale-lock recovery, and interrupted-run handling. Until enforced, require exclusive use of the delivery checkout.
 
@@ -59,8 +59,8 @@ Assessment reference: **2026-09-21, HEAD `abcea97` plus uncommitted changes**. T
 
 **Reassess:** `grep -rn "Workflow [123]" .agentic-sdlc/` finds nothing, and the installed bundle matches the repository.
 
-## Won't for now: parallel workers and deployment automation
+## Won't for now: deployment automation
 
-These are deferred capabilities, not defects in the current learning scope. Parallel workers require isolated workspaces, task ownership, deterministic integration, and concurrency controls first. Deployment requires a separate environment-specific authority boundary, artifact-bound human approval where required, constrained credentials, idempotent operations, and recovery/rollback evidence.
+Parallel hybrid workers exist (per-task worktrees, declared ownership, ordered merges; see [the plan](agentic-sdlc-docs/plans/parallel-hybrid-workers.md)). Deployment remains a deferred capability, not a defect in the current learning scope. It requires a separate environment-specific authority boundary, artifact-bound human approval where required, constrained credentials, idempotent operations, and recovery/rollback evidence.
 
-**Reassess:** Revisit when a concrete throughput or release requirement justifies the capability and its prerequisite controls have evidence. Registry or skill changes alone do not authorize parallel shared-checkout writes or external-system mutations.
+**Reassess:** Revisit when a concrete throughput or release requirement justifies the capability and its prerequisite controls have evidence. Registry or skill changes alone do not authorize external-system mutations.

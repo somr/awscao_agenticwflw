@@ -24,7 +24,7 @@ flowchart TD
     A["Check the plan is approved,<br/>its hash and its baseline"] --> B["Create or resume<br/>branch sdlc/ticket"]
     B --> M{Implementation mode}
     M -- hybrid --> SUP[Code Supervisor assigns tasks]
-    SUP --> WK["Workers implement,<br/>one after another"]
+    SUP --> WK["Workers implement in waves;<br/>independent tasks at the same time"]
     WK --> INT[Integration pass]
     M -- single --> IMP[One Implementer]
     INT --> VER
@@ -49,9 +49,11 @@ flowchart TD
 1. **Check.** Python re-verifies that the plan is approved, that its hash matches, and that the approved baseline
    commit is still an ancestor of the base branch.
 2. **Branch.** Work happens on `sdlc/<ticket>`, created from the current tip of the base branch.
-3. **Implement.** In hybrid mode a read-only supervisor splits the plan into ordered assignments for registered
-   workers, Python dispatches them one after another, and an integration pass reconciles the result; in single mode
-   one implementer does everything. See [Specialists and skills](hybrid-delivery.md). Python commits the change.
+3. **Implement.** In hybrid mode a read-only supervisor splits the plan into assignments for registered workers.
+   Python groups the assignments that do not depend on each other into waves, runs the tasks of a wave at the same
+   time in separate Git worktrees, commits each task and merges the commits in task order; an integration pass then
+   reconciles the result. In single mode one implementer does everything. See
+   [Specialists and skills](hybrid-delivery.md). Python makes every commit.
 4. **Verify.** Python runs the registry's commands. One failure gets one repair turn; a second failure ends the run `BLOCKED`.
 5. **PR artifacts.** Title, body and diff are written locally. Nothing is pushed.
 6. **Review.** A separate read-only agent reviews the diff and classifies the findings. Python applies the routing
@@ -93,6 +95,7 @@ flowchart TD
 | `repository_root` | yes | The repository to change. CAO requires an existing directory and refuses system paths such as `/tmp`. |
 | `base_branch` | no, default `main` | The delivery branch starts from the current tip of this branch, and the plan's approved baseline must still be its ancestor. |
 | `implementation_mode` | no, default `hybrid` | `hybrid`: a supervisor assigns work to registered workers. `single`: one implementer does all the work and verification uses the registry's `application` suite. |
+| `hybrid_max_parallel` | no, default `4` | Hybrid mode only: at most this many workers of a wave run at the same time (1 to 4). `1` runs every task one after another in the main checkout. |
 
 ## Run
 
@@ -112,7 +115,7 @@ left on the delivery branch**, so return with `git checkout <base_branch>` befor
 Under `agentic-sdlc-records/<ticket_id>/`:
 
 ```text
-├── delivery-manifest.json   state, mode, source roots, verification results, review rounds, remediation history, PR head SHA
+├── delivery-manifest.json   state, mode, parallel width, task commits, source roots, verification results, review rounds, remediation history, PR head SHA
 ├── pr-title.txt, pr-body.md, pr-diff.patch      the local "pull request"
 ├── pr-review-r<N>.json      each independent review round
 ├── human-review-brief.md    what to read before deciding
@@ -120,7 +123,7 @@ Under `agentic-sdlc-records/<ticket_id>/`:
 └── approval-history/        earlier decisions on superseded heads
 ```
 
-Detailed evidence (agent answers, dispatch, verification logs) stays under
+Detailed evidence (agent answers, dispatch, the wave schedule, per-task patches, verification logs) stays under
 `.agentic-sdlc/runtime/<ticket_id>/<run-id>/`, which Git ignores. The manifest state moves like this:
 
 ```mermaid
@@ -141,7 +144,7 @@ stateDiagram-v2
 
 | Outcome | Meaning | What to do |
 |---|---|---|
-| `BLOCKED`, `hybrid_implementation_failed: ...` | An implementation step broke its contract. Partial edits stay in the working tree. | See [After a `BLOCKED` run](#after-a-blocked-run). |
+| `BLOCKED`, `hybrid_implementation_failed: ...` | An implementation step broke its contract. Tasks from earlier waves stay committed on the branch; nothing from the failed wave is merged. A task that ran alone leaves its partial edits in the working tree. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | `BLOCKED`, `verification_failed_after_one_repair_attempt` | Verification still failed after one repair turn. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | `BLOCKED`, `verification_failed_after_remediation` | A remediation round broke verification. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | Run state `failed` | A check stopped the run: the plan is not approved or changed after review, the baseline is no longer an ancestor, the source-root configuration is invalid, the source roots are dirty, or a single-mode implementation or repair step changed nothing inside the source roots. | `cao workflow result <run-id> --json` carries the traceback in its `warnings` field. |
@@ -167,7 +170,7 @@ ls .agentic-sdlc/runtime/<ticket>/<run-id>/verification/                  # veri
 
 | `reason` | Usual cause | Fix |
 |---|---|---|
-| `hybrid_implementation_failed: ...` | An agent broke its contract, for example invalid output or a write outside the source roots. Its partial edits stay uncommitted in the working tree. | Usually none: retry. If the same step fails again, check the plan and the registry. |
+| `hybrid_implementation_failed: ...` | An agent broke its contract, for example invalid output or a write outside the source roots, or a worktree's write boundary differed from the main checkout's (commit or discard local edits to `.claude/` or the registry). A task that ran alone leaves its partial edits uncommitted in the working tree; a parallel task's edits stay only in `<task>.patch` in the evidence. | Usually none: retry. If the same step fails again, check the plan and the registry. |
 | `verification_failed_after_one_repair_attempt` | The code still fails the verification commands after one repair turn. | Commands wrong (missing toolchain, bad command): fix `.agentic-sdlc/cao/specialists.json` and commit it on the base branch. Plan wrong: plan again (step 3b). Code wrong: retry. |
 | `verification_failed_after_remediation` | A remediation round broke verification. | Read the review finding it was fixing; usually retry. |
 
@@ -184,6 +187,8 @@ cao workflow run sdlc_deliver --wait --json --run-id <new-run-id> \
 ```
 
 - Use your configured source roots in place of `app`. Hybrid mode needs them clean and the Git index empty.
+- Python removes its worktrees and `sdlc-work/<run-id>/*` branches even when a run fails. Only a killed workflow
+  process leaves them behind; then run `git worktree prune` and delete those branches with `git branch -D`.
 - Renaming the branch, rather than deleting it, keeps the failed attempt for comparison. A run on an existing
   `sdlc/<ticket>` does not resume where the previous run stopped: it implements the plan again on top of what the
   branch holds, and on an already implemented branch the workers have nothing to change, so the run ends `BLOCKED`
@@ -275,8 +280,8 @@ branch is still at the reviewed head, writes `pr-approval-record.json`, and sets
 
 ## Configuration
 
-Delivery is configured by one trusted file, `.agentic-sdlc/cao/specialists.json`, plus two run inputs
-(`base_branch` and `implementation_mode`).
+Delivery is configured by one trusted file, `.agentic-sdlc/cao/specialists.json`, plus three run inputs
+(`base_branch`, `implementation_mode` and `hybrid_max_parallel`).
 
 ```mermaid
 flowchart LR
@@ -293,6 +298,7 @@ flowchart LR
 | Commands that verify a change | `verification` | the sample app's `app` commands |
 | Workers, skills and their suites | `workers`, `skills` | one `developer` worker |
 | Implementation mode | input `implementation_mode` | `hybrid` |
+| Workers running at the same time | input `hybrid_max_parallel` | `4` |
 | Base branch | input `base_branch` | `main` |
 
 The file is read from the repository when a run starts, so edits take effect on the next run. Agents cannot edit it.
@@ -375,6 +381,9 @@ implemented, so check the plan's task list against the roots before delivering.
 
 - The write-scope hook confines every agent, and the roots come from the trusted registry; see
   [Agent answers and write scope](../reference/write-scope-hook.md). The supervisor and the reviewer can never write source.
+- A parallel worker runs in its own worktree, and the hook resolves its roots there, so it cannot write the main
+  checkout or another worker's copy. Python checks that each worktree's hook, settings and registry equal the main
+  checkout's before any worker starts.
 - Verification commands are trusted configuration that Python runs without a shell. Treat a change to them as an
   executable-code change.
 - The implementer never runs tests, builds or Git; Python does, so the evidence is not an agent's claim.
@@ -384,7 +393,7 @@ implemented, so check the plan's task list against the roots before delivering.
 
 ## Tests
 
-`tests/test_deliver.py`, `tests/test_hybrid.py`, `tests/test_source_config.py`, `tests/test_restrict_write_scope.py`,
+`tests/test_deliver.py`, `tests/test_hybrid.py`, `tests/test_worktrees.py`, `tests/test_source_config.py`, `tests/test_restrict_write_scope.py`,
 `tests/test_record_pr_approval.py` and the end-to-end flows in `tests/test_workflow_integration.py`. See
 [build and install](../build-and-install.md#tests) for how to run them.
 
