@@ -141,3 +141,7 @@ Conclusion: parallelism stays in Python (worktrees and waves). Inside a worker, 
 - Siblings in a wave work from interface contracts, not each other's code, so integration may have more to reconcile. The independent review still checks the result.
 - The hook still confines a profile to the source roots, not a task to its files. Ownership is a scheduling hint and a reported deviation (D5). The worktrees are what isolate the workers.
 - Resuming a failed delivery is still not supported (an existing gap). Re-runs need a new run id and the existing branch moved aside.
+
+## 9. Progress notes
+
+- 2026-10-01, step 1 done: worktree spike passed (a worker in a worktree writes only there, the answer file in the worktree works, no prompt). Record: [parallel-workers-spike.md](../verification/parallel-workers-spike.md).
