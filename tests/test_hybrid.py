@@ -26,8 +26,17 @@ def modules():
 
 
 def task(name='T1', **changes):
-    return dict(id=name, worker='developer', instructions='Implement assigned feature',
-                plan_reference='T1', depends_on=[], skills=[], **changes)
+    value = dict(id=name, worker='developer', instructions='Implement assigned feature',
+                 plan_reference='T1', depends_on=[], skills=[], owns=[f'app/{name.lower()}.py'])
+    value.update(changes)
+    return value
+
+
+def plan_graph():
+    # PAY-DEMO-001's approved task graph, as the supervisor returned it in run deliver-profiles-1.
+    edges = {'T1': [], 'T2': ['T1'], 'T3': [], 'T6': ['T1'], 'T4': ['T2', 'T3'], 'T5': ['T2', 'T3'],
+             'T7': ['T4', 'T5', 'T6']}
+    return [task(name, depends_on=deps) for name, deps in edges.items()]
 
 
 class HybridTest(unittest.TestCase):
@@ -46,7 +55,10 @@ class HybridTest(unittest.TestCase):
             registry = mod.load_specialists(ROOT)
             bad_values = [{'tasks': []}, {'tasks': [task(), task()]}, {'tasks': [task()] * 17}]
             for key, value in [('worker', 'unknown'), ('skills', ['unknown']), ('depends_on', ['T2']),
-                               ('depends_on', ['T1']), ('id', '../escape'), ('plan_reference', '')]:
+                               ('depends_on', ['T1']), ('id', '../escape'), ('plan_reference', ''),
+                               ('owns', []), ('owns', None), ('owns', ['app/x.py'] * 65), ('owns', ['README.md']),
+                               ('owns', ['app/../README.md']), ('owns', ['/abs/app/x.py']), ('owns', ['app/*.py']),
+                               ('owns', ['.agentic-sdlc/cao/x']), ('owns', ['app/']), ('owns', [3])]:
                 entry = task()
                 entry[key] = value
                 bad_values.append({'tasks': [entry]})
@@ -129,6 +141,47 @@ class HybridTest(unittest.TestCase):
                 with self.assertRaisesRegex(mod.WorkflowContractError, 'worker failed'):
                     mod.run_hybrid(repo=ROOT, prompt='scope', evidence_dir=Path(temp), completion_validator=lambda x: x)
             self.assertEqual(calls, ['dispatch-v1', 'worker-1'])
+
+
+class ScheduleTest(unittest.TestCase):
+    def test_plan_waves_follow_the_dependency_graph(self):
+        for mod in modules():
+            schedule = mod.build_schedule(plan_graph(), 4)
+            self.assertEqual(schedule['waves'], [['T1', 'T3'], ['T2', 'T6'], ['T4', 'T5'], ['T7']])
+            self.assertEqual(schedule['added_dependencies'], [])
+            self.assertEqual(schedule['ancestors']['T4'], ['T1', 'T2', 'T3'])
+
+    def test_width_is_capped_and_one_means_sequential(self):
+        for mod in modules():
+            tasks = [task(f'T{n}') for n in range(1, 7)]
+            self.assertEqual(mod.build_schedule(tasks, 4)['waves'], [['T1', 'T2', 'T3', 'T4'], ['T5', 'T6']])
+            self.assertEqual(mod.build_schedule(tasks, 1)['waves'], [[f'T{n}'] for n in range(1, 7)])
+            for bad in (0, 5):
+                with self.assertRaises(mod.WorkflowContractError):
+                    mod.build_schedule(tasks, bad)
+
+    def test_overlapping_ownership_serializes_independent_tasks(self):
+        for mod in modules():
+            tasks = [task('T1', owns=['app/payment_service']), task('T2', owns=['app/payment_service/repo.py']),
+                     task('T3', owns=['app/tests/test_a.py']), task('T4', owns=['app/payment_service2.py'])]
+            schedule = mod.build_schedule(tasks, 4)
+            self.assertEqual(schedule['waves'], [['T1', 'T3', 'T4'], ['T2']])
+            self.assertEqual(schedule['added_dependencies'],
+                             [{'task': 'T2', 'depends_on': 'T1', 'overlapping_paths': ['app/payment_service', 'app/payment_service/repo.py']}])
+
+    def test_overlap_with_an_existing_dependency_path_adds_nothing(self):
+        for mod in modules():
+            tasks = [task('T1', owns=['app/a.py']), task('T2', depends_on=['T1'], owns=['app/b.py']),
+                     task('T3', depends_on=['T2'], owns=['app/a.py'])]
+            schedule = mod.build_schedule(tasks, 4)
+            self.assertEqual(schedule['added_dependencies'], [])
+            self.assertEqual(schedule['waves'], [['T1'], ['T2'], ['T3']])
+
+    def test_schedule_is_deterministic(self):
+        for mod in modules():
+            first = mod.build_schedule(plan_graph(), 2)
+            self.assertEqual(first, mod.build_schedule(copy.deepcopy(plan_graph()), 2))
+            self.assertEqual(first['waves'], [['T1', 'T3'], ['T2', 'T6'], ['T4', 'T5'], ['T7']])
 
 
 if __name__ == '__main__':

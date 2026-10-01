@@ -145,3 +145,4 @@ Conclusion: parallelism stays in Python (worktrees and waves). Inside a worker, 
 ## 9. Progress notes
 
 - 2026-10-01, step 1 done: worktree spike passed (a worker in a worktree writes only there, the answer file in the worktree works, no prompt). Record: [parallel-workers-spike.md](../verification/parallel-workers-spike.md).
+- 2026-10-01, step 2 done: `owns` validation in `validate_dispatch` (reuses `source_config`'s path normalizer) and `build_schedule` (waves, added dependencies for overlapping `owns`, transitive ancestors for D11). Tests: PAY-DEMO-001's graph gives `[T1,T3] [T2,T6] [T4,T5] [T7]`, width capped at 4, overlap serializes, determinism. Not installed: `owns` is required, and the supervisor is only asked for it in step 6, so the CAO bundle stays at `main` until then.
