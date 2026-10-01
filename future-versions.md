@@ -51,6 +51,14 @@ Assessment reference: **2026-09-21, HEAD `abcea97` plus uncommitted changes**. T
 
 **Reassess:** Inspect planning prompts/contracts and delivery exception paths rather than relying on the old fixture result. Run a plan requiring an out-of-root change and a repair that produces no changes. Confirm early scope detection and agreement between workflow outcome, manifest state, and human-facing guidance.
 
+## Could: remove the last workflow number from an agent prompt
+
+**Finding (2026-10-01):** `build_normalizer_prompt` in `.agentic-sdlc/cao/sdlc_workflows/planning.py` still tells the context normalizer to work "for Planning Workflow 1". The profiles and docs name workflows instead of numbering them; this is the only remaining number, and it reaches the agent.
+
+**Mitigation:** Change the text to "for the Planning workflow", rebuild and reinstall the `sdlc_dev_plan` bundle, and run one planning fixture in a disposable clone. Do it together with the next planning prompt change to share the live run.
+
+**Reassess:** `grep -rn "Workflow [123]" .agentic-sdlc/` finds nothing, and the installed bundle matches the repository.
+
 ## Won't for now: parallel workers and deployment automation
 
 These are deferred capabilities, not defects in the current learning scope. Parallel workers require isolated workspaces, task ownership, deterministic integration, and concurrency controls first. Deployment requires a separate environment-specific authority boundary, artifact-bound human approval where required, constrained credentials, idempotent operations, and recovery/rollback evidence.
