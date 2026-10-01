@@ -41,6 +41,16 @@ class BundleTest(unittest.TestCase):
         self.assertIs(delivery._write_json, source_review._write_json)
         self.assertIs(planning.WorkflowContractError, source_review.WorkflowContractError)
 
+    def test_inputs_are_literals_that_cao_can_read_without_running_the_script(self):
+        # CAO's index skips a workflow whose INPUTS is not a literal, while `cao workflow validate` still passes.
+        for name in builder.WORKFLOWS:
+            tree = ast.parse(builder.build_source(name))
+            node = next(n for n in tree.body if isinstance(n, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == 'INPUTS' for t in n.targets))
+            with self.subTest(workflow=name):
+                ast.literal_eval(node.value)
+        self.assertEqual(delivery.INPUTS['hybrid_max_parallel']['default'], delivery.MAX_PARALLEL_WORKERS)
+
     def test_builds_are_deterministic_and_capture_all_module_digests(self):
         for name in builder.WORKFLOWS:
             with self.subTest(workflow=name):

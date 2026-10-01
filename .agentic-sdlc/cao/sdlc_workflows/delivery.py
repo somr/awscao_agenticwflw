@@ -42,7 +42,8 @@ INPUTS = {
     "repository_root": {"type": "path", "required": True},
     "base_branch": {"type": "string", "required": False, "default": "main"},
     "implementation_mode": {"type": "string", "required": False, "default": "hybrid"},
-    "hybrid_max_parallel": {"type": "int", "required": False, "default": MAX_PARALLEL_WORKERS},
+    # CAO reads INPUTS statically, so the default must be a literal (equal to MAX_PARALLEL_WORKERS; a test checks it).
+    "hybrid_max_parallel": {"type": "int", "required": False, "default": 4},
 }
 
 IMPLEMENTER = "sdlc_implementer"
