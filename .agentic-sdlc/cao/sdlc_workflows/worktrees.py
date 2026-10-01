@@ -83,6 +83,10 @@ def commit_task(tree: Path, roots: list[str], message: str) -> str | None:
         return None
     _git(["add", "--", *_existing(tree, roots)], cwd=tree)
     _git(["commit", "-q", "-m", message], cwd=tree)
+    return head(tree)
+
+
+def head(tree: Path) -> str:
     return _git(["rev-parse", "HEAD"], cwd=tree).strip()
 
 

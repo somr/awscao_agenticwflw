@@ -285,10 +285,18 @@ class ConfigurableSourceRootsDeliveryTest(unittest.TestCase):
             self.implement(repo)
 
     def hybrid(self, repo, *files):
+        # run_hybrid commits per task itself; this stand-in writes one task's files and commits them the same way.
+        def fake_run_hybrid(**kwargs):
+            completion = self.writing_step(*files)(repo=repo)
+            mod._stage_source_changes(repo, mod._source_roots(repo))
+            mod._git(["commit", "-q", "-m", "[T-1] T1: fake"], cwd=repo)
+            sha = mod._current_head_sha(repo)
+            return completion, [["check"]], "", [{"task": "T1", "commit": sha, "status": "committed"}]
         original = mod.run_hybrid
-        mod.run_hybrid = lambda **kwargs: (self.writing_step(*files)(repo=repo), [["check"]], "")
+        mod.run_hybrid = fake_run_hybrid
         self.addCleanup(setattr, mod, "run_hybrid", original)
-        return mod._hybrid_and_commit(repo=repo, prompt="p", evidence_dir=repo / "evidence", ticket_id="T-1")
+        return mod._hybrid_and_commit(repo=repo, prompt="p", evidence_dir=repo / "evidence", ticket_id="T-1",
+                                      run_id="run-1", max_parallel=4)
 
     def test_hybrid_ignores_unrelated_dirty_files_but_blocks_on_dirty_roots(self):
         repo = self.make_repo(source_roots=["billing/src"])
