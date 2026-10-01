@@ -13,6 +13,13 @@ from typing import Any
 
 from cao_workflow import emit_output, get_inputs
 
+from .verification import (
+    VERIFICATION_TIMEOUT_SECONDS,
+    _run_verification,
+)
+from .remediation import (
+    _remediator_completion_validator,
+)
 from .errors import (
     WorkflowContractError,
 )
@@ -264,41 +271,8 @@ def _hybrid_and_commit(*, repo: Path, prompt: str, evidence_dir: Path, ticket_id
 # than something delegated to an agent with execute_bash. The commands come from the
 # project's "verification" suites (agentic-sdlc-project.json, merged by load_specialists):
 # the "application" suite in single mode, the union of worker and skill suites in hybrid mode.
-VERIFICATION_TIMEOUT_SECONDS = 300
 
 
-def _run_verification(repo: Path, evidence_dir: Path, label: str, commands: list[list[str]]) -> dict[str, Any]:
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    command_results: list[dict[str, Any]] = []
-    all_passed = True
-    for index, command in enumerate(commands, start=1):
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=str(repo),
-                capture_output=True,
-                text=True,
-                timeout=VERIFICATION_TIMEOUT_SECONDS,
-            )
-            returncode: int | None = completed.returncode
-            stdout, stderr = completed.stdout, completed.stderr
-        except subprocess.TimeoutExpired as exc:
-            returncode = None
-            stdout = exc.stdout or ""
-            stderr = f"{exc.stderr or ''}\n[timed out after {VERIFICATION_TIMEOUT_SECONDS}s]"
-        except OSError as exc:
-            returncode = None
-            stdout, stderr = "", str(exc)
-        passed = returncode == 0
-        all_passed = all_passed and passed
-        command_results.append({"command": command, "returncode": returncode, "passed": passed})
-        _write_text(
-            evidence_dir / f"{label}-cmd{index}.log",
-            f"$ {' '.join(command)}\n\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n",
-        )
-    summary = {"passed": all_passed, "commands": command_results}
-    _write_json(evidence_dir / f"{label}.json", summary)
-    return summary
 
 
 def build_implementer_repair_prompt(
@@ -530,14 +504,6 @@ def escalate_unremediated_findings(
     }
 
 
-def _remediator_completion_validator(value: Any) -> Any:
-    value = _require_dict(value, "remediator completion summary")
-    for key in ("findings_addressed", "files_changed", "assumptions", "deviations"):
-        items = _require_list(value.get(key), key)
-        for index, item in enumerate(items):
-            if not isinstance(item, str):
-                raise WorkflowContractError(f"{key}[{index}] must be a string")
-    return value
 
 
 def render_human_review_brief(

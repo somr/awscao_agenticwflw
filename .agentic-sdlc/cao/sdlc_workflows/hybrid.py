@@ -8,10 +8,15 @@ from typing import Any
 from .errors import WorkflowContractError
 from .artifacts import _read_json, _write_json, _write_text, _sha256_file
 from .runtime import _run_json_contract_step
-from .source_config import validate_source_config, load_project_file, select_source_settings, PROJECT_KEYS, PROJECT_RELATIVE_PATH
+from .source_config import (
+    validate_source_config, load_project_file, select_source_settings, PROJECT_KEYS, PROJECT_RELATIVE_PATH,
+    _normalize_root, _inside_any,
+)
 
 SUPERVISOR = "sdlc_code_supervisor"
 MAX_HYBRID_TASKS = 16
+MAX_OWNED_PATHS = 64
+MAX_PARALLEL_WORKERS = 4
 
 
 def _hybrid_asset(repo: Path, relative: str) -> Path:
@@ -95,6 +100,7 @@ def load_specialists(repo: Path) -> dict[str, Any]:
 
 
 def validate_dispatch(value: Any, registry: dict[str, Any]) -> dict[str, Any]:
+    roots = validate_source_config(registry)["source_roots"]
     if not isinstance(value, dict) or not isinstance(value.get("tasks"), list):
         raise WorkflowContractError("Supervisor must return a tasks array")
     tasks = value["tasks"]
@@ -119,8 +125,63 @@ def validate_dispatch(value: Any, registry: dict[str, Any]) -> dict[str, Any]:
         skills = task.get("skills")
         if not isinstance(skills, list) or any(not isinstance(s, str) or s not in registry["workers"][worker]["skills"] for s in skills):
             raise WorkflowContractError("Worker cannot use unregistered skills")
+        owns = task.get("owns")
+        if not isinstance(owns, list) or not 1 <= len(owns) <= MAX_OWNED_PATHS:
+            raise WorkflowContractError(f"Task {task_id} requires owns: 1..{MAX_OWNED_PATHS} paths")
+        for path in owns:
+            _normalize_root(path, f"Task {task_id} owns entry")
+            if not _inside_any(path, roots):
+                raise WorkflowContractError(f"Task {task_id} owns {path!r}, which is outside the source roots")
         seen.add(task_id)
     return value
+
+
+def _paths_overlap(first: list[str], second: list[str]) -> list[str]:
+    pairs = [(a, b) for a in first for b in second if a == b or a.startswith(b + "/") or b.startswith(a + "/")]
+    return sorted({path for pair in pairs for path in pair})
+
+
+def build_schedule(tasks: list[dict[str, Any]], max_parallel: int) -> dict[str, Any]:
+    """Group validated tasks into waves that may run concurrently.
+
+    Tasks that own overlapping paths and have no dependency path between them
+    get an added dependency (earlier -> later), so they never share a wave.
+    Waves are dependency levels in the supervisor's order, split into chunks
+    of max_parallel. Deterministic for the same input.
+    """
+    if not 1 <= max_parallel <= MAX_PARALLEL_WORKERS:
+        raise WorkflowContractError(f"max_parallel must be 1..{MAX_PARALLEL_WORKERS}")
+    order = [task["id"] for task in tasks]
+    by_id = {task["id"]: task for task in tasks}
+    depends = {task["id"]: list(task["depends_on"]) for task in tasks}
+    ancestors: dict[str, set[str]] = {}
+    added = []
+    for index, task_id in enumerate(order):
+        ancestors[task_id] = set()
+        for dep in depends[task_id]:
+            ancestors[task_id] |= {dep} | ancestors[dep]
+        for earlier in order[:index]:
+            if earlier in ancestors[task_id]:
+                continue
+            shared = _paths_overlap(by_id[earlier]["owns"], by_id[task_id]["owns"])
+            if shared:
+                depends[task_id].append(earlier)
+                ancestors[task_id] |= {earlier} | ancestors[earlier]
+                added.append({"task": task_id, "depends_on": earlier, "overlapping_paths": shared})
+    level: dict[str, int] = {}
+    for task_id in order:
+        level[task_id] = 1 + max((level[dep] for dep in depends[task_id]), default=-1)
+    waves: list[list[str]] = []
+    for depth in range(max(level.values(), default=-1) + 1):
+        members = [task_id for task_id in order if level[task_id] == depth]
+        waves.extend(members[start:start + max_parallel] for start in range(0, len(members), max_parallel))
+    return {
+        "max_parallel": max_parallel,
+        "waves": waves,
+        "depends_on": depends,
+        "ancestors": {task_id: [a for a in order if a in ancestors[task_id]] for task_id in order},
+        "added_dependencies": added,
+    }
 
 
 def hybrid_skill_context(repo: Path, registry: dict[str, Any], skills: list[str]) -> str:
@@ -140,7 +201,9 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
         evidence_dir=evidence_dir,
         prompt=prompt + "\nAllocate the approved work using this catalog:\n" + json.dumps(catalog) +
         '\nReturn {"tasks":[{"id":"T1","worker":"developer","plan_reference":"approved task reference",'
-        '"instructions":"bounded assignment and interface contracts","depends_on":[],"skills":[]}]}. '
+        '"instructions":"bounded assignment and interface contracts","depends_on":[],"skills":[],"owns":["source/path"]}]}. '
+        'For each task, list the source files or subtrees it owns under these configured roots: ' +
+        json.dumps(registry['source_roots']) + '. ' +
         "Cover every approved task, list dependencies before consumers, and use at most 16 tasks. "
         "Do not change source. Python dispatches your assignments sequentially. Select applicable skills explicitly.",
         validator=lambda value: validate_dispatch(value, registry),

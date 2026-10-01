@@ -384,6 +384,20 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual((receipt['review']['id'], receipt['comments'][0]['html_url'][-4:]), (21, 'r301'))
         self.assertFalse((self.root / 'publication.lock').exists())
 
+    def test_receipt_maps_finding_by_appended_marker_not_editable_prose(self):
+        fake = self.fake_github([], [])
+        low, high = self.findings[0]['stable_id'], self.findings[1]['stable_id']
+        def github(endpoint, payload=None, paginate=False):
+            result = fake(endpoint, payload=payload, paginate=paginate)
+            if endpoint.endswith('/pulls/7/comments?per_page=100'):
+                result[0][1]['body'] = ('Edited prose with a quoted marker: ' + publisher.finding_comment_marker(self.report, high)
+                    + '\n\n' + publisher.finding_comment_marker(self.report, low))
+            return result
+        with patch.object(publisher, 'gh', side_effect=github):
+            receipt = publisher.publish(self.root)
+        self.assertEqual(set(receipt['finding_comments']), {low})
+        self.assertEqual(receipt['finding_comments'][low]['id'], 301)
+
     def test_new_run_on_same_pr_state_posts_its_own_review(self):
         other_run = {**self.report, 'run_id': 'review-run-0'}
         existing = [{'id': 20, 'body': 'older run ' + publisher.marker(other_run)}]

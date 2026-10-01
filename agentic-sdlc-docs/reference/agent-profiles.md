@@ -1,6 +1,6 @@
 # CAO agent profiles
 
-These Markdown files are the repository-owned CAO profiles used by the three workflows. Install the profiles before starting a live workflow; the workflow installers do not install the planning or delivery profiles automatically.
+These Markdown files are the repository-owned CAO profiles used by the four workflows. Install the profiles before starting a live workflow; the workflow installers do not install Planning, Delivery or Source remediation profiles automatically.
 
 Checked on **2026-10-01** against the current repository working tree and the locally installed **CAO 2.5.0** implementation. Provider identifiers and launch behavior are version-dependent; verify the installed server as well as the CLI when upgrading.
 
@@ -21,6 +21,8 @@ Checked on **2026-10-01** against the current repository working tree and the lo
 | Source review | [`sdlc_source_security`](../../.agentic-sdlc/cao/profiles/source-security.md) | Independently inspect security and reliability regressions. |
 | Source review | [`sdlc_source_validator`](../../.agentic-sdlc/cao/profiles/source-validator.md) | Accept, reject or deduplicate every candidate against source evidence; reassess fix eligibility. |
 | Source review | [`sdlc_source_feedback`](../../.agentic-sdlc/cao/profiles/source-feedback.md) | Explain validated findings in plain language for the PR author, without changing severity or routing; Python renders canonical feedback. |
+| Source remediation | [`sdlc_remediator`](../../.agentic-sdlc/cao/profiles/remediator.md) | Apply only authorized eligible findings within configured write roots; report attempted changes and deviations. |
+| Source remediation | [`sdlc_source_fix_reviewer`](../../.agentic-sdlc/cao/profiles/source-fix-reviewer.md) | Independently reassess every selected finding and check the resulting PR diff for regressions; return source/test evidence at the candidate HEAD. |
 
 ## Profile conventions
 
@@ -89,6 +91,14 @@ bash .agentic-sdlc/cao/workflows/install_source_review.sh "$PWD"
 ```
 
 See the [source-review guide](../workflows/source-review.md) for its prerequisites, isolation model, inputs and upgrade procedure.
+
+## Source-remediation installation
+
+Source remediation reuses `sdlc_remediator` and adds `sdlc_source_fix_reviewer`
+(`source-fix-reviewer.md`). The new profile independently verifies attempted fixes and regressions; its
+`sdlc_source_` prefix is always read-only under the source-root validator and hook. Install the two profiles
+explicitly before the workflow, coordinating upgrades of the shared remediator with active Delivery runs.
+See [installation and usage](../workflows/source-remediation.md).
 
 ## Write scope and validation warnings
 

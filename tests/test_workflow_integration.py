@@ -162,7 +162,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 def respond(agent, step_id, prompt):
                     if agent == 'sdlc_code_supervisor':
                         return {'tasks': [{'id': 'T1', 'worker': 'developer', 'plan_reference': 'T1',
-                            'instructions': 'Implement value', 'depends_on': [], 'skills': ['sdlc-angularjs-ui']}]}
+                            'instructions': 'Implement value', 'depends_on': [], 'skills': ['sdlc-angularjs-ui'], 'owns': ['app']}]}
                     if agent == delivery.IMPLEMENTER:
                         # Real compile/test subprocesses reject the first implementation.
                         text = 'def value():\n    return 2\n' if step_id == 'implement-v1-repair-1' else 'invalid python !!!\n'
@@ -208,7 +208,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 def respond(agent, step_id, prompt):
                     if agent == 'sdlc_code_supervisor':
                         return {'tasks': [{'id': 'T1', 'worker': 'developer', 'plan_reference': 'T1',
-                            'instructions': 'Implement value', 'depends_on': [], 'skills': []}]}
+                            'instructions': 'Implement value', 'depends_on': [], 'skills': [], 'owns': ['app']}]}
                     if agent == delivery.IMPLEMENTER:
                         (repo / 'app/value.py').write_text('def value():\n    return 2\n')
                         return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
