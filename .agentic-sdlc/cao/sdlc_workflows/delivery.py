@@ -333,6 +333,7 @@ def render_pr_body(
     completion: dict[str, Any],
     verification: dict[str, Any],
     pr_head_sha: str,
+    implementation_commits: list[dict[str, Any]] | None = None,
 ) -> str:
     """Pure Python templating — no agent involved, no judgment needed to
     format already-known facts. Mirrors render_planning_context in
@@ -346,6 +347,10 @@ def render_pr_body(
         f"- `{' '.join(c['command'])}` — {'PASS' if c['passed'] else 'FAIL'} (exit {c['returncode']})"
         for c in verification.get("commands", [])
     ) or "- (no verification evidence)"
+    commit_section = ""
+    if implementation_commits:
+        commit_lines = "\n".join(f"- {c['task']}: `{c['commit'][:12]}` ({c['status']})" for c in implementation_commits)
+        commit_section = f"**Task commits (hybrid, in merge order):**\n{commit_lines}\n\n"
     return f"""## {ticket_id}
 
 Implements the approved Development Plan (`{plan_path.name}`, sha256 `{plan_sha256}`).
@@ -361,7 +366,7 @@ Implements the approved Development Plan (`{plan_path.name}`, sha256 `{plan_sha2
 **Deviations:**
 {deviations}
 
-**Verification:**
+{commit_section}**Verification:**
 {verification_lines}
 
 **PR HEAD SHA:** `{pr_head_sha}`
@@ -837,6 +842,7 @@ def main() -> None:
         completion=final_completion,
         verification=verification,
         pr_head_sha=pr_head_sha,
+        implementation_commits=implementation_commits,
     )
     pr_title_path = records_dir / "pr-title.txt"
     pr_body_path = records_dir / "pr-body.md"
@@ -996,6 +1002,7 @@ def main() -> None:
         completion=final_completion,
         verification=verification,
         pr_head_sha=pr_head_sha,
+        implementation_commits=implementation_commits,
     )
     _write_text(pr_title_path, render_pr_title(ticket_id))
     _write_text(pr_body_path, pr_body)

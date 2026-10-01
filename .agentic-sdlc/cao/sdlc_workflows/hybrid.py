@@ -180,7 +180,7 @@ def _worker_prompt(prompt: str, task: dict[str, Any], prior: list[dict[str, Any]
 
 def _commit_message(ticket_id: str, task: dict[str, Any]) -> str:
     reference = " ".join(task["plan_reference"].split())
-    return f"[{ticket_id}] {task['id']}: {reference[:100]}"
+    return f"[{ticket_id}] {task['id']}: implement hybrid task\n\nPlan reference: {reference}"
 
 
 def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_validator: Any, ticket_id: str,

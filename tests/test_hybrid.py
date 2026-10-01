@@ -133,7 +133,7 @@ class HybridTest(unittest.TestCase):
                 self.assertEqual(json.loads((evidence / 'schedule.json').read_text())['waves'], [['T1'], ['T2']])
                 self.assertIn('sdlc-angularjs-ui', context)
                 self.assertEqual([c['task'] for c in commits], ['T1', 'T2'])
-                self.assertEqual(git(repo, 'log', '--format=%s', '-2').splitlines(), ['[T-1] T2: T1', '[T-1] T1: T1'])
+                self.assertEqual(git(repo, 'log', '--format=%s', '-2').splitlines(), ['[T-1] T2: implement hybrid task', '[T-1] T1: implement hybrid task'])
                 self.assertEqual(registry['workers'].keys(), mod.load_specialists(repo)['workers'].keys())
 
     def test_invalid_registry_fails_closed(self):
@@ -235,7 +235,7 @@ class ParallelWaveTest(unittest.TestCase):
             self.assertNotEqual(repos['worker-T1'], repos['worker-T2'])
             self.assertEqual(repos['worker-T3'], self.repo)
             self.assertEqual([c['task'] for c in commits], ['T1', 'T2', 'T3'])
-            self.assertEqual(git(self.repo, 'log', '--format=%s', '-3').splitlines(), ['[T-1] T3: T1', '[T-1] T2: T1', '[T-1] T1: T1'])
+            self.assertEqual(git(self.repo, 'log', '--format=%s', '-3').splitlines(), ['[T-1] T3: implement hybrid task', '[T-1] T2: implement hybrid task', '[T-1] T1: implement hybrid task'])
             for name in ('one', 'two', 'three', 'extra'):
                 self.assertTrue((self.repo / f'app/{name}.py').is_file())
             self.assertIn('Task T2 changed paths outside owns: app/extra.py', result['deviations'])

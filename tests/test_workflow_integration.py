@@ -188,6 +188,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 self.assertIn((delivery.IMPLEMENTER, 'integrate-v1'), calls)
                 self.assertTrue((records / 'human-review-brief.md').exists())
                 self.assertIn(output['pr_head_sha'], (records / 'pr-body.md').read_text())
+                self.assertIn('**Task commits (hybrid, in merge order):**\n- T1: `', (records / 'pr-body.md').read_text())
                 review = json.loads((records / 'pr-review-r2.json').read_text())
                 self.assertEqual(review['findings'][0]['automation_eligibility'], 'DEVELOPER_REQUIRED')
                 delivery_manifest = json.loads((records / 'delivery-manifest.json').read_text())
@@ -226,7 +227,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 self.assertEqual([c for c in calls if c[0] in (delivery.REMEDIATOR, delivery.PR_REVIEWER)],
                                  [(delivery.PR_REVIEWER, 'pr-review-r1'), (delivery.REMEDIATOR, 'remediate-r1')])
                 self.assertEqual(output['pr_head_sha'], git('rev-parse', 'HEAD'))
-                self.assertEqual(git('log', '--format=%s', '-1'), '[T-1] T1: T1')
+                self.assertEqual(git('log', '--format=%s', '-1'), '[T-1] T1: implement hybrid task')
                 manifest = json.loads((records / 'delivery-manifest.json').read_text())
                 self.assertEqual(manifest['state'], 'AWAITING_HUMAN_REVIEW')
                 self.assertEqual(manifest['escalated_findings'], ['A1'])
