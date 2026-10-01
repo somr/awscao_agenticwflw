@@ -25,7 +25,11 @@ STEP_TIMEOUT_SECONDS = 1800
 CAO_HTTP_TIMEOUT_SECONDS = 30.0
 COMPLETION_INITIAL_SETTLE_SECONDS = 5.0
 COMPLETION_POLL_SECONDS = 3.0
-COMPLETION_MAX_POLLS = 100
+# CAO can report a Claude Code terminal COMPLETED while the agent is still working,
+# so this wait, not CAO's, is the real budget for the rest of a long step. Give it
+# the same budget as the step itself. Waiting on signs of activity instead of a
+# fixed time is recorded in future-versions.md.
+COMPLETION_MAX_POLLS = int(STEP_TIMEOUT_SECONDS / COMPLETION_POLL_SECONDS)
 COMPLETION_STABLE_POLLS = 2
 
 
