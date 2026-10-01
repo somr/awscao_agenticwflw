@@ -48,7 +48,7 @@ Python validates worker/skill selections, unique task IDs and prior dependencies
 dispatches workers sequentially, persists results and runs an integration pass.
 Parallel dispatch is reserved for a future implementation with isolated workspaces.
 The application write boundary is the project's configured source roots (`source_roots`
-and `write_profiles` in the specialist registry; default `app/`), and an invalid
+and `write_profiles` in the project's `agentic-sdlc-project.json`; default `app/`), and an invalid
 configuration stops delivery before any agent runs. The write boundary, approval checks,
 independent review and bounded remediation remain mandatory. Required skills add their configured
 verification suites; missing tooling is a verification failure.

@@ -8,7 +8,7 @@ from typing import Any
 from .errors import WorkflowContractError
 from .artifacts import _read_json, _write_json, _write_text, _sha256_file
 from .runtime import _run_json_contract_step
-from .source_config import validate_source_config
+from .source_config import validate_source_config, load_project_file, select_source_settings, PROJECT_KEYS, PROJECT_RELATIVE_PATH
 
 SUPERVISOR = "sdlc_code_supervisor"
 MAX_HYBRID_TASKS = 16
@@ -25,28 +25,59 @@ def _hybrid_asset(repo: Path, relative: str) -> Path:
 
 
 def load_specialists(repo: Path) -> dict[str, Any]:
+    """The common registry merged with the project's settings.
+
+    The project file (agentic-sdlc-project.json), when present, supplies source_roots,
+    write_profiles and verification. A skill whose verification suites the project does not
+    define is unavailable: it is left out of the catalog and listed in "unavailable_skills".
+    """
     registry = _read_json(_hybrid_asset(repo, "specialists.json"))
     if not isinstance(registry, dict) or registry.get("version") != 1:
         raise WorkflowContractError("Unsupported specialist registry")
-    for section in ("workers", "skills", "verification"):
-        if not isinstance(registry.get(section), dict) or not registry[section]:
-            raise WorkflowContractError(f"Registry requires {section}")
-    for name, skill in registry["skills"].items():
+    project = load_project_file(repo)
+    if project is not None:
+        select_source_settings(registry, project)  # refuses keys set in both files
+        registry = dict(registry, **{key: project[key] for key in PROJECT_KEYS if key in project})
+    source = PROJECT_RELATIVE_PATH if project is not None else "the registry"
+    if not isinstance(registry.get("workers"), dict) or not registry["workers"]:
+        raise WorkflowContractError("Registry requires workers")
+    if not isinstance(registry.get("verification"), dict) or not registry["verification"]:
+        raise WorkflowContractError(f"Verification suites are required in {source}")
+    if not isinstance(registry.get("skills", {}), dict):
+        raise WorkflowContractError("Registry skills must be an object")
+    available: dict[str, Any] = {}
+    unavailable: dict[str, list[str]] = {}
+    for name, skill in registry.get("skills", {}).items():
         if not isinstance(skill, dict) or not isinstance(skill.get("description"), str):
             raise WorkflowContractError(f"Invalid skill {name}")
         _hybrid_asset(repo, skill.get("path"))
         suites = skill.get("verification")
-        if not isinstance(suites, list) or not suites or any(not isinstance(s, str) or s not in registry["verification"] for s in suites):
+        if not isinstance(suites, list) or not suites or any(not isinstance(s, str) or not s for s in suites):
             raise WorkflowContractError(f"Skill {name} requires registered verification")
+        missing = [suite for suite in suites if suite not in registry["verification"]]
+        if missing:
+            unavailable[name] = missing
+        else:
+            available[name] = skill
+    registry["skills"] = available
+    registry["unavailable_skills"] = unavailable
+    for name, worker in registry["workers"].items():
+        if isinstance(worker, dict) and isinstance(worker.get("skills"), list):
+            worker = registry["workers"][name] = dict(worker, skills=[s for s in worker["skills"] if s not in unavailable])
     for name, worker in registry["workers"].items():
         if not isinstance(worker, dict) or not isinstance(worker.get("profile"), str):
             raise WorkflowContractError(f"Invalid worker {name}")
         if not isinstance(worker.get("description"), str):
             raise WorkflowContractError(f"Missing routing description: {name}")
-        for field, catalog in (("skills", "skills"), ("verification", "verification")):
+        for field in ("skills", "verification"):
             values = worker.get(field)
-            if not isinstance(values, list) or any(not isinstance(v, str) or v not in registry[catalog] for v in values):
+            if not isinstance(values, list) or any(not isinstance(v, str) for v in values):
                 raise WorkflowContractError(f"Invalid {field} for {name}")
+        if any(skill not in registry["skills"] for skill in worker["skills"]):
+            raise WorkflowContractError(f"Invalid skills for {name}")
+        undefined = [suite for suite in worker["verification"] if suite not in registry["verification"]]
+        if undefined:
+            raise WorkflowContractError(f"Worker {name} needs verification suite(s) {', '.join(undefined)}, not defined in {source}")
         if not worker["verification"]:
             raise WorkflowContractError(f"Worker {name} requires verification")
     for name, commands in registry["verification"].items():

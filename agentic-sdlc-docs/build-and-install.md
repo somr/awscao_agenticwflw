@@ -166,8 +166,8 @@ for all three; the exception and control flow are unchanged.
 
 A bundle contains code only. Everything a run reads from the repository at start-up is
 resolved from `repository_root`, not embedded: the contracts, policies, schemas and
-templates under `.agentic-sdlc/`, and, for hybrid Delivery, `.agentic-sdlc/cao/specialists.json`
-and `.agentic-sdlc/cao/skills/`. Changing those files takes effect on the next run without a
+templates under `.agentic-sdlc/`, the project's `agentic-sdlc-project.json`, and, for hybrid Delivery,
+`.agentic-sdlc/cao/specialists.json` and `.agentic-sdlc/cao/skills/`. Changing those files takes effect on the next run without a
 rebuild; changing Python modules requires rebuilding and reinstalling the bundle. Installing
 `sdlc_deliver` also requires the `sdlc_code_supervisor` profile, because Delivery defaults to
 `implementation_mode=hybrid` (see [hybrid delivery](workflows/hybrid-delivery.md)).

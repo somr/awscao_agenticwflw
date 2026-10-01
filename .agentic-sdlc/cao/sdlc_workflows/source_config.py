@@ -1,9 +1,12 @@
 """Source roots: the directories where Delivery agents may write, commit and verify generated source.
 
-The configuration lives in the trusted registry (.agentic-sdlc/cao/specialists.json), which
-agents cannot edit. .claude/hooks/restrict-write-scope.py keeps a standalone copy of
-validate_source_config(); tests/test_source_config.py runs both over one corpus, so any rule
-added here must be added there.
+Per-project settings (source_roots, write_profiles and the verification suites) live in
+agentic-sdlc-project.json at the repository root, so .agentic-sdlc/ can stay common to every
+project. Without that file they are read from the common registry
+(.agentic-sdlc/cao/specialists.json), and without either the defaults apply. Agents can edit
+neither file. .claude/hooks/restrict-write-scope.py keeps standalone copies of
+validate_source_config(), validate_project_file() and select_source_settings();
+tests/test_source_config.py runs both over one corpus, so any rule added here must be added there.
 """
 from __future__ import annotations
 
@@ -15,6 +18,10 @@ from .errors import WorkflowContractError
 from .artifacts import _read_json
 
 REGISTRY_RELATIVE_PATH = ".agentic-sdlc/cao/specialists.json"
+PROJECT_RELATIVE_PATH = "agentic-sdlc-project.json"
+# Keys that belong to one project. With a project file they may appear only there.
+PROJECT_KEYS = ("source_roots", "write_profiles", "verification")
+PROJECT_FILE_VERSION = 1
 DEFAULT_SOURCE_ROOTS = ["app"]
 # Profile -> None means "all source roots". Absent config keeps the original behaviour.
 DEFAULT_WRITE_PROFILES: dict[str, list[str] | None] = {"sdlc_implementer": None, "sdlc_remediator": None}
@@ -27,6 +34,7 @@ FORBIDDEN_ROOTS = (
     "agentic-sdlc-records",
     "agentic-sdlc-docs",
     "agentic-sdlc-local-inputs",
+    PROJECT_RELATIVE_PATH,
 )
 # A typo in the config must not give a read-only role write access.
 READ_ONLY_PROFILES = frozenset({
@@ -112,16 +120,56 @@ def validate_source_config(raw: Any) -> dict[str, Any]:
     return {"source_roots": roots, "write_profiles": write_profiles}
 
 
-def load_source_config(repo: Path) -> dict[str, Any]:
-    """Read and validate the source-root config; a missing registry file means the defaults."""
-    path = repo / REGISTRY_RELATIVE_PATH
+def validate_project_file(raw: Any) -> dict[str, Any]:
+    """Check the project file's shape: version 1 and only the per-project keys."""
+    if not isinstance(raw, dict):
+        raise WorkflowContractError(f"{PROJECT_RELATIVE_PATH} must be a JSON object")
+    if raw.get("version") != PROJECT_FILE_VERSION:
+        raise WorkflowContractError(f"{PROJECT_RELATIVE_PATH} requires \"version\": {PROJECT_FILE_VERSION}")
+    unknown = sorted(set(raw) - {"version", *PROJECT_KEYS})
+    if unknown:
+        raise WorkflowContractError(f"{PROJECT_RELATIVE_PATH} has unknown keys: {', '.join(unknown)}")
+    return raw
+
+
+def select_source_settings(registry: Any, project: Any) -> Any:
+    """Return the object that holds the per-project keys: the project file when present, else the registry.
+
+    A key set in both is an error, so a stale value in the common registry can never apply silently.
+    """
+    if project is None:
+        return {} if registry is None else registry
+    validate_project_file(project)
+    if isinstance(registry, dict):
+        both = [key for key in PROJECT_KEYS if key in registry]
+        if both:
+            raise WorkflowContractError(
+                f"{', '.join(both)} set in both {PROJECT_RELATIVE_PATH} and {REGISTRY_RELATIVE_PATH}; "
+                f"keep per-project settings only in {PROJECT_RELATIVE_PATH}"
+            )
+    return project
+
+
+def _read_optional(repo: Path, relative: str) -> Any:
+    path = repo / relative
     if not path.exists():
-        return validate_source_config({})
+        return None
     try:
-        raw = _read_json(path)
+        return _read_json(path)
     except (OSError, ValueError) as exc:
-        raise WorkflowContractError(f"cannot read {REGISTRY_RELATIVE_PATH}: {exc}") from exc
-    return validate_source_config(raw)
+        raise WorkflowContractError(f"cannot read {relative}: {exc}") from exc
+
+
+def load_project_file(repo: Path) -> dict[str, Any] | None:
+    """The validated project file, or None when the repository has none."""
+    raw = _read_optional(repo, PROJECT_RELATIVE_PATH)
+    return None if raw is None else validate_project_file(raw)
+
+
+def load_source_config(repo: Path) -> dict[str, Any]:
+    """Read and validate the source-root config; with neither file the defaults apply."""
+    registry = _read_optional(repo, REGISTRY_RELATIVE_PATH)
+    return validate_source_config(select_source_settings(registry, load_project_file(repo)))
 
 
 def resolve_source_roots(repo: Path, roots: list[str]) -> list[Path]:

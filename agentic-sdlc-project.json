@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "source_roots": ["app"],
+  "write_profiles": {"sdlc_implementer": null, "sdlc_remediator": null},
+  "verification": {
+    "application": [
+      ["python3", "-m", "compileall", "-q", "app"],
+      ["python3", "-m", "unittest", "discover", "-t", "app", "-s", "app/tests", "-v"]
+    ],
+    "angularjs": [["npm", "--prefix", "app/ui", "run", "verify"]],
+    "spark": [["spark-submit", "--master", "local[2]", "app/spark/tests/verify.py"]]
+  }
+}

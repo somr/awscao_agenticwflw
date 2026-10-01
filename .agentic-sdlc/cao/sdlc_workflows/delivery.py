@@ -262,8 +262,8 @@ def _hybrid_and_commit(*, repo: Path, prompt: str, evidence_dir: Path, ticket_id
 # command's exit code and captured output IS the evidence; see the module
 # docstring / plan for why this is a trusted Python subprocess call rather
 # than something delegated to an agent with execute_bash. The commands come from the
-# registry (.agentic-sdlc/cao/specialists.json, "verification"): the "application" suite
-# in single mode, the union of worker and skill suites in hybrid mode.
+# project's "verification" suites (agentic-sdlc-project.json, merged by load_specialists):
+# the "application" suite in single mode, the union of worker and skill suites in hybrid mode.
 VERIFICATION_TIMEOUT_SECONDS = 300
 
 

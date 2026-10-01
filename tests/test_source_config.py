@@ -144,6 +144,23 @@ class ValidatorParityTest(unittest.TestCase):
             with self.subTest(implementation=label):
                 self.assertEqual(module.validate_source_config(None), DEFAULTS)
 
+    def test_project_file_shape_and_selection_agree_everywhere(self):
+        project = {'version': 1, 'source_roots': ['billing/src'], 'verification': {'application': [['make']]}}
+        for label, module in implementations():
+            with self.subTest(implementation=label):
+                self.assertEqual(module.validate_project_file(project), project)
+                self.assertEqual(module.select_source_settings({'workers': {}}, project), project)
+                self.assertEqual(module.select_source_settings({'source_roots': ['x']}, None), {'source_roots': ['x']})
+                self.assertEqual(module.select_source_settings(None, None), {})
+                for bad in ({'source_roots': ['app']}, {'version': 2}, {'version': 1, 'workers': {}}, ['app'], 'app'):
+                    with self.assertRaises(ValueError):
+                        module.validate_project_file(bad)
+                for key in ('source_roots', 'write_profiles', 'verification'):
+                    with self.assertRaisesRegex(ValueError, f'{key} set in both'):
+                        module.select_source_settings({key: []}, {'version': 1})
+                with self.assertRaises(ValueError):
+                    module.validate_source_config({'source_roots': ['agentic-sdlc-project.json']})
+
 
 _REFERENCE = None
 
@@ -178,6 +195,17 @@ class LoaderAndResolverTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temp:
                 result = module.load_source_config(self.repo_with_registry(temp, text))
                 self.assertEqual(result, {'source_roots': ['billing/src'], 'write_profiles': {'sdlc_implementer': ['billing/src']}})
+
+    def test_the_project_file_wins_and_a_broken_one_never_falls_back(self):
+        for module in self.modules():
+            with tempfile.TemporaryDirectory() as temp:
+                repo = self.repo_with_registry(temp, json.dumps({'version': 1, 'workers': {}}))
+                (repo / 'agentic-sdlc-project.json').write_text(json.dumps({'version': 1, 'source_roots': ['billing/src']}))
+                self.assertEqual(module.load_source_config(repo)['source_roots'], ['billing/src'])
+                for text in ('{not json', json.dumps({'version': 1, 'source_roots': ['..']}), json.dumps({'source_roots': ['app']})):
+                    (repo / 'agentic-sdlc-project.json').write_text(text)
+                    with self.subTest(text=text[:30]), self.assertRaises(module.WorkflowContractError):
+                        module.load_source_config(repo)
 
     def test_present_but_broken_registry_never_falls_back_to_defaults(self):
         for text in ('{not json', '[]', '"app"', json.dumps({'source_roots': ['..']}), '\xff'):

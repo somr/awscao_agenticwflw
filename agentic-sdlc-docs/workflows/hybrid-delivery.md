@@ -13,7 +13,7 @@ results and approval are in the [Delivery guide](delivery.md).
 | Supervisor | A read-only agent that turns the approved plan into ordered assignments. It cannot write source. | Profile `code-supervisor` |
 | Worker | A registry entry naming an agent profile, the skills it may use and its verification suites. | `workers` in `.agentic-sdlc/cao/specialists.json` |
 | Skill | Instructions injected into a worker's prompt, plus verification suites that become mandatory when it is selected. | `.agentic-sdlc/cao/skills/<name>/SKILL.md` and `skills` in the registry |
-| Verification suite | A named list of commands Python runs after each change. | `verification` in the registry |
+| Verification suite | A named list of commands Python runs after each change. A skill is available only when the project defines its suites. | `verification` in `agentic-sdlc-project.json` |
 | Limits | 1 to 16 assignments; workers run one at a time in one checkout. | Enforced by Python |
 
 ## How it works
@@ -104,8 +104,9 @@ focused context or a narrower write scope. The two combine.
    and characteristic failure modes. Avoid generic tutorials, and never grant scope or permissions. Keep the skill
    self-contained: the runner injects only `SKILL.md`, so tell the worker explicitly when and where to read any
    other file.
-3. Register it under `skills` with a path relative to `.agentic-sdlc/cao`, a routing description, and existing
-   verification suite names:
+3. Register it under `skills` in the common registry with a path relative to `.agentic-sdlc/cao`, a routing
+   description, and verification suite names. Each project that should use the skill defines those suites in its
+   `agentic-sdlc-project.json`:
 
    ```json
    "project-java-persistence": {
@@ -148,9 +149,9 @@ For a distinct role, for example a Java persistence specialist whose files stay 
    }
    ```
 
-   The suite `java` must already exist in `verification`; if it does not, add a toolchain (below). Do not
+   The suite `java` must already exist in the project's `verification`; if it does not, add a toolchain (below). Do not
    substitute Python checks for Java validation.
-3. List the profile in `write_profiles`: `null` for every source root, or a list of directories inside the roots
+3. List the profile in the project's `write_profiles` (`agentic-sdlc-project.json`): `null` for every source root, or a list of directories inside the roots
    to limit it, for example `"sdlc_java_persistence": ["billing/src"]`. No hook edit is needed. The worker entry
    does not grant write access by itself, and the registry refuses to load if a worker's profile is not listed.
 4. Add hook tests (see `ConfigurableSourceRootsHookTest` in `tests/test_restrict_write_scope.py`) showing that the
@@ -171,7 +172,7 @@ For example, Spark verification in an isolated local Spark runtime:
    dependencies). Workers do not install them.
 3. Provide an application-owned, non-interactive test entry point that uses synthetic data, a local or isolated
    runtime, and returns non-zero on failure.
-4. Add a named suite to `verification` as a list of argument lists:
+4. Add a named suite to `verification` in the project's `agentic-sdlc-project.json`, as a list of argument lists:
 
    ```json
    "spark": [["spark-submit", "--master", "local[2]", "app/spark/tests/verify.py"]]
@@ -181,7 +182,8 @@ For example, Spark verification in an isolated local Spark runtime:
    not interpreted. If the environment needs preparation, use a reviewed executable wrapper. Never take commands
    from model output.
 5. Reference the suite from the worker's `verification`, or from the skill's when only that skill needs the runtime.
-   A suite named by a selected skill is mandatory.
+   A suite named by a selected skill is mandatory. A project that does not define a skill's suites cannot use that
+   skill: it is left out of the supervisor's catalog and listed in the run's `registry.json` as unavailable.
 6. Test passing, assertion-failing, missing-runtime and timeout cases; confirm the same suites run after repair and
    remediation and that the Human Review Brief shows the evidence. Validate the toolchain in its intended environment.
 
@@ -214,9 +216,9 @@ also be reviewed for external effects.
 
 ## Safety boundaries
 
-- Registry commands are trusted maintainer configuration, run by Python without a shell. Treat a change to them as
-  an executable-code change.
-- Agents cannot edit the registry or the profiles: both are under a folder the hook protects.
+- Verification commands are trusted maintainer configuration, run by Python without a shell. Treat a change to them
+  as an executable-code change.
+- Agents cannot edit the registry, the project file or the profiles: the hook protects all three.
 - A skill guides implementation; it grants no authority. Only `write_profiles` and the hook decide who may write where.
 - The supervisor never modifies source or runs commands, and the integrator writes only under the source roots.
 

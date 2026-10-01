@@ -11,7 +11,7 @@ authoritative description of both. It is a security design, so keep it in step w
 | How an agent returns its result | It writes one answer file under `.agentic-sdlc/runtime/`; Python reads and validates it. |
 | What confines the agents | A `PreToolUse` hook, `.claude/hooks/restrict-write-scope.py`, wired in `.claude/settings.json` on `Write`, `Edit` and `NotebookEdit`. |
 | Who is writing | The hook asks CAO's own terminal metadata for the terminal's agent profile; nothing the agent says about itself is trusted. |
-| What can be configured | The project's source roots and which profiles may write them, in `.agentic-sdlc/cao/specialists.json`. |
+| What can be configured | The project's source roots and which profiles may write them, in `agentic-sdlc-project.json` at the repository root. |
 | Failure behaviour | Closed: anything unknown or invalid grants no extra access. |
 
 ## How a step returns its answer
@@ -97,23 +97,27 @@ the registry or a published record.
 
 ## Configurable source roots
 
-The directories that implementers may write are configuration, not code. They come from two keys in the
-trusted registry, `.agentic-sdlc/cao/specialists.json`:
+The directories that implementers may write are configuration, not code. They are per-project settings, so they
+come from two keys in `agentic-sdlc-project.json` at the repository root, which keeps `.agentic-sdlc/` common to
+every project. Without that file the hook reads the same keys from the common registry,
+`.agentic-sdlc/cao/specialists.json`:
 
 - `source_roots`: the directories (default `["app"]`);
 - `write_profiles`: which profiles may write them, each with all roots or a subset (default: implementer and remediator, all roots).
 
-The hook reads the registry when it decides on widening and validates it every time. The rules:
+The hook reads both files when it decides on widening and validates them every time. The rules:
 
-- **Invalid means no access.** A registry that is present but unreadable, malformed or invalid grants no extra
-  access to any profile. It never falls back to the defaults. A missing registry or missing keys use the defaults.
+- **Invalid means no access.** A file that is present but unreadable, malformed or invalid grants no extra access
+  to any profile, and so does a per-project key set in both files. It never falls back to the defaults. Missing
+  files or missing keys use the defaults.
 - **Roots cannot escape.** A root must be a relative, normalized path with no `..`, glob characters or `:`
   (which git treats as pathspec syntax), and must not overlap the protected folders. A root whose real path
   leaves the repository, for example through a symlink, invalidates the whole configuration.
 - **Read-only roles cannot be listed.** The supervisor, the reviewers, and the planning and source-review
   profiles can never appear in `write_profiles`.
 - **New modules are fine.** A root may name a directory that does not exist yet.
-- **The registry is protected.** It sits under `.agentic-sdlc/cao`, so no agent can edit it.
+- **Both files are protected.** The registry sits under `.agentic-sdlc/cao`, and `agentic-sdlc-project.json` is on
+  the hook's deny list, so no agent can edit either. Neither can be a source root.
 
 Delivery validates the same rules before any agent starts, so a bad configuration stops the run instead of
 surfacing as denied writes. See [Delivery](../workflows/delivery.md#configuration).
@@ -126,7 +130,7 @@ surfacing as denied writes. See [Delivery](../workflows/delivery.md#configuratio
 | Hook wiring | `.claude/settings.json` |
 | The validator used by Delivery (bundled into the workflow) | `.agentic-sdlc/cao/sdlc_workflows/source_config.py` |
 | Answer-file protocol and JSON repair | `.agentic-sdlc/cao/sdlc_workflows/runtime.py` |
-| Trusted configuration | `.agentic-sdlc/cao/specialists.json` |
+| Trusted configuration | `agentic-sdlc-project.json` (per project) and `.agentic-sdlc/cao/specialists.json` (common) |
 
 ## Tests
 

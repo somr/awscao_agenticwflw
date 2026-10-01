@@ -102,18 +102,19 @@ Replace the PR URL and run ID. This installer includes its five profiles and ref
 
 ## Configure for your project
 
-The sample application lives under `app/`. To point the workflows at your own code, edit [`.agentic-sdlc/cao/specialists.json`](.agentic-sdlc/cao/specialists.json):
+The sample application lives under `app/`. `.agentic-sdlc/` is common to every project; what differs per project lives in [`agentic-sdlc-project.json`](agentic-sdlc-project.json) at the repository root:
 
 - `source_roots`: the directories where generated source is written, committed and diffed (default `["app"]`);
 - `write_profiles`: which agent profiles may write there;
-- `verification`: the commands that verify a change, so use your own build and test commands;
-- `workers` and `skills`: the specialists Delivery can assign work to.
+- `verification`: the commands that verify a change, so use your own build and test commands.
 
-Agents cannot edit this file. An invalid file stops Delivery and denies all source writes instead of falling back to `app/`. Verification commands are configured separately from the source roots. Planning does not yet consume those roots, so check that the plan's tasks fit the permitted directories before approval.
+The common [`.agentic-sdlc/cao/specialists.json`](.agentic-sdlc/cao/specialists.json) holds `workers` and `skills`, the specialists Delivery can assign work to. A skill is available only when the project defines its verification suites.
 
-The shipped registry has one general `developer` worker and AngularJS/Spark skills. Their verification commands require project files and toolchains beyond the Python payment fixture. See [source roots](agentic-sdlc-docs/workflows/delivery.md#source-roots), the [registry reference](agentic-sdlc-docs/workflows/delivery.md#registry-reference) and the [specialist/skill extension guide](agentic-sdlc-docs/workflows/hybrid-delivery.md).
+Agents cannot edit either file. An invalid file, or a per-project key set in both, stops Delivery and denies all source writes instead of falling back to `app/`. Verification commands are configured separately from the source roots. Planning does not yet consume those roots, so check that the plan's tasks fit the permitted directories before approval.
 
-Registry, skill and contract edits are read from the repository on subsequent runs. After changing Python workflow code, rebuild and reinstall the bundles; after changing profiles, reinstall them before the workflows. See [build and install](agentic-sdlc-docs/build-and-install.md) for validation-only commands and installed-copy comparisons.
+The shipped registry has one general `developer` worker and AngularJS/Spark skills. This repository's project file defines their suites, which need project files and toolchains beyond the Python payment fixture. See [source roots](agentic-sdlc-docs/workflows/delivery.md#source-roots), the [registry reference](agentic-sdlc-docs/workflows/delivery.md#registry-reference) and the [specialist/skill extension guide](agentic-sdlc-docs/workflows/hybrid-delivery.md).
+
+Project-file, registry, skill and contract edits are read from the repository on subsequent runs. After changing Python workflow code, rebuild and reinstall the bundles; after changing profiles, reinstall them before the workflows. See [build and install](agentic-sdlc-docs/build-and-install.md) for validation-only commands and installed-copy comparisons.
 
 ## Repository layout and verification
 
