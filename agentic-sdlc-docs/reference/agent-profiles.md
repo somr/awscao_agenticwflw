@@ -2,7 +2,7 @@
 
 These Markdown files are the repository-owned CAO profiles used by the three workflows. Install the profiles before starting a live workflow; the workflow installers do not install the planning or delivery profiles automatically.
 
-Checked on **2026-09-21** against the current repository working tree and the locally installed **CAO 2.5.0** implementation. Provider identifiers and launch behavior are version-dependent; verify the installed server as well as the CLI when upgrading.
+Checked on **2026-10-01** against the current repository working tree and the locally installed **CAO 2.5.0** implementation. Provider identifiers and launch behavior are version-dependent; verify the installed server as well as the CLI when upgrading.
 
 ## Profile catalog
 
@@ -20,7 +20,7 @@ Checked on **2026-09-21** against the current repository working tree and the lo
 | Source review | [`sdlc_source_correctness`](../../.agentic-sdlc/cao/profiles/source-correctness.md) | Identify substantiated correctness regressions in production or test source. |
 | Source review | [`sdlc_source_security`](../../.agentic-sdlc/cao/profiles/source-security.md) | Independently inspect security and reliability regressions. |
 | Source review | [`sdlc_source_validator`](../../.agentic-sdlc/cao/profiles/source-validator.md) | Accept, reject or deduplicate every candidate against source evidence; reassess fix eligibility. |
-| Source review | [`sdlc_source_feedback`](../../.agentic-sdlc/cao/profiles/source-feedback.md) | Explain validated findings without changing severity or routing; Python renders canonical feedback. |
+| Source review | [`sdlc_source_feedback`](../../.agentic-sdlc/cao/profiles/source-feedback.md) | Explain validated findings in plain language for the PR author, without changing severity or routing; Python renders canonical feedback. |
 
 ## Profile conventions
 
@@ -82,7 +82,7 @@ bash .agentic-sdlc/cao/workflows/install_deliver.sh "$PWD"
 
 ## Source-review installation
 
-Workflow 3 installs its five profiles as part of its dedicated installer and refuses to overwrite an existing installation:
+Source review installs its five profiles as part of its dedicated installer and refuses to overwrite an existing installation:
 
 ```bash
 bash .agentic-sdlc/cao/workflows/install_source_review.sh "$PWD"
