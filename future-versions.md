@@ -51,6 +51,14 @@ Assessment reference: **2026-09-21, HEAD `abcea97` plus uncommitted changes**. T
 
 **Reassess:** Inspect planning prompts/contracts and delivery exception paths rather than relying on the old fixture result. Run a plan requiring an out-of-root change and a repair that produces no changes. Confirm early scope detection and agreement between workflow outcome, manifest state, and human-facing guidance.
 
+## Should: wait for long-running agents by activity, not by a fixed time
+
+**Finding (2026-10-01):** CAO can report a Claude Code terminal `COMPLETED` while the agent is still working. In 94 recorded steps the terminal read `completed` throughout the answer wait, in one case for 41 polls (about 2 minutes) before the answer appeared. So the answer wait in `runtime.py` is the real budget for the rest of a long step. It was 5 s + 100 × 3 s; long workers on a large production project were killed as incomplete when it ran out. As a stopgap, `COMPLETION_MAX_POLLS` now follows `STEP_TIMEOUT_SECONDS` (30 minutes). That wait still cannot tell a working agent from one that finished without writing its answer, so a dead step costs up to 30 minutes, and the limit is still a guess.
+
+**Mitigation:** Keep waiting while there is evidence of work, and fail only after a period without it, under an absolute cap. Evidence: the terminal's streamed output changes (`GET /terminals/{id}/output`; Claude Code's spinner and tool calls redraw it while it works), the answer file changes, or CAO reports `processing`. Reset an inactivity timer (for example 5 minutes) on any of them; keep `STEP_TIMEOUT_SECONDS` as the cap, and set it and CAO's own step timeout from one setting so long projects can raise both. Keep failing at once on `error` and `waiting_user_answer`, and accept the answer only after two identical polls, as now. Record which signal counted as activity in the stabilization log. Screen content only decides whether it is too early to give up; it never decides completion.
+
+**Reassess:** Live first: confirm the output buffer changes while Claude Code works (including long tool calls and thinking) and stays unchanged once it is idle. Then run a step that works for longer than the inactivity limit (passes) and one that ends without writing its answer (fails after the inactivity limit, not the cap).
+
 ## Won't for now: parallel workers and deployment automation
 
 These are deferred capabilities, not defects in the current learning scope. Parallel workers require isolated workspaces, task ownership, deterministic integration, and concurrency controls first. Deployment requires a separate environment-specific authority boundary, artifact-bound human approval where required, constrained credentials, idempotent operations, and recovery/rollback evidence.
