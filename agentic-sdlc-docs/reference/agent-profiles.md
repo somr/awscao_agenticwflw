@@ -2,7 +2,7 @@
 
 These Markdown files are the repository-owned CAO profiles used by the three workflows. Install the profiles before starting a live workflow; the workflow installers do not install the planning or delivery profiles automatically.
 
-Checked on **2026-09-21** against the current repository working tree and the locally installed **CAO 2.5.0** implementation. Provider identifiers and launch behavior are version-dependent; verify the installed server as well as the CLI when upgrading.
+Checked on **2026-10-01** against the current repository working tree and the locally installed **CAO 2.5.0** implementation. Provider identifiers and launch behavior are version-dependent; verify the installed server as well as the CLI when upgrading.
 
 ## Profile catalog
 
@@ -20,11 +20,27 @@ Checked on **2026-09-21** against the current repository working tree and the lo
 | Source review | [`sdlc_source_correctness`](../../.agentic-sdlc/cao/profiles/source-correctness.md) | Identify substantiated correctness regressions in production or test source. |
 | Source review | [`sdlc_source_security`](../../.agentic-sdlc/cao/profiles/source-security.md) | Independently inspect security and reliability regressions. |
 | Source review | [`sdlc_source_validator`](../../.agentic-sdlc/cao/profiles/source-validator.md) | Accept, reject or deduplicate every candidate against source evidence; reassess fix eligibility. |
-| Source review | [`sdlc_source_feedback`](../../.agentic-sdlc/cao/profiles/source-feedback.md) | Explain validated findings without changing severity or routing; Python renders canonical feedback. |
+| Source review | [`sdlc_source_feedback`](../../.agentic-sdlc/cao/profiles/source-feedback.md) | Explain validated findings in plain language for the PR author, without changing severity or routing; Python renders canonical feedback. |
+
+## Profile conventions
+
+Follow these when adding or editing a profile.
+
+**Frontmatter**
+- `name`: never rename an existing profile. The write-scope hook, the workflows, the installer and tests refer to these names.
+- `description`: one sentence that starts with what the agent does and names its workflow (Planning, Delivery or Source review), never by number. CAO uses it only for `cao profile list` and search; the agent never sees it.
+- `provider: claude_code`.
+- `role: reviewer` on every profile, including those that write source. CAO uses `role` only to pick default tools when `allowedTools` is missing. Every profile sets `allowedTools`, so `role` has no effect today, and `reviewer` is the safest fallback (no shell) if the list were ever removed.
+- `allowedTools: ["fs_read", "fs_list", "fs_write"]` on every profile. Do not add `@builtin`: it changes nothing for Claude Code, but on other providers such as OpenCode it grants shell access. Where an agent may write is decided by the hooks, not by this list.
+
+**Body**
+- One paragraph stating the agent's mission, then `## Inputs` (when the task hands over files), `## Responsibilities`, `## Boundaries` and `## Output`. Role-specific sections, such as developer guidance, previous reviews or finding semantics, go between them where they belong.
+- A rule that several profiles share, such as strict JSON output, writing only the answer file, the widened source roots, or no commands, Git or pull requests, uses the same wording in every profile that needs it. Copy the wording from an existing profile rather than rephrasing it.
+- Keep in the profile what is true for every task of that role. Task data and per-run contracts, such as JSON shapes and answer paths, belong in the workflow's prompt. Do not repeat in a profile what the workflow already sends with every task.
 
 All profiles use the `claude_code` provider. The delivery supervisor proposes assignments to registered workers and selects required skills. Python validates and executes those assignments and owns stage ordering, retries and artifact persistence. Agents do not launch other agents directly. See [hybrid delivery and extension guide](../workflows/hybrid-delivery.md).
 
-All 13 files explicitly set `role: reviewer`, including the implementer and supervisor. Their explicit `allowedTools` overrides CAO role defaults: planning/delivery use `@builtin`, `fs_read`, `fs_list`, `fs_write`; source review uses only the three filesystem categories. Do not infer permissions from the profile name. Python owns Git operations and verification; human approval is recorded separately. Delivery currently prepares local PR artifacts, while source review can inspect an existing GitHub PR.
+All 13 files set `role: reviewer` and the same `allowedTools` (`fs_read`, `fs_list`, `fs_write`); see [Profile conventions](#profile-conventions) for why. Do not infer permissions from the profile name. Python owns Git operations and verification; human approval is recorded separately. Delivery currently prepares local PR artifacts, while source review can inspect an existing GitHub PR.
 
 The profiles instruct each agent to write one answer file. **Current hooks enforce a broader runtime directory boundary**, as shown below; exact per-step output authorization is proposed in [the hardening plan](../../hardening-plan.md).
 
@@ -66,7 +82,7 @@ bash .agentic-sdlc/cao/workflows/install_deliver.sh "$PWD"
 
 ## Source-review installation
 
-Workflow 3 installs its five profiles as part of its dedicated installer and refuses to overwrite an existing installation:
+Source review installs its five profiles as part of its dedicated installer and refuses to overwrite an existing installation:
 
 ```bash
 bash .agentic-sdlc/cao/workflows/install_source_review.sh "$PWD"

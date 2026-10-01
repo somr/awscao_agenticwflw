@@ -5,10 +5,10 @@ SECURITY DESIGN — full writeup in agentic-sdlc-docs/reference/write-scope-hook
 Summary: CAO agent profiles
 are granted fs_write (Claude Code's Write/Edit/NotebookEdit tools) so each
 step can deliver its answer as a file instead of via unreliable
-terminal-text parsing (see dev_plan.py). Workflow 1's planning profiles
+terminal-text parsing (see dev_plan.py). The Planning workflow's profiles
 process untrusted external content (Jira/Confluence text), so a
 prompt-injection payload hidden in that content could try to write or
-overwrite an arbitrary file. Workflow 2's sdlc_implementer/sdlc_remediator
+overwrite an arbitrary file. Delivery's sdlc_implementer/sdlc_remediator
 profiles additionally need to write real application source under the project's
 configured source roots (default app/**).
 
@@ -25,7 +25,7 @@ inheritance for every terminal it launches. A session without that variable
 (the human's own interactive Claude Code session, or any other ad-hoc use of
 this repository) is left unrestricted by this hook.
 
-Role-aware widening (added for Workflow 2): every CAO-spawned terminal may
+Role-aware widening (Delivery): every CAO-spawned terminal may
 always write under ALWAYS_ALLOWED_ROOT. A terminal may additionally write
 under the source roots the trusted registry names for its agent profile
 (write_profiles in .agentic-sdlc/cao/specialists.json), but only

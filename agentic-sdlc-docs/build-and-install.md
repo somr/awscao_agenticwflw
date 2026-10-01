@@ -54,7 +54,7 @@ SHA-256 digests. Builds contain no timestamp or machine-specific source path, so
 same source produces identical bytes. A changed shared module changes the bundle and
 its CAO source hash. Already-frozen bundles retain the previous helper implementation.
 This preserves CAO's source-snapshot boundary; it does not add resume support to
-Workflow 3, which still refuses reuse of an existing run directory.
+source review, which still refuses reuse of an existing run directory.
 
 ## Build without installation
 
