@@ -169,7 +169,7 @@ class InstallerTest(unittest.TestCase):
 
     def fake_cao(self, *args, check=True):
         self.calls.append(args)
-        code = 1 if args[:2] == ('profile', 'show') else 0
+        code = 1 if args[:2] == ('profile', 'show') and args[2] not in {'sdlc_remediator', 'sdlc_source_fix_reviewer'} else 0
         return subprocess.CompletedProcess(args, code, 'ok', '')
 
     def test_all_installers_keep_names_and_install_self_contained_code(self):
@@ -193,6 +193,15 @@ class InstallerTest(unittest.TestCase):
             installer.install('dev_plan', ROOT, self.destination)
         self.assertEqual(target.read_text(), 'previous')
         self.assertEqual([p.name for p in self.destination.iterdir()], ['sdlc_dev_plan.py'])
+
+    def test_remediation_requires_profiles_without_overwriting_shared_profile(self):
+        def missing(*args, **kwargs):
+            self.calls.append(args)
+            return subprocess.CompletedProcess(args, 1 if args[:2] == ('profile', 'show') else 0, '', '')
+        with patch.object(installer, 'cao', side_effect=missing), self.assertRaises(FileNotFoundError):
+            installer.install('source_remediate', ROOT, self.destination)
+        self.assertFalse(any(c[0] == 'install' for c in self.calls))
+        self.assertFalse((self.destination / 'source_remediate.py').exists())
 
     def test_planning_delivery_upgrades_keep_backup(self):
         for name in ('dev_plan', 'deliver'):

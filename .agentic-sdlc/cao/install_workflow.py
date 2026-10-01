@@ -15,7 +15,8 @@ import tempfile
 
 from build_workflow import WORKFLOWS, build_source
 
-REGISTERED_NAMES = {'dev_plan': 'sdlc_dev_plan', 'deliver': 'sdlc_deliver', 'source_review': 'source_review'}
+REGISTERED_NAMES = {'dev_plan': 'sdlc_dev_plan', 'deliver': 'sdlc_deliver', 'source_review': 'source_review',
+                    'source_remediate': 'source_remediate'}
 SOURCE_ROLES = ('mapper', 'correctness', 'security', 'validator', 'feedback')
 
 
@@ -64,6 +65,11 @@ def install(workflow: str, repository_root: Path, workflow_dir: Path, *, validat
             # Exclusive target creation retains source-review's no-overwrite rule.
             os.link(staged, target)
         else:
+            if workflow == 'source_remediate':
+                # Shared remediator upgrades are explicit; do not replace a profile another workflow uses.
+                for profile in ('sdlc_remediator', 'sdlc_source_fix_reviewer'):
+                    if cao('profile', 'show', profile, check=False).returncode:
+                        raise FileNotFoundError(f'Install required profile first: {profile}')
             if target.exists():
                 shutil.copy2(target, str(target) + '.bak')
             os.replace(staged, target)

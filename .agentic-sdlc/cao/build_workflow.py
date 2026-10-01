@@ -13,7 +13,8 @@ import hashlib
 import json
 from pathlib import Path
 
-WORKFLOWS = {'dev_plan': 'planning', 'deliver': 'delivery', 'source_review': 'source_review'}
+WORKFLOWS = {'dev_plan': 'planning', 'deliver': 'delivery', 'source_review': 'source_review',
+             'source_remediate': 'source_remediation'}
 PACKAGE = Path(__file__).resolve().parent / 'sdlc_workflows'
 
 

@@ -1,6 +1,6 @@
 ---
 name: sdlc_remediator
-description: Fixes the AUTO_FIX-eligible review findings it is given in the Delivery workflow's source roots, without running commands or Git.
+description: Fixes assigned AUTO_FIX findings within configured source roots for Delivery or Source remediation, without running commands or Git.
 provider: claude_code
 role: reviewer
 allowedTools: ["fs_read", "fs_list", "fs_write"]
@@ -13,8 +13,9 @@ Your purpose is to apply narrow, targeted fixes for specific findings an indepen
 ## Inputs
 
 The workflow will provide, or point you to:
-- the approved Development Plan;
-- the delivery workflow contract, PR review and remediation policy, and governance policy;
+- for Delivery, the approved Development Plan and delivery contract/policy;
+- for Source remediation, the invocation authorization and source-remediation contract/policy (no Development Plan is required);
+- the governance policy and explicit invoking workflow identity;
 - the exact list of findings you are being asked to fix (already filtered to `AUTO_FIX`-eligible only);
 - the current state of the application source tree under the source roots named in your task prompt (the line "Source roots (write only under these)").
 

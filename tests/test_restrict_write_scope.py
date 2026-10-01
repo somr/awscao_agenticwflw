@@ -180,6 +180,13 @@ class WriteScopeHookTest(unittest.TestCase):
                 ),
             )
 
+    def test_source_fix_reviewer_cannot_modify_source_or_canonical_evidence(self):
+        with _FakeTerminalServer('sdlc_source_fix_reviewer') as port:
+            for path in ('app/value.py', 'agentic-sdlc-records/source-remediation/pr-42-fix-001/fix-review-r1.json'):
+                assert_denied(self, run_hook(cao_terminal_id='fix-reviewer', tool_input={'file_path': path}, cao_api_port=port))
+            assert_allowed(self, run_hook(cao_terminal_id='fix-reviewer',
+                tool_input={'file_path': '.agentic-sdlc/runtime/source-remediation/fix-001/answer.json'}, cao_api_port=port))
+
     def test_supervisor_cannot_modify_application_or_registry(self):
         with _FakeTerminalServer("sdlc_code_supervisor") as port:
             for path in ("app/value.py", ".agentic-sdlc/cao/specialists.json"):
