@@ -1,6 +1,6 @@
 # Plan: consolidate the open branches, then the follow-ups
 
-Status: **in progress** (written 2026-10-02). The user runs the parallel-workers trial on the production project
+Status: **done 2026-10-02** (written the same day). The user runs the parallel-workers trial on the production project
 (their item 1); everything else below is done here, in this order. Progress notes are at the end.
 
 ## 1. Starting point
@@ -48,3 +48,5 @@ Not in scope unless asked: pushing to GitHub.
 - 2026-10-02, step 5 done (`fb9aa73`, branch `feature/follow-ups`): Planning validates and records the source roots and gives them to the analyst, author and reviewer; profile rules for all three; root-neutral retry commands in `delivery.md`. Live: `plan-roots-A` PASS with roots `app`; `plan-roots-B` with roots narrowed to `app/payment_service` kept every file inside and raised the test location as a human decision.
 - 2026-10-02, step 6 done: "Planning Workflow 1" and the other workflow numbers removed (`fb9aa73`). Activity-based answer wait (`8ebd09d`): spike showed the output buffer changes while Claude Code works (status read `idle`) and stays still when idle; live, an agent that never wrote its answer was stopped after about 5½ minutes, and Delivery run `deliver-activity-1` was unaffected. Record: [activity-wait-spike.md](../verification/activity-wait-spike.md). All four workflows reinstalled from `43feb5b`.
 - 2026-10-02, step 7 done: `hardening-plan.md` scope brought up to date (`43feb5b`); dated status lines added to five `future-versions.md` entries.
+- 2026-10-02, `feature/follow-ups` merged into `main` (`4f5c4be`); all four installed workflows and all 15 profiles match `main`.
+- 2026-10-02, step 8 done: throwaway clones and scratch files removed. Left for the user: `sdlc_deliver_parallel` (its trial can use `sdlc_deliver` now), the merged local branches, and pushing.
