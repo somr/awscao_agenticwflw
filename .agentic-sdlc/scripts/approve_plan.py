@@ -50,7 +50,7 @@ def main() -> int:
     if actual_sha != expected_sha:
         raise SystemExit(
             "Plan hash does not match the reviewed execution manifest. "
-            "Do not approve a modified plan; run Planning Workflow 1 again."
+            "Do not approve a modified plan; run Planning again."
         )
 
     # Developer guidance that shaped the plan is part of what is being approved.
@@ -60,7 +60,7 @@ def main() -> int:
         if not guidance_file.is_file() or sha256_file(guidance_file) != guidance_sha:
             raise SystemExit(
                 "Developer guidance is missing or does not match the reviewed execution manifest. "
-                "Do not approve a plan whose guidance changed; run Planning Workflow 1 again."
+                "Do not approve a plan whose guidance changed; run Planning again."
             )
     elif guidance_file.exists():
         raise SystemExit("plan-guidance.md exists but the execution manifest records no guidance; refusing to approve.")

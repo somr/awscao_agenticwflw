@@ -108,7 +108,7 @@ A run that converges publishes:
 agentic-sdlc-records/<ticket>/
 ├── development-plan.md
 ├── plan-review.json          the passing review, bound to the plan's SHA-256
-├── execution-manifest.json   baseline, digests, review rounds, guidance and lineage
+├── execution-manifest.json   baseline, source roots, digests, review rounds, guidance and lineage
 └── plan-guidance.md          only when guidance_file was used
 ```
 
@@ -254,6 +254,18 @@ It fails closed, before any agent runs, when:
 - the candidate stopped for a human decision and `guidance_file` is missing or unchanged.
 
 After a round-limit stop no guidance is needed: the run simply continues with a new round budget.
+
+### Source roots
+
+Planning reads the same source roots as Delivery, from `agentic-sdlc-project.json` (or the registry when the project
+has no such file; see [Delivery's source roots](delivery.md#source-roots)). It validates them before any agent
+runs, so an invalid configuration fails the run in CAO exactly as it would fail Delivery, and it records them in
+`execution-manifest.json`.
+
+The analyst, the author and the reviewer receive the roots in their task. The author keeps every file a task
+creates or changes inside them, and records a requirement that needs a change elsewhere as an unresolved human
+decision. The reviewer reports a task outside the roots as a `SCOPE` finding, because Delivery could not implement
+it. These are agent instructions: the hook still enforces the roots when Delivery writes.
 
 ## Safety boundaries
 

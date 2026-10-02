@@ -1,4 +1,4 @@
-"""Workflow 3 contracts, routing, isolation and orchestration regression tests."""
+"""Source review contracts, routing, isolation and orchestration regression tests."""
 import copy
 import importlib.util
 import json

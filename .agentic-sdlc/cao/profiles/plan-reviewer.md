@@ -50,6 +50,7 @@ Check for:
 - operational and observability gaps;
 - unsafe task ordering or parallelisation;
 - scope creep;
+- tasks that create or change files outside the source roots named in the task (category `SCOPE`, `PLAN_CHANGE_REQUIRED`, or `HUMAN_DECISION_REQUIRED` when a requirement truly needs such a change), because Delivery cannot implement them;
 - unresolved business decisions disguised as technical choices.
 
 ## Boundaries

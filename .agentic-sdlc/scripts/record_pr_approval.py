@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record a human review decision for a delivered PR (Workflow 2 — DELIVER).
+"""Record a human review decision for a delivered PR (Delivery).
 
 Mirrors approve_plan.py's shape and safety properties, keyed on the delivery
 branch's current PR HEAD SHA instead of a file hash — a PR is a moving

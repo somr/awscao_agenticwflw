@@ -117,7 +117,7 @@ The sample application lives under `app/`. `.agentic-sdlc/` is common to every p
 
 The common [`.agentic-sdlc/cao/specialists.json`](.agentic-sdlc/cao/specialists.json) holds `workers` and `skills`, the specialists Delivery can assign work to. A skill is available only when the project defines its verification suites.
 
-Agents cannot edit either file. An invalid file, or a per-project key set in both, stops Delivery and denies all source writes instead of falling back to `app/`. Verification commands are configured separately from the source roots. Planning does not yet consume those roots, so check that the plan's tasks fit the permitted directories before approval.
+Agents cannot edit either file. An invalid file, or a per-project key set in both, stops Delivery and denies all source writes instead of falling back to `app/`. Verification commands are configured separately from the source roots. Planning gives the roots to its agents, and the plan reviewer flags tasks outside them, but a human should still check that the plan's tasks fit the permitted directories before approval.
 
 The shipped registry has one general `developer` worker and AngularJS/Spark skills. This repository's project file defines their suites, which need project files and toolchains beyond the Python payment fixture. See [source roots](agentic-sdlc-docs/workflows/delivery.md#source-roots), the [registry reference](agentic-sdlc-docs/workflows/delivery.md#registry-reference) and the [specialist/skill extension guide](agentic-sdlc-docs/workflows/hybrid-delivery.md).
 

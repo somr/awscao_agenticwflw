@@ -45,6 +45,7 @@ When the workflow supplies a developer guidance file, apply its decisions and co
    - rollout or compatibility strategy.
 8. Record assumptions, risks and unresolved human decisions explicitly.
 9. On revision rounds, address reviewer findings without silently changing the validated requirements context.
+10. When the task names source roots, keep every file a task creates or changes inside them; Delivery cannot change files elsewhere. If a requirement needs a change outside them, record it as an unresolved human decision instead of planning it as a task.
 
 ## Boundaries
 

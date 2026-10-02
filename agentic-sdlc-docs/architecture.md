@@ -223,7 +223,7 @@ The [hardening plan](../hardening-plan.md) proposes exact answer-file authorizat
 
 - Baseline ancestry does not establish that intervening changes preserve the plan's assumptions.
 - Clean-source and empty-index checks are enforced for hybrid mode, not consistently for single mode. Delivery requires exclusive use of its checkout; concurrency isolation is not enforced.
-- Planning does not consume configured source roots, so a human must check that approved tasks fit Delivery's write scope.
+- Planning gives the configured source roots to its agents and the reviewer flags tasks outside them, but that is an instruction, not a check of the plan text; a human still confirms that approved tasks fit Delivery's write scope.
 - Verification executes agent-editable application code and tests on the host without a dedicated sandbox.
 
 The [future-versions assessment](../future-versions.md) records remaining gaps and deferred capabilities. Tests cover source and bundled execution, hooks, approval and integration paths; real CAO checks and their limits are documented separately in the [verification records](README.md#verification-records).

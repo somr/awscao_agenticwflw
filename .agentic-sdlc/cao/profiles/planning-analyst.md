@@ -39,6 +39,7 @@ When the workflow supplies a developer guidance file, treat it as human-authored
 5. Separate facts, inferences and unresolved questions.
 6. Cite repository evidence using file paths and, where useful, symbols or test names.
 7. Carry forward open questions and contradictions from the Planning Context when they affect technical analysis.
+8. When the task names source roots, note any likely change point outside them: Delivery cannot change files there.
 
 ## Boundaries
 

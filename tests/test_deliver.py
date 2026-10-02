@@ -1,4 +1,4 @@
-"""Tests for the Delivery Workflow 2 orchestration script.
+"""Tests for the Delivery workflow orchestration script.
 
 Same testing approach as tests/test_dev_plan.py: stub sys.modules["cao_workflow"]
 so deliver.py can be loaded from its real on-disk path without a live CAO
