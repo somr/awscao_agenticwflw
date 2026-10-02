@@ -43,10 +43,15 @@ Implement an approved Development Plan, verify the implementation, create a pull
 
 The default implementation mode is `hybrid`; `single` retains the original
 single-implementer execution path. In hybrid mode, a read-only code supervisor
-proposes up to 16 ordered assignments using the repository specialist registry.
-Python validates worker/skill selections, unique task IDs and prior dependencies,
-dispatches workers sequentially, persists results and runs an integration pass.
-Parallel dispatch is reserved for a future implementation with isolated workspaces.
+proposes up to 16 ordered assignments using the repository specialist registry, each
+naming the files or folders it will change (`owns`). Python validates worker/skill
+selections, unique task IDs, prior dependencies and ownership, groups independent tasks
+into waves (tasks with overlapping ownership never share one), and runs at most
+`hybrid_max_parallel` workers of a wave at the same time, each in its own Git worktree.
+After each wave Python commits every task and merges the commits in task order; a task
+whose merge conflicts is rerun once on the merged result, and a failed worker stops the
+run without merging its wave. Python then runs an integration pass. Each task and the
+integration pass are separate commits.
 The application write boundary is the project's configured source roots (`source_roots`
 and `write_profiles` in the project's `agentic-sdlc-project.json`; default `app/`), and an invalid
 configuration stops delivery before any agent runs. The write boundary, approval checks,

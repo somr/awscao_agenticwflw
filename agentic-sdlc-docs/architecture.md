@@ -34,7 +34,8 @@ The maintained modules are under [`.agentic-sdlc/cao/sdlc_workflows/`](../.agent
 | Component | Responsibility |
 |---|---|
 | `planning.py`, `delivery.py`, `source_review.py`, `source_remediation.py` | Workflow inputs, domain contracts, routing and orchestration |
-| `hybrid.py` | Specialist registry, supervisor assignments, sequential workers, skill injection and verification-suite selection |
+| `hybrid.py` | Specialist registry, supervisor assignments, wave schedule, parallel workers, skill injection and verification-suite selection |
+| `worktrees.py` | Per-task Git worktrees, trusted-file check, per-task commits and ordered cherry-picks |
 | `runtime.py` | CAO steps, answer-file delivery, completion checks, bounded JSON repair and terminal cleanup |
 | `artifacts.py`, `validation.py`, `errors.py` | Evidence files, digests, validation helpers and error types |
 | `source_config.py` | Source-root and write-profile validation used by Delivery; the hook carries a standalone copy checked by parity tests |
@@ -104,7 +105,7 @@ flowchart TD
     CHECK --> MODE{"Implementation mode"}
     MODE -->|Hybrid: default| SUP["Code Supervisor proposes assignments"]
     SUP --> GRAPH["Python validates task graph"]
-    GRAPH --> WORK["Python dispatches workers sequentially<br/>with selected skill instructions"]
+    GRAPH --> WORK["Python runs workers in waves,<br/>independent tasks in parallel worktrees,<br/>and merges one commit per task"]
     WORK --> INT["Implementer integrates assignments"]
     MODE -->|Single| IMP["One Implementer"]
     INT --> COMMIT["Python commits and verifies"]
@@ -121,7 +122,7 @@ flowchart TD
     ROUTE -->|No further automatic fixes| BRIEF["Human Review Brief<br/>AWAITING_HUMAN_REVIEW"]
 ```
 
-The supervisor proposes 1–16 ordered assignments; Python validates worker names, skills and dependencies before dispatch. Workers execute one at a time in the same checkout, each in a fresh session. The integration pass checks the whole feature. There is no parallel worker scheduler or per-run delivery worktree.
+The supervisor proposes 1–16 ordered assignments with their dependencies and the files each will change; Python validates worker names, skills, dependencies and ownership before dispatch. Python groups independent tasks into waves and runs up to `hybrid_max_parallel` (default 4) workers of a wave at the same time, each in a fresh session in its own Git worktree; a wave of one task runs in the main checkout. After each wave Python commits every task and cherry-picks the commits in task order; a conflicting task is rerun once in the main checkout. The integration pass checks the whole feature. The run itself still uses one delivery checkout (no per-run worktree).
 
 [`specialists.json`](../.agentic-sdlc/cao/specialists.json), common to every project, connects workers to profiles and skills; the project's [`agentic-sdlc-project.json`](../agentic-sdlc-project.json) sets the source roots, write profiles and verification suites. Hybrid verification uses the deduplicated union of selected worker and skill commands; single mode uses the `application` suite. Python runs commands without a shell, with timeouts, and repeats verification after repair or remediation. The registry currently ships one general `developer` worker and AngularJS/Spark skills; those skill suites need their own project files and toolchains.
 

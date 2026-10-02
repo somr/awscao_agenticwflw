@@ -77,7 +77,7 @@ cao workflow run sdlc_deliver --wait --json --run-id deliver-PAY-DEMO-001-1 \
   --input ticket_id=PAY-DEMO-001 --input repository_root="$PWD" --input base_branch=main
 ```
 
-Add `--input implementation_mode=single` to use one implementer. The default hybrid mode runs workers sequentially in the same checkout.
+Add `--input implementation_mode=single` to use one implementer. The default hybrid mode runs tasks that do not depend on each other at the same time, each in its own Git worktree (at most four; `--input hybrid_max_parallel=1` runs them one after another).
 
 When Delivery reaches `AWAITING_HUMAN_REVIEW`, read `agentic-sdlc-records/PAY-DEMO-001/human-review-brief.md` and review the branch before recording a human decision:
 
@@ -153,7 +153,7 @@ The [hardening plan](hardening-plan.md) is proposed work, not implemented protec
 - Agents are instructed to write one answer file, but hooks permit the broader runtime subtree; exact per-step answer authorization is still planned.
 - Delivery checks baseline ancestry, which does not detect all changes that could invalidate an approved plan. Clean-source and empty-index preconditions are currently enforced for hybrid mode, not consistently for single mode.
 - Verification runs application code and tests in host subprocesses; the agent write hook does not sandbox that execution. Delivery also shares its checkout and has no enforced run isolation.
-- Human PR decisions are local records, not verified GitHub reviews. Parallel workers, remote PR creation and deployment automation are outside the current implementation.
+- Human PR decisions are local records, not verified GitHub reviews. Remote PR creation and deployment automation are outside the current implementation. Parallel workers own files by declaration only: the hook confines each worker to its worktree and the source roots, not to its listed files.
 
 See [future versions](future-versions.md) for remaining gaps, mitigation directions and reassessment criteria, including planning/source-root alignment and failure reporting.
 

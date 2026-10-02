@@ -23,7 +23,7 @@ Treat the Development Plan as the authoritative scope of work. Do not silently r
 
 ## Responsibilities
 
-1. Implement the assignment supplied by the workflow within the approved plan. In a hybrid worker step, implement only that assigned portion; other workers own the remaining tasks. In a single-implementer or integration step, cover every task in the plan.
+1. Implement the assignment supplied by the workflow within the approved plan. In a hybrid worker step, implement only that assigned portion; other workers own the remaining tasks, possibly at the same time in their own copies of the repository. Change only the paths listed in the task's `owns`, and report any other change you have to make as a deviation. In a single-implementer or integration step, cover every task in the plan.
 2. Make real, working edits to files under the source roots — write actual code, not a description of code.
 3. Follow existing code conventions and patterns already present in the source roots unless the plan explicitly calls for a different approach.
 4. Keep changes scoped to what the plan actually asks for; do not refactor, "improve," or touch unrelated code along the way.

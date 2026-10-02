@@ -1,8 +1,9 @@
 # Delivery: specialists and skills
 
 In its default hybrid mode, [Delivery](delivery.md) does not have one agent implement the whole plan. A read-only
-supervisor splits the approved plan into assignments, Python validates them and dispatches registered **workers**
-one after another, and a final implementer integrates the result. This guide explains how that works and how to
+supervisor splits the approved plan into assignments, Python validates them and runs registered **workers** in
+waves, with the tasks that do not depend on each other running at the same time, and a final implementer integrates
+the result. This guide explains how that works and how to
 extend it with skills, specialist profiles, new verification toolchains, and new authority. Running, inputs,
 results and approval are in the [Delivery guide](delivery.md).
 
@@ -10,11 +11,12 @@ results and approval are in the [Delivery guide](delivery.md).
 
 | Concept | What it is | Where it is defined |
 |---|---|---|
-| Supervisor | A read-only agent that turns the approved plan into ordered assignments. It cannot write source. | Profile `code-supervisor` |
+| Supervisor | A read-only agent that turns the approved plan into ordered assignments, each with its dependencies and the files it will change (`owns`). It cannot write source. | Profile `code-supervisor` |
 | Worker | A registry entry naming an agent profile, the skills it may use and its verification suites. | `workers` in `.agentic-sdlc/cao/specialists.json` |
 | Skill | Instructions injected into a worker's prompt, plus verification suites that become mandatory when it is selected. | `.agentic-sdlc/cao/skills/<name>/SKILL.md` and `skills` in the registry |
 | Verification suite | A named list of commands Python runs after each change. A skill is available only when the project defines its suites. | `verification` in `agentic-sdlc-project.json` |
-| Limits | 1 to 16 assignments; workers run one at a time in one checkout. | Enforced by Python |
+| Wave | Assignments with no dependency between them and no overlapping `owns`. They run at the same time, each in its own Git worktree. | Computed by Python |
+| Limits | 1 to 16 assignments; at most `hybrid_max_parallel` (1 to 4, default 4) workers at the same time. | Enforced by Python |
 
 ## How it works
 
@@ -22,37 +24,59 @@ results and approval are in the [Delivery guide](delivery.md).
 sequenceDiagram
     participant P as Python
     participant S as Code Supervisor
-    participant W as Worker (fresh session)
+    participant W1 as Worker A (own worktree)
+    participant W2 as Worker B (own worktree)
     participant I as Integrator
     P->>S: approved plan and the catalog of workers and skills
-    S-->>P: ordered assignments (JSON)
-    P->>P: validate the task graph
-    loop each assignment, in order
-        P->>W: assignment, earlier results, required skill text
-        W-->>P: completion summary
+    S-->>P: assignments with depends_on and owns (JSON)
+    P->>P: validate the task graph and compute the waves
+    loop each wave
+        par tasks of the wave
+            P->>W1: assignment, results of its dependencies, required skill text
+            W1-->>P: completion summary
+        and
+            P->>W2: assignment, results of its dependencies, required skill text
+            W2-->>P: completion summary
+        end
+        P->>P: commit each task, merge the commits in task order
     end
     P->>I: all assignments and results
     I-->>P: completion of the whole feature
-    P->>P: commit, then verify with the union of the suites
+    P->>P: commit integration, then verify with the union of the suites
 ```
 
 This is model-directed allocation with deterministic execution, not delegation between agents. No agent can
 assign, hand off, run a shell or use Git.
 
-- **Validation.** Python accepts a task graph only if every task has a unique ID, a registered worker, registered
-  skills that this worker may use, instructions and a plan reference, and dependencies that name earlier tasks;
-  there must be 1 to 16 tasks. An invalid graph stops the run before any worker starts.
-- **Sequential.** Each worker starts fresh, but they run one after another in one checkout. That avoids concurrent
-  writers and merge races. Parallel dispatch in isolated worktrees is not supported.
+- **Validation.** Python accepts a task graph only if every task has a unique ID of at most 40 characters, a
+  registered worker, registered skills that this worker may use, instructions and a plan reference, dependencies
+  that name earlier tasks, and 1 to 64 `owns` paths inside the source roots; there must be 1 to 16 tasks. An invalid
+  graph stops the run before any worker starts.
+- **Waves.** Python groups the tasks by dependency level, in the supervisor's order. Two tasks whose `owns` overlap
+  never share a wave: Python adds a dependency from the earlier to the later one and records it in `schedule.json`.
+  A wave larger than `hybrid_max_parallel` is split.
+- **Isolation.** A wave of one task runs in the main checkout. In a larger wave every task gets its own worktree
+  under the run's runtime folder, on a scratch branch at the current head. The write-scope hook resolves the roots
+  against the worker's working directory, so a worker can write only its own copy. Before the workers start, Python
+  checks that the worktree's hook, settings, registry and project file equal the main checkout's.
+- **Merging.** When the whole wave has finished, Python commits each task in its worktree and cherry-picks the commits
+  onto the delivery branch in task order, then removes the worktrees. A task whose commit conflicts is run once more,
+  alone, in the main checkout on top of what was merged, with its earlier patch in the prompt. Each task and the
+  integration pass are separate commits.
+- **Failures.** If a worker fails, the other tasks of its wave still finish, nothing from that wave is merged, and the
+  run stops. Earlier waves stay committed.
 - **Judgment stays checked.** Task scope and plan coverage are model judgments. The integration pass and the
   independent review check them again; the validator does not prove that the assignments equal the plan.
-- **Ownership.** A worker's file ownership is an instruction. The hard boundary is the write-scope hook and the
-  configured [source roots](delivery.md#source-roots).
+- **Ownership.** `owns` schedules the work and is reported, not enforced: a change outside it is listed as a
+  deviation in the PR body and the brief. The hard boundary is the write-scope hook and the configured
+  [source roots](delivery.md#source-roots).
 
 ## Results
 
-Each run keeps the registry, the validated dispatch, every worker's result and the raw agent answers under
-`.agentic-sdlc/runtime/<ticket>/<run>/implementation/agent-output/`. The full text of each required skill and its
+Each run keeps the registry, the validated dispatch, the wave schedule (`schedule.json`), every worker's result
+with its wave, workspace and merge status (`worker-results.json`), each parallel task's `<task>.patch` and
+`<task>.ownership.json`, and the raw agent answers under
+`.agentic-sdlc/runtime/<ticket>/<run>/implementation/agent-output/`. The PR body lists the task commits in merge order. The full text of each required skill and its
 SHA-256 are included in the worker's prompt and saved in `required-skills.md`. Selected skills also reach the
 integration pass, the bounded verification-repair turn and eligible remediation.
 
@@ -62,8 +86,9 @@ timeout counts as a failure, never as success.
 
 ## When it stops early
 
-An implementation step that breaks its contract, or a graph that fails validation, blocks Delivery. Partial edits
-stay in the working tree for inspection and nothing is committed. Inspect or discard them, then run again with a
+An implementation step that breaks its contract, or a graph that fails validation, blocks Delivery. Tasks from
+earlier waves stay committed; nothing from the failing wave is merged. A task that ran alone in the main checkout
+leaves its partial edits in the working tree for inspection. Inspect or discard them, then run again with a
 fresh run ID. The other stop reasons are in the [Delivery guide](delivery.md#when-a-run-stops-early).
 
 ## Choosing what to add

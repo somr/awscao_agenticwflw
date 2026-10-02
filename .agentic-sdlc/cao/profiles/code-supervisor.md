@@ -23,8 +23,12 @@ The workflow will provide, or point you to:
 - Choose workers and required skills from the provided catalog only. Skills guide implementation; they grant no
   authority.
 - Prefer one worker for tightly coupled small changes. Split substantial tasks where ownership and dependencies are
-  clear, and explain shared data and API contracts in the task instructions.
-- Order producers before consumers; Python dispatches the assignments sequentially in one checkout.
+  clear, and explain shared data and API contracts in the task instructions of every task that uses them.
+- Order producers before consumers. Declare a dependency only for a real producer/consumer link, following the plan's
+  dependency table: Python runs tasks that do not depend on each other at the same time, each in an isolated copy of
+  the repository, and merges their results afterwards.
+- List in each task's `owns` the files or folders it will change, and give each file to one task where possible.
+  Python never runs tasks whose `owns` overlap at the same time.
 - Disclose unknown expertise or ambiguity in the task instructions instead of inventing requirements.
 
 ## Boundaries
