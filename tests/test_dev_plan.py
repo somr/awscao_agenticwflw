@@ -318,6 +318,75 @@ class CommonRuntimeTest(unittest.TestCase):
             runtime_mod._wait = original_wait
             runtime_mod.COMPLETION_MAX_POLLS = original_max_polls
 
+    def _wait_with(self, outputs, answers, statuses=None, inactivity_polls=3, max_polls=20):
+        """Run _wait_for_answer_file with scripted CAO output digests, answer contents and statuses per poll."""
+        outputs, answers = iter(outputs), iter(answers)
+        statuses = iter(statuses) if statuses is not None else None
+        saved = {name: getattr(runtime_mod, name) for name in (
+            "_cao_terminal_status", "_cao_terminal_output_digest", "_wait",
+            "COMPLETION_INACTIVITY_POLLS", "COMPLETION_MAX_POLLS")}
+        temp = tempfile.TemporaryDirectory()
+        evidence_dir = Path(temp.name) / "evidence"
+        evidence_dir.mkdir()
+        answer_path = evidence_dir / "s1.answer.json"
+
+        def output_digest(terminal_id):
+            answer = next(answers)
+            if answer is None:
+                answer_path.unlink(missing_ok=True)
+            else:
+                answer_path.write_text(answer)
+            return next(outputs)
+
+        runtime_mod._cao_terminal_status = lambda terminal_id: next(statuses) if statuses else "completed"
+        runtime_mod._cao_terminal_output_digest = output_digest
+        runtime_mod._wait = lambda seconds: None
+        runtime_mod.COMPLETION_INACTIVITY_POLLS = inactivity_polls
+        runtime_mod.COMPLETION_MAX_POLLS = max_polls
+        try:
+            try:
+                result = runtime_mod._wait_for_answer_file(
+                    terminal_id="term-1", answer_path=answer_path, step_id="s1", evidence_dir=evidence_dir)
+                error = None
+            except runtime_mod.IncompleteAgentExecutionError as exc:
+                result, error = None, exc
+            evidence = json.loads((evidence_dir / "s1.stabilization.json").read_text())
+            return result, error, evidence
+        finally:
+            for name, value in saved.items():
+                setattr(runtime_mod, name, value)
+            temp.cleanup()
+
+    def test_wait_keeps_going_while_the_output_changes(self):
+        # Eight polls of work without an answer: longer than the inactivity limit (3), so only activity keeps it alive.
+        outputs = [f"o{i}" for i in range(8)] + ["o8", "o8"]
+        answers = [None] * 8 + ['{"ok": true}', '{"ok": true}']
+        result, error, evidence = self._wait_with(outputs, answers)
+        self.assertIsNone(error)
+        self.assertEqual(result, '{"ok": true}')
+        self.assertEqual([p["activity"] for p in evidence["polls"][1:8]], [["output"]] * 7)
+        self.assertEqual(evidence["polls"][8]["activity"], ["output", "answer"])
+        self.assertEqual(evidence["polls"][9]["activity"], [])  # the answer is unchanged: stable, done
+
+    def test_wait_stops_after_the_inactivity_limit_without_an_answer(self):
+        result, error, evidence = self._wait_with(["same"] * 20, [None] * 20)
+        self.assertIsNone(result)
+        self.assertIn("no activity", str(error))
+        self.assertEqual(evidence["stopped"], "inactive")
+        self.assertEqual(len(evidence["polls"]), 3)
+
+    def test_processing_status_counts_as_activity_and_a_failed_output_read_does_not(self):
+        statuses = ["processing"] * 5 + ["completed"] * 10
+        result, error, evidence = self._wait_with([None] * 15, [None] * 15, statuses)
+        self.assertEqual(evidence["stopped"], "inactive")
+        self.assertEqual(len(evidence["polls"]), 8)  # five working polls, then three quiet ones
+        self.assertEqual([p["activity"] for p in evidence["polls"][:6]], [["processing"]] * 5 + [[]])
+
+    def test_the_step_budget_still_caps_a_terminal_that_never_goes_quiet(self):
+        result, error, evidence = self._wait_with([f"o{i}" for i in range(30)], [None] * 30, max_polls=6)
+        self.assertEqual(evidence["stopped"], "step_budget")
+        self.assertEqual(len(evidence["polls"]), 6)
+
     def test_json_contract_step_uses_per_attempt_answer_path_and_delivery_instructions(self):
         seen = []
         outputs = iter(['{foo: "bar"}', '{"foo": "bar"}'])

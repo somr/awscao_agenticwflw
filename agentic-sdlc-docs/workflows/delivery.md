@@ -178,8 +178,10 @@ ls .agentic-sdlc/runtime/<ticket>/<run-id>/verification/                  # veri
 **3a. Retry with the same approved plan.** From the repository root:
 
 ```bash
-git restore --staged --worktree -- app              # only after hybrid_implementation_failed: drop partial edits
-git clean -fd -- app                                #   and the new files they created
+# The configured source roots that exist (without agentic-sdlc-project.json, list them from the registry or use app).
+ROOTS=$(python3 -c 'import json,os; r=json.load(open("agentic-sdlc-project.json")).get("source_roots",["app"]); print(" ".join(x for x in r if os.path.exists(x)))')
+git restore --staged --worktree -- $ROOTS           # only after hybrid_implementation_failed: drop partial edits
+git clean -fd -- $ROOTS                             #   and the new files they created
 git checkout main                                   # Delivery leaves you on sdlc/<ticket>
 git branch -m sdlc/<ticket> archive/sdlc-<ticket>-<run-id>
 cd agentic-sdlc-records/<ticket> && rm -f delivery-manifest.json human-review-brief.md pr-* && cd -
@@ -187,7 +189,7 @@ cao workflow run sdlc_deliver --wait --json --run-id <new-run-id> \
   --input ticket_id=<ticket> --input repository_root="$PWD" --input base_branch=main
 ```
 
-- Use your configured source roots in place of `app`. Hybrid mode needs them clean and the Git index empty.
+- `ROOTS` holds your configured source roots; Git refuses a path that does not exist, so roots not created yet are skipped. Hybrid mode needs the roots clean and the Git index empty.
 - Python removes its worktrees and `sdlc-work/<run-id>/*` branches even when a run fails. Only a killed workflow
   process leaves them behind; then run `git worktree prune` and delete those branches with `git branch -D`.
 - Renaming the branch, rather than deleting it, keeps the failed attempt for comparison. A run on an existing

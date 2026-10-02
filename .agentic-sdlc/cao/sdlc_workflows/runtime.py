@@ -25,11 +25,15 @@ STEP_TIMEOUT_SECONDS = 1800
 CAO_HTTP_TIMEOUT_SECONDS = 30.0
 COMPLETION_INITIAL_SETTLE_SECONDS = 5.0
 COMPLETION_POLL_SECONDS = 3.0
-# CAO can report a Claude Code terminal COMPLETED while the agent is still working,
-# so this wait, not CAO's, is the real budget for the rest of a long step. Give it
-# the same budget as the step itself. Waiting on signs of activity instead of a
-# fixed time is recorded in future-versions.md.
+# CAO can report a Claude Code terminal COMPLETED (or IDLE) while the agent is still
+# working, so this wait, not CAO's, is the real budget for the rest of a long step.
+# It keeps going while the agent shows activity (its streamed output or the answer
+# file changes, or CAO reports processing) and gives up after
+# COMPLETION_INACTIVITY_SECONDS without any, never later than the step's own budget.
+# Evidence: agentic-sdlc-docs/verification/activity-wait-spike.md.
 COMPLETION_MAX_POLLS = int(STEP_TIMEOUT_SECONDS / COMPLETION_POLL_SECONDS)
+COMPLETION_INACTIVITY_SECONDS = 300.0
+COMPLETION_INACTIVITY_POLLS = int(COMPLETION_INACTIVITY_SECONDS / COMPLETION_POLL_SECONDS)
 COMPLETION_STABLE_POLLS = 2
 
 
@@ -86,6 +90,19 @@ def _cao_terminal_status(terminal_id: str) -> str:
     return str(terminal.get("status", "unknown")).lower()
 
 
+def _cao_terminal_output_digest(terminal_id: str) -> str | None:
+    """SHA-256 of the terminal's streamed output, or None when it cannot be read.
+
+    Used only as a sign of activity (the Claude Code TUI redraws while it works and
+    is still when idle), never to decide that a step is complete or to read results.
+    """
+    try:
+        output = _cao_json_request(f"/terminals/{terminal_id}/output").get("output", "")
+    except WorkflowContractError:
+        return None
+    return _sha256_bytes(str(output).encode("utf-8"))
+
+
 def _cleanup_step_terminal(terminal_id: str, evidence_dir: Path, step_id: str) -> None:
     """Best-effort graceful exit + delete for a teardown=False workflow worker."""
     errors: list[str] = []
@@ -120,10 +137,12 @@ def _wait_for_answer_file(
 ) -> str:
     """Wait for the agent to write its answer file and for its content to settle.
 
-    CAO's own Claude E2E tests re-check completion after a delay because the
-    TUI can transiently report COMPLETED, so this still polls terminal
-    *status* (not its screen text — see the module-level comment above this
-    function's neighborhood for why that was abandoned) alongside the file.
+    Completion is only ever the answer file staying identical for
+    COMPLETION_STABLE_POLLS polls. Terminal status and streamed output are used
+    only to decide whether it is too early to give up: CAO's status can read
+    COMPLETED or IDLE while Claude Code is still working, so each poll counts as
+    activity when the output or the answer changed or the status is processing,
+    and the wait fails after COMPLETION_INACTIVITY_POLLS polls without any.
     """
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
@@ -131,14 +150,29 @@ def _wait_for_answer_file(
     previous_content: str | None = None
     stable_polls = 0
     status = "unknown"
+    previous_output: str | None = None
+    quiet_polls = 0
 
     _wait(COMPLETION_INITIAL_SETTLE_SECONDS)
     for poll_no in range(1, COMPLETION_MAX_POLLS + 1):
         status = _cao_terminal_status(terminal_id)
+        output = _cao_terminal_output_digest(terminal_id)
         content = answer_path.read_text(encoding="utf-8") if answer_path.is_file() else None
+        activity = []
+        if output is not None and previous_output is not None and output != previous_output:
+            activity.append("output")
+        if content is not None and content != previous_content:
+            activity.append("answer")
+        if status == "processing":
+            activity.append("processing")
+        if output is not None:
+            previous_output = output
+        quiet_polls = 0 if activity else quiet_polls + 1
         polls.append({
             "poll": poll_no,
             "status": status,
+            "output_sha256": output,
+            "activity": activity,
             "answer_file_exists": content is not None,
             "answer_length": len(content) if content is not None else None,
             "answer_sha256": _sha256_bytes(content.encode("utf-8")) if content is not None else None,
@@ -173,12 +207,29 @@ def _wait_for_answer_file(
             previous_content = None
             stable_polls = 0
 
+        if quiet_polls >= COMPLETION_INACTIVITY_POLLS:
+            _write_json(
+                evidence_dir / f"{step_id}.stabilization.json",
+                {
+                    "stabilized": False,
+                    "stopped": "inactive",
+                    "required_stable_polls": COMPLETION_STABLE_POLLS,
+                    "inactivity_polls": COMPLETION_INACTIVITY_POLLS,
+                    "polls": polls,
+                },
+            )
+            raise IncompleteAgentExecutionError(
+                f"{step_id} showed no activity for {COMPLETION_INACTIVITY_SECONDS:.0f}s and did not write a "
+                f"stable {answer_path.name} (last CAO status: {status})"
+            )
+
         _wait(COMPLETION_POLL_SECONDS)
 
     _write_json(
         evidence_dir / f"{step_id}.stabilization.json",
         {
             "stabilized": False,
+            "stopped": "step_budget",
             "required_stable_polls": COMPLETION_STABLE_POLLS,
             "polls": polls,
         },

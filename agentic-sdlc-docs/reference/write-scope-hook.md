@@ -31,8 +31,8 @@ sequenceDiagram
     A->>F: write the final answer
     C-->>W: step reported COMPLETED
     W->>W: settle 5 s
-    loop every 3 s, for up to 30 minutes
-        W->>C: terminal status
+    loop every 3 s, while there is activity, for up to 30 minutes
+        W->>C: terminal status and streamed output
         W->>F: read content
     end
     Note over W: accept when the content is identical on 2 polls in a row
@@ -47,8 +47,11 @@ sequenceDiagram
   repair turn and the result is validated again.
 - Each step's evidence is kept under `.agentic-sdlc/runtime/<ticket>/<run-id>/`: the answer file, the accepted
   raw content and a stabilization log with the polls.
-- A step that has not finished after 30 minutes fails. The answer wait has the same budget, because CAO can report
-  `COMPLETED` while the agent is still working, so for a long step the remaining work happens during this wait.
+- CAO can report `COMPLETED` or `IDLE` while the agent is still working, so for a long step the remaining work
+  happens during this wait. The wait keeps going while there is activity: the terminal's streamed output or the
+  answer file changed, or CAO reports `processing`. It fails as incomplete after 5 minutes without activity, and
+  any step fails after 30 minutes. The output is only a sign of activity: it never decides that a step is
+  complete, and its content is never read as a result.
 
 ## Why a hook
 

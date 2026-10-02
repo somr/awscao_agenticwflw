@@ -36,6 +36,7 @@ from .validation import (
     _require_bool,
     _require_keys,
 )
+from .source_config import load_source_config, resolve_source_roots
 from .runtime import (
     _run_delivered_step,
     _run_json_contract_step,
@@ -726,7 +727,7 @@ def build_normalizer_prompt(repo: Path, raw_dir: Path, schema: Path, contract: P
         extras += f"\nPrevious normalized context: {previous}"
     if review is not None:
         extras += f"\nReviewer findings requiring context re-normalization: {review}"
-    return f"""Normalize the retrieved Jira/Confluence package for Planning Workflow 1.
+    return f"""Normalize the retrieved Jira/Confluence package for the Planning workflow.
 
 Repository root: {repo}
 Raw retrieval manifest: {raw_dir / 'retrieval.json'}
@@ -760,7 +761,15 @@ GUIDANCE_RULE_REVIEWER = (
 )
 
 
-def build_analysis_prompt(repo: Path, context_json: Path, raw_dir: Path, baseline_sha: str, contract: Path, governance: Path, guidance: Path | None = None) -> str:
+def _source_roots_lines(source_roots: list[str] | None) -> str:
+    """Prompt line naming where Delivery may change files; empty when not supplied."""
+    if not source_roots:
+        return ""
+    return ("\nSource roots (Delivery may create or change files only under these; the configuration is trusted): "
+            + ", ".join(source_roots))
+
+
+def build_analysis_prompt(repo: Path, context_json: Path, raw_dir: Path, baseline_sha: str, contract: Path, governance: Path, guidance: Path | None = None, *, source_roots: list[str] | None = None) -> str:
     return f"""Analyse the repository against the validated Planning Context.
 
 Repository root: {repo}
@@ -768,12 +777,12 @@ Repository baseline SHA: {baseline_sha}
 Validated Planning Context: {context_json}
 Raw source retrieval manifest (provenance checks only): {raw_dir / 'retrieval.json'}
 Planning workflow contract: {contract}
-Governance policy: {governance}{_guidance_lines(guidance, GUIDANCE_RULE_ANALYST)}
+Governance policy: {governance}{_guidance_lines(guidance, GUIDANCE_RULE_ANALYST)}{_source_roots_lines(source_roots)}
 
 Read the supplied context and relevant repository files. Return only the Planning Analysis Markdown required by your profile. Do not design the final implementation plan and do not modify files."""
 
 
-def build_author_prompt(repo: Path, ticket_id: str, context_json: Path, analysis_path: Path, template: Path, contract: Path, governance: Path, baseline_sha: str, base_branch: str, previous_plan: Path | None = None, review_path: Path | None = None, guidance: Path | None = None) -> str:
+def build_author_prompt(repo: Path, ticket_id: str, context_json: Path, analysis_path: Path, template: Path, contract: Path, governance: Path, baseline_sha: str, base_branch: str, previous_plan: Path | None = None, review_path: Path | None = None, guidance: Path | None = None, *, source_roots: list[str] | None = None) -> str:
     revision = ""
     if previous_plan is not None and review_path is not None:
         revision = f"""
@@ -790,7 +799,7 @@ Validated Planning Context: {context_json}
 Planning Analysis: {analysis_path}
 Development Plan template: {template}
 Planning workflow contract: {contract}
-Governance policy: {governance}{_guidance_lines(guidance, GUIDANCE_RULE_AUTHOR)}
+Governance policy: {governance}{_guidance_lines(guidance, GUIDANCE_RULE_AUTHOR)}{_source_roots_lines(source_roots)}
 {revision}
 
 Return ONLY the complete Development Plan in Markdown. Do not modify repository files."""
@@ -816,7 +825,7 @@ def _previous_reviews_lines(previous_reviews: list[Path] | None, required_refs: 
     return f"\nPrevious reviews of earlier plan versions (oldest first):\n{listing}{accounting}"
 
 
-def build_reviewer_prompt(repo: Path, context_json: Path, raw_dir: Path, analysis_path: Path, plan_path: Path, contract: Path, governance: Path, baseline_sha: str, guidance: Path | None = None, previous_reviews: list[Path] | None = None, required_refs: list[str] | None = None) -> str:
+def build_reviewer_prompt(repo: Path, context_json: Path, raw_dir: Path, analysis_path: Path, plan_path: Path, contract: Path, governance: Path, baseline_sha: str, guidance: Path | None = None, previous_reviews: list[Path] | None = None, required_refs: list[str] | None = None, *, source_roots: list[str] | None = None) -> str:
     return f"""Independently review the candidate Development Plan.
 
 Repository root: {repo}
@@ -827,7 +836,7 @@ Raw source directory: {raw_dir / 'sources'}
 Planning Analysis: {analysis_path}
 Candidate Development Plan: {plan_path}
 Planning workflow contract: {contract}
-Governance policy: {governance}{_guidance_lines(guidance, GUIDANCE_RULE_REVIEWER)}{_previous_reviews_lines(previous_reviews, required_refs)}
+Governance policy: {governance}{_guidance_lines(guidance, GUIDANCE_RULE_REVIEWER)}{_source_roots_lines(source_roots)}{_previous_reviews_lines(previous_reviews, required_refs)}
 
 Challenge the plan against the source provenance, context and repository evidence. Return ONLY the structured JSON required by your profile. Do not modify files and do not approve the plan."""
 
@@ -1138,6 +1147,10 @@ def main() -> None:
     for required in (schema, context_contract, planning_contract, governance, plan_template):
         if not required.is_file():
             raise WorkflowContractError(f"required SDLC contract file is missing: {required}")
+    # The roots Delivery may change, so the plan can stay inside them; invalid configuration stops here,
+    # before any agent runs, exactly as it would stop Delivery.
+    source_roots = load_source_config(repo)["source_roots"]
+    resolve_source_roots(repo, source_roots)
 
     guidance_path, guidance_sha = (None, None) if guidance_source is None else freeze_guidance(guidance_source, runtime_dir)
 
@@ -1212,7 +1225,7 @@ def main() -> None:
         # 4. Repository analysis.
         analysis_output = _run_delivered_step(
             agent=PLANNING_ANALYST,
-            prompt=build_analysis_prompt(repo, context_json, raw_dir, baseline_sha, planning_contract, governance, guidance_path),
+            prompt=build_analysis_prompt(repo, context_json, raw_dir, baseline_sha, planning_contract, governance, guidance_path, source_roots=source_roots),
             step_id="planning-analysis-v1",
             repo=repo,
             evidence_dir=analysis_dir / "agent-output",
@@ -1226,7 +1239,7 @@ def main() -> None:
             agent=PLAN_AUTHOR,
             prompt=build_author_prompt(
                 repo, ticket_id, context_json, analysis_path, plan_template,
-                planning_contract, governance, baseline_sha, base_branch, guidance=guidance_path,
+                planning_contract, governance, baseline_sha, base_branch, guidance=guidance_path, source_roots=source_roots,
             ),
             step_id="plan-author-r1-c1",
             repo=repo,
@@ -1264,7 +1277,7 @@ def main() -> None:
             prompt=build_author_prompt(
                 repo, ticket_id, context_json, analysis_path, plan_template,
                 planning_contract, governance, baseline_sha, base_branch,
-                previous_plan=previous_plan, review_path=review_paths[-1], guidance=guidance_path,
+                previous_plan=previous_plan, review_path=review_paths[-1], guidance=guidance_path, source_roots=source_roots,
             ),
             step_id=f"plan-author-warm-c{context_version}",
             repo=repo,
@@ -1285,7 +1298,7 @@ def main() -> None:
             prompt=build_reviewer_prompt(
                 repo, context_json, raw_dir, analysis_path, plan_path,
                 planning_contract, governance, baseline_sha, guidance_path,
-                previous_reviews, required_refs,
+                previous_reviews, required_refs, source_roots=source_roots,
             ),
             label="Plan Reviewer",
             step_id=f"plan-review-r{review_round}-c{context_version}",
@@ -1349,7 +1362,7 @@ def main() -> None:
 
             analysis_output = _run_delivered_step(
                 agent=PLANNING_ANALYST,
-                prompt=build_analysis_prompt(repo, context_json, raw_dir, baseline_sha, planning_contract, governance, guidance_path),
+                prompt=build_analysis_prompt(repo, context_json, raw_dir, baseline_sha, planning_contract, governance, guidance_path, source_roots=source_roots),
                 step_id=f"planning-analysis-v{context_version}",
                 repo=repo,
                 evidence_dir=analysis_dir / "agent-output",
@@ -1365,7 +1378,7 @@ def main() -> None:
             prompt=build_author_prompt(
                 repo, ticket_id, context_json, analysis_path, plan_template,
                 planning_contract, governance, baseline_sha, base_branch,
-                previous_plan=plan_path, review_path=review_path, guidance=guidance_path,
+                previous_plan=plan_path, review_path=review_path, guidance=guidance_path, source_roots=source_roots,
             ),
             step_id=f"plan-author-r{next_round}-c{context_version}",
             repo=repo,
@@ -1407,6 +1420,7 @@ def main() -> None:
         "repository_root": str(repo),
         "base_branch": base_branch,
         "repository_baseline_sha": baseline_sha,
+        "source_roots": source_roots,
         "planning_context_sha256": context_sha,
         "plan_path": str(final_plan.relative_to(repo)),
         "plan_sha256": plan_sha,

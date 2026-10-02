@@ -101,8 +101,11 @@ class LifecycleIntegrationTest(unittest.TestCase):
             self.assertEqual(cleanup.call_count, len(calls))
         return calls, outputs[-1]
 
-    def plan(self, root, modular):
+    def plan(self, root, modular, prompts=None, configure=None):
         repo, git = self.make_repo(root)
+        if configure is not None:
+            self.edit_config(repo, configure)
+            git('commit', '-qam', 'Configure')
         source = root / 'sources'
         source.mkdir()
         (source / 'jira.md').write_text('Return three from value().')
@@ -111,6 +114,8 @@ class LifecycleIntegrationTest(unittest.TestCase):
         planning, transport = load('dev_plan', modular)
         inputs = {'repository_root': str(repo), 'ticket_id': 'T-1', 'source_dir': str(source), 'baseline_sha': git('rev-parse', 'HEAD')}
         def respond(agent, step_id, prompt):
+            if prompts is not None:
+                prompts.append((agent, step_id, prompt))
             if agent == planning.CONTEXT_NORMALIZER:
                 return '{invalid' if step_id == 'context-normalize-v1' else context()
             if agent == planning.PLANNING_ANALYST:
@@ -263,6 +268,39 @@ class LifecycleIntegrationTest(unittest.TestCase):
         keys = ('source_roots', 'write_profiles', 'verification')
         project_path.write_text(json.dumps({'version': 1, **{k: config[k] for k in keys if k in config}}))
         registry_path.write_text(json.dumps({k: v for k, v in config.items() if k not in keys}))
+
+    def test_planning_gives_the_source_roots_to_analyst_author_and_reviewer(self):
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                prompts = []
+                repo, git, records = self.plan(Path(temp), modular, prompts,
+                                               lambda config: config.update(source_roots=['app', 'extra/module']))
+                line = 'Source roots (Delivery may create or change files only under these; the configuration is trusted): app, extra/module'
+                for agent, step_id, prompt in prompts:
+                    with self.subTest(step=step_id):
+                        if 'normaliz' in step_id:
+                            self.assertNotIn('Source roots', prompt)
+                            self.assertIn('for the Planning workflow', prompt)
+                        else:
+                            self.assertIn(line, prompt)
+                self.assertEqual({p[1].split('-')[0] for p in prompts}, {'context', 'planning', 'plan'})
+                manifest = json.loads((records / 'execution-manifest.json').read_text())
+                self.assertEqual(manifest['source_roots'], ['app', 'extra/module'])
+
+    def test_planning_rejects_an_invalid_source_root_config_before_any_agent_runs(self):
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git = self.make_repo(Path(temp))
+                self.edit_config(repo, lambda config: config.update(source_roots=['.git']))
+                source = Path(temp) / 'sources'
+                source.mkdir()
+                planning, transport = load('dev_plan', modular)
+                inputs = {'repository_root': str(repo), 'ticket_id': 'T-1', 'source_dir': str(source),
+                          'baseline_sha': git('rev-parse', 'HEAD')}
+                with patch.object(planning, 'get_inputs', return_value=inputs), patch.object(transport, 'step') as step:
+                    with self.assertRaisesRegex(planning.WorkflowContractError, 'source_roots'):
+                        planning.main()
+                    step.assert_not_called()
 
     def test_delivery_rejects_an_invalid_source_root_config_before_any_agent_runs(self):
         for modular in (False, True):

@@ -18,7 +18,14 @@ Status: **planned; no hardening implementation is included in this document**.
 
 Prepared on 2026-09-21 against HEAD `abcea97` and the current uncommitted working tree. The configurable-source-root work has advanced since the initial review: its plan now records implementation and live verification, and Delivery uses `source_config.py` and registry-defined verification commands. Those results are existing documentation claims, not checks rerun while writing this plan.
 
-Implementation must build on that work. Use configured source roots and per-profile restrictions rather than reintroducing hardcoded `app/` paths. Reinspect the working tree before each milestone because development is occurring concurrently; preserve unrelated edits.
+Implementation must build on that work. Use configured source roots and per-profile restrictions rather than reintroducing hardcoded `app/` paths.
+
+**Changes since this plan was written (2026-10-02, `main`):** these are already implemented and live-verified, and each milestone must account for them.
+
+- Per-project settings (`source_roots`, `write_profiles`, `verification`) live in `agentic-sdlc-project.json` at the repository root. `.agentic-sdlc/cao/specialists.json` keeps only workers and skills, and its old keys apply only when a project has no project file. The hook denies writes to the project file. Planning also reads the roots and records them in its execution manifest.
+- Hybrid Delivery runs independent tasks at the same time, each in its own Git worktree under `.agentic-sdlc/runtime/<ticket>/<run>/implementation/worktrees/`, then commits and cherry-picks them in task order. A worktree worker writes its answer file inside its worktree (`<worktree>/.agentic-sdlc/runtime/answer/`), because the hook resolves every root against the worker's working directory. M2's exact answer authorization must cover those paths, and the trusted-file check in `worktrees.py` must keep matching whatever M2 adds to the hook's inputs.
+- A fourth workflow, Source remediation (`source_remediate`), fixes eligible Source review findings on its own branch. It shares the remediator profile, the hook and the verification runner, so M1 and M2 apply to it too.
+- The answer wait no longer has a fixed length: it continues while the agent shows activity and fails after five minutes without any, within the 30-minute step budget. Reinspect the working tree before each milestone because development is occurring concurrently; preserve unrelated edits.
 
 ### In scope
 
@@ -31,7 +38,7 @@ Implementation must build on that work. Use configured source roots and per-prof
 
 - Verification containers or other execution sandboxes.
 - GitHub PR creation, remote review verification, deployment, and downstream QA.
-- Parallel workers, per-run delivery worktrees, and comprehensive repository locking.
+- Per-run delivery worktrees and comprehensive repository locking. Parallel hybrid workers now exist, with per-task worktrees inside one delivery checkout; M1 and M2 must cover them, but isolating whole runs from each other remains out of scope.
 - Semantic proof that a plan covers all requirements or that a test suite proves correctness.
 - Windows support and a general-purpose rewrite of all artifact persistence.
 
@@ -45,7 +52,7 @@ Estimates are engineering days for one developer, including relevant regression 
 |---|---|---:|---|
 | M0 | Reconfirm baseline and inspect CAO authorization lifecycle | 0.5 day, included below | Exact answer binding has a viable implementation path |
 | M1 | Shared clean-tree/index and commit-scope enforcement | 0.5–1 day | Both modes preserve unrelated work in negative tests |
-| M2 | Exact answer-file authorization | 2–3 days, including M0 | All three workflows deny cross-step and cross-run writes |
+| M2 | Exact answer-file authorization | 2–3 days, including M0 | All four workflows (Planning, Delivery including worktree workers, Source review, Source remediation) deny cross-step and cross-run writes |
 | M3 | Drift gate and approval revision handling | 2–4 days | Relevant drift blocks; reviewed reconciliation can proceed |
 | M4 | Integrated deployment and acceptance checks | Included in M1–M3 | Repository and installed artifacts agree; live checks pass |
 
@@ -53,7 +60,7 @@ Estimates are engineering days for one developer, including relevant regression 
 
 ## 4. M0 — confirm prerequisites
 
-1. Record HEAD, working-tree changes, configured roots, registry suites, and installed workflow/profile versions without modifying unrelated files.
+1. Record HEAD, working-tree changes, configured roots and verification suites (`agentic-sdlc-project.json`), and installed workflow/profile versions without modifying unrelated files.
 2. Inspect the installed `cao_workflow.step` implementation and available terminal metadata. Determine precisely when a terminal is created, when it starts processing the prompt, and when `step()` returns a handle.
 3. Establish whether immutable server-side metadata identifies repository/workspace, workflow run, step, and execution attempt. A profile name alone is insufficient: many workers share the implementer profile.
 4. Prove one race-free authorization path in a disposable fixture before refactoring the hook:
@@ -192,7 +199,7 @@ Always treat these areas as relevant:
 
 - Configured source roots and their tests.
 - Dependency manifests/locks, build configuration, verification entry points, and CI configuration wherever they live.
-- The specialist registry, source-root/write-profile settings, agent profiles, skills, workflow implementation, hooks, and governance policies.
+- The specialist registry, the project file (`agentic-sdlc-project.json`: source roots, write profiles and verification commands), agent profiles, skills, workflow implementation, hooks, and governance policies.
 - Submodule pointer changes and unresolved source dependencies; block with an explanation if the comparison cannot establish their contents.
 
 Allow a small maintainer-owned list of non-executable project documentation paths to advance without new plan approval. Ensure source roots and protected tooling override documentation exclusions. Documentation that shapes requirements or is referenced by the plan remains relevant. Do not let agents define exclusions.
