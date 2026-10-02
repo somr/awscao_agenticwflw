@@ -27,8 +27,9 @@ this repository) is left unrestricted by this hook.
 
 Role-aware widening (Delivery): every CAO-spawned terminal may
 always write under ALWAYS_ALLOWED_ROOT. A terminal may additionally write
-under the source roots the trusted registry names for its agent profile
-(write_profiles in .agentic-sdlc/cao/specialists.json), but only
+under the source roots the trusted configuration names for its agent profile
+(write_profiles in agentic-sdlc-project.json, or in .agentic-sdlc/cao/specialists.json
+when the project has no such file), but only
 after this hook independently confirms that profile identity by querying
 CAO's own terminal metadata (GET /terminals/{id} -> agent_profile) — never by
 trusting anything the terminal's own environment claims about itself. That
@@ -42,10 +43,12 @@ any widened root and always wins, so a widened profile still cannot rewrite
 its own guardrails (this hook, its wiring, or already-published governance
 records).
 
-Configurable source roots: the roots come from the registry keys source_roots and
-write_profiles, whose defaults ("app"; implementer and remediator) equal the original
-hardcoded behaviour, so a project without those keys is unchanged. The registry sits
-under a DENY_ALWAYS_ROOT, so no worker can edit it. The configuration is validated on
+Configurable source roots: the roots come from the keys source_roots and write_profiles,
+whose defaults ("app"; implementer and remediator) equal the original hardcoded behaviour,
+so a project without those keys is unchanged. They are per-project settings, read from
+agentic-sdlc-project.json at the repository root so that .agentic-sdlc/ can stay common to
+every project; without that file they are read from the common registry. A key set in both
+files is invalid. Both files are DENY_ALWAYS_ROOTS, so no worker can edit either. The configuration is validated on
 every decision by validate_source_config() below, a standalone copy of the workflow's
 validator that tests/test_source_config.py keeps in step. A registry that is present
 but unreadable, malformed or invalid grants NO widening to ANY profile and never falls
@@ -77,6 +80,7 @@ DENY_ALWAYS_ROOTS = [
     ".agentic-sdlc/templates",
     ".agentic-sdlc/schemas",
     "agentic-sdlc-records",  # durable workflow records; outside the embeddable .agentic-sdlc/
+    "agentic-sdlc-project.json",  # per-project source roots, write profiles and verification
 ]
 
 # The additional roots a given agent_profile may write under, on top of
@@ -89,6 +93,9 @@ DENY_ALWAYS_ROOTS = [
 # workflow bundle, so tests/test_source_config.py runs both over one corpus (parity
 # test). Any rule added there must be added here, and the other way round.
 REGISTRY_RELATIVE_PATH = ".agentic-sdlc/cao/specialists.json"
+PROJECT_RELATIVE_PATH = "agentic-sdlc-project.json"
+PROJECT_KEYS = ("source_roots", "write_profiles", "verification")
+PROJECT_FILE_VERSION = 1
 DEFAULT_SOURCE_ROOTS = ["app"]
 DEFAULT_WRITE_PROFILES = {"sdlc_implementer": None, "sdlc_remediator": None}
 MAX_SOURCE_ROOTS = 16
@@ -99,6 +106,7 @@ FORBIDDEN_ROOTS = (
     "agentic-sdlc-records",
     "agentic-sdlc-docs",
     "agentic-sdlc-local-inputs",
+    PROJECT_RELATIVE_PATH,
 )
 READ_ONLY_PROFILES = frozenset({
     "sdlc_code_supervisor",
@@ -177,18 +185,50 @@ def validate_source_config(raw) -> dict:
     return {"source_roots": roots, "write_profiles": write_profiles}
 
 
-def _load_source_config(cwd: str) -> dict:
-    """Validated source-root config; a missing registry file means the defaults.
+def validate_project_file(raw) -> dict:
+    """Same contract as source_config.validate_project_file(); raises ValueError."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"{PROJECT_RELATIVE_PATH} must be a JSON object")
+    if raw.get("version") != PROJECT_FILE_VERSION:
+        raise ValueError(f"{PROJECT_RELATIVE_PATH} requires \"version\": {PROJECT_FILE_VERSION}")
+    unknown = sorted(set(raw) - {"version", *PROJECT_KEYS})
+    if unknown:
+        raise ValueError(f"{PROJECT_RELATIVE_PATH} has unknown keys: {', '.join(unknown)}")
+    return raw
 
-    Anything else that goes wrong (unreadable, malformed, invalid) raises: the caller
-    must treat that as "no widening", never as "use the defaults".
-    """
+
+def select_source_settings(registry, project):
+    """Same contract as source_config.select_source_settings(); raises ValueError."""
+    if project is None:
+        return {} if registry is None else registry
+    validate_project_file(project)
+    if isinstance(registry, dict):
+        both = [key for key in PROJECT_KEYS if key in registry]
+        if both:
+            raise ValueError(
+                f"{', '.join(both)} set in both {PROJECT_RELATIVE_PATH} and {REGISTRY_RELATIVE_PATH}; "
+                f"keep per-project settings only in {PROJECT_RELATIVE_PATH}"
+            )
+    return project
+
+
+def _read_optional_json(cwd: str, relative: str):
     try:
-        with open(os.path.join(cwd, REGISTRY_RELATIVE_PATH), encoding="utf-8") as handle:
-            raw = json.load(handle)
+        with open(os.path.join(cwd, relative), encoding="utf-8") as handle:
+            return json.load(handle)
     except FileNotFoundError:
-        return validate_source_config({})
-    return validate_source_config(raw)
+        return None
+
+
+def _load_source_config(cwd: str) -> dict:
+    """Validated source-root config; with neither file the defaults apply.
+
+    Anything else that goes wrong (unreadable, malformed, invalid, keys in both files)
+    raises: the caller must treat that as "no widening", never as "use the defaults".
+    """
+    registry = _read_optional_json(cwd, REGISTRY_RELATIVE_PATH)
+    project = _read_optional_json(cwd, PROJECT_RELATIVE_PATH)
+    return validate_source_config(select_source_settings(registry, project))
 
 
 def _resolve_roots(cwd: str, roots: list) -> None:
@@ -279,7 +319,7 @@ def main() -> int:
     if config_problem:
         return _deny(
             f"CAO worker writes are restricted to {ALWAYS_ALLOWED_ROOT}/** because the source-root "
-            f"configuration in {REGISTRY_RELATIVE_PATH} is invalid ({config_problem}); no source root is "
+            f"configuration ({PROJECT_RELATIVE_PATH} or {REGISTRY_RELATIVE_PATH}) is invalid ({config_problem}); no source root is "
             "writable until it is fixed. See agentic-sdlc-docs/reference/write-scope-hook.md."
         )
     return _deny(

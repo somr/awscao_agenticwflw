@@ -13,6 +13,7 @@ Start with the [project README](../README.md) for the quick start and current ca
 | Plan work, supply guidance, warm-start or approve a plan | [Planning](workflows/planning.md) |
 | Deliver a plan, configure source roots or record a delivery decision | [Delivery](workflows/delivery.md) |
 | Review an existing PR or publish feedback | [Source review](workflows/source-review.md) |
+| Fix eligible review findings without a ticket and publish done replies | [Source remediation](workflows/source-remediation.md) |
 | Extend Delivery with workers, skills or verification toolchains | [Specialists and skills](workflows/hybrid-delivery.md) |
 | Install or change agent profiles and providers | [Agent profiles](reference/agent-profiles.md) |
 | Inspect the answer protocol and write hook | [Agent answers and write scope](reference/write-scope-hook.md) |
@@ -49,6 +50,7 @@ Implementation design history; use the workflow guides above for current operati
 
 - [Modular refactor validation](verification/modularity-verification.md)
 - [Source-review live verification](verification/source-review-live.md)
+- [Source-remediation verification and remaining live checks](verification/source-remediation.md)
 - [Hybrid delivery live verification](verification/hybrid-delivery-live.md)
 - [Configurable source roots live verification](verification/configurable-source-roots-live.md)
 

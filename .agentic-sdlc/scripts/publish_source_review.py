@@ -21,6 +21,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cao'))
+from sdlc_workflows.review_comments import finding_comment_marker
+
 MAX_BODY = 65536
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 DRAFT_HEADER = re.compile(r'^<!-- cao-source-review-draft base="([0-9a-f]{40})" head="([0-9a-f]{40})" -->$')
@@ -286,7 +289,7 @@ def plan_review(root: Path, report: dict, draft_text: str, metadata: dict, files
             general_items.append((item, finding, reason))
             decisions.append({"id": item["id"], "outcome": "GENERAL", "reason": reason})
             continue
-        comment = {"path": anchor["path"], "body": note + item["body"], "side": anchor["side"],
+        comment = {"path": anchor["path"], "body": note + item["body"] + "\n\n" + finding_comment_marker(report, item['id']), "side": anchor["side"],
                    "line": anchor["line_end"]}
         if anchor["line_start"] != anchor["line_end"]:
             comment.update(start_line=anchor["line_start"], start_side=anchor["side"])
@@ -367,6 +370,13 @@ def publish(root: Path, *, include_context_changed: bool = False) -> dict:
             {key: comment.get(key) for key in ("id", "path", "side", "start_line", "line", "commit_id", "html_url", "body")}
             for page in gh(f"{endpoint}/comments?per_page=100", paginate=True)
             for comment in page if comment.get("pull_request_review_id") == review["id"]]
+        receipt['finding_comments'] = {}
+        for finding in report['findings']:
+            token = finding_comment_marker(report, finding['stable_id'])
+            matches = [c for c in receipt['comments'] if (c.get('body') or '').rstrip().endswith(token)]
+            if len(matches) == 1:
+                receipt['finding_comments'][finding['stable_id']] = {
+                    'id': matches[0]['id'], 'html_url': matches[0]['html_url'], 'review_id': review['id']}
         receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
         return receipt
     finally:

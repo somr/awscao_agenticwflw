@@ -20,9 +20,12 @@ flowchart TD
     PR["Existing GitHub PR<br/>or committed local fixture"] --> SR["Source review: source_review"]
     SR --> FB["Local findings and feedback queues"]
     FB -.->|Separate explicit publication command| GH["GitHub review comments"]
+    FB -.->|Explicit invocation with selected eligible findings| FIX["Source remediation: source_remediate"]
+    FIX --> FIXBRIEF["Verified local fixes and Human Review Brief"]
+    FIXBRIEF -.->|Separate explicit push and notification| DONE["Existing PR branch and done replies"]
 ```
 
-Planning and Delivery share ticket-level records. Source review is independent: it needs no approved plan or delivery manifest. Its `AUTO_FIX` queue describes eligible work for a later consumer; it does not trigger Delivery or apply fixes. Delivery itself creates local PR artifacts and does not push, open a remote PR or merge.
+Planning and Delivery share ticket-level records. Source review is independent: it needs no approved plan or delivery manifest. Its `AUTO_FIX` queue can be consumed by an explicitly invoked Source remediation run; Source review itself does not trigger edits. Delivery creates local PR artifacts and does not push, open a remote PR or merge. Source remediation also runs locally, with a separate optional push-and-notify command.
 
 ## Execution components
 
@@ -30,8 +33,9 @@ The maintained modules are under [`.agentic-sdlc/cao/sdlc_workflows/`](../.agent
 
 | Component | Responsibility |
 |---|---|
-| `planning.py`, `delivery.py`, `source_review.py` | Workflow inputs, domain contracts, routing and orchestration |
-| `hybrid.py` | Specialist registry, supervisor assignments, sequential workers, skill injection and verification-suite selection |
+| `planning.py`, `delivery.py`, `source_review.py`, `source_remediation.py` | Workflow inputs, domain contracts, routing and orchestration |
+| `hybrid.py` | Specialist registry, supervisor assignments, wave schedule, parallel workers, skill injection and verification-suite selection |
+| `worktrees.py` | Per-task Git worktrees, trusted-file check, per-task commits and ordered cherry-picks |
 | `runtime.py` | CAO steps, answer-file delivery, completion checks, bounded JSON repair and terminal cleanup |
 | `artifacts.py`, `validation.py`, `errors.py` | Evidence files, digests, validation helpers and error types |
 | `source_config.py` | Source-root and write-profile validation used by Delivery; the hook carries a standalone copy checked by parity tests |
@@ -101,7 +105,7 @@ flowchart TD
     CHECK --> MODE{"Implementation mode"}
     MODE -->|Hybrid: default| SUP["Code Supervisor proposes assignments"]
     SUP --> GRAPH["Python validates task graph"]
-    GRAPH --> WORK["Python dispatches workers sequentially<br/>with selected skill instructions"]
+    GRAPH --> WORK["Python runs workers in waves,<br/>independent tasks in parallel worktrees,<br/>and merges one commit per task"]
     WORK --> INT["Implementer integrates assignments"]
     MODE -->|Single| IMP["One Implementer"]
     INT --> COMMIT["Python commits and verifies"]
@@ -118,9 +122,9 @@ flowchart TD
     ROUTE -->|No further automatic fixes| BRIEF["Human Review Brief<br/>AWAITING_HUMAN_REVIEW"]
 ```
 
-The supervisor proposes 1–16 ordered assignments; Python validates worker names, skills and dependencies before dispatch. Workers execute one at a time in the same checkout, each in a fresh session. The integration pass checks the whole feature. There is no parallel worker scheduler or per-run delivery worktree.
+The supervisor proposes 1–16 ordered assignments with their dependencies and the files each will change; Python validates worker names, skills, dependencies and ownership before dispatch. Python groups independent tasks into waves and runs up to `hybrid_max_parallel` (default 4) workers of a wave at the same time, each in a fresh session in its own Git worktree; a wave of one task runs in the main checkout. After each wave Python commits every task and cherry-picks the commits in task order; a conflicting task is rerun once in the main checkout. The integration pass checks the whole feature. The run itself still uses one delivery checkout (no per-run worktree).
 
-[`specialists.json`](../.agentic-sdlc/cao/specialists.json) connects workers to profiles, skills and verification suites. Hybrid verification uses the deduplicated union of selected worker and skill commands; single mode uses the `application` suite. Python runs commands without a shell, with timeouts, and repeats verification after repair or remediation. The registry currently ships one general `developer` worker and AngularJS/Spark skills; those skill suites need their own project files and toolchains.
+[`specialists.json`](../.agentic-sdlc/cao/specialists.json), common to every project, connects workers to profiles and skills; the project's [`agentic-sdlc-project.json`](../agentic-sdlc-project.json) sets the source roots, write profiles and verification suites. Hybrid verification uses the deduplicated union of selected worker and skill commands; single mode uses the `application` suite. Python runs commands without a shell, with timeouts, and repeats verification after repair or remediation. The registry currently ships one general `developer` worker and AngularJS/Spark skills; those skill suites need their own project files and toolchains.
 
 Protected or high-impact findings go to human handling. Exhausting automatic remediation also leads to a brief with unresolved findings, and so does a remediation round that changes nothing: its findings are escalated to the human. Some exceptions currently end the CAO run as `failed` without updating the manifest to `BLOCKED`; the [Delivery guide](workflows/delivery.md) documents those outcomes. See [hybrid delivery](workflows/hybrid-delivery.md) for extension procedures.
 
@@ -144,6 +148,15 @@ flowchart TD
 ```
 
 The arrows show execution order. Correctness and security reviewers have separate contexts and are instructed not to consult each other's findings; the validator considers their combined candidates. Source review reads code and test source but does not run tests, establish requirements compliance or approve the PR. GitHub mode checks the remote base/head again at completion and marks changed snapshots `STALE`. Publication is a separate command run by a person: it posts the edited `review-draft.md` as one non-blocking `COMMENT` review, with comments beside the code where the diff allows, and after a PR moves it places only findings whose lines are unchanged. See the [Source-review guide](workflows/source-review.md).
+
+### Source remediation: bounded fixes for an existing review
+
+`source_remediate` consumes Source review evidence and an optional selection, with no ticket or plan.
+It reuses the remediator, runtime, source-root configuration and verification runner. A dedicated read-only
+fix reviewer assesses each original finding and the full resulting PR diff. The workflow creates local commits
+and a Human Review Brief. The separate publisher checks candidate evidence and current remote tips before
+an optional fast-forward push and done replies. Thread resolution and final PR approval remain human actions.
+See the [Source remediation guide](workflows/source-remediation.md).
 
 ## Build and deployment boundary
 
@@ -202,7 +215,7 @@ The profiles request one answer file per step. **The current hooks enforce a bro
 | Implementer, remediator and registered source-writing workers | Runtime tree plus configured source roots, narrowed by `write_profiles` where configured |
 | Source-review agents | `.agentic-sdlc/runtime/**` inside the isolated workspace; exported source and other workspace files are protected |
 
-The repository hook uses CAO terminal metadata and the trusted registry to grant source writes. Invalid source-root configuration denies source writes; the runtime answer area remains writable. The hook intercepts Claude write/edit tools and applies to CAO worker sessions. It does not sandbox Python orchestration or application code executed by verification. See the [profile reference](reference/agent-profiles.md) and [hook reference](reference/write-scope-hook.md), read alongside these current limits.
+The repository hook uses CAO terminal metadata and the trusted project file to grant source writes. Invalid source-root configuration denies source writes; the runtime answer area remains writable. The hook intercepts Claude write/edit tools and applies to CAO worker sessions. It does not sandbox Python orchestration or application code executed by verification. See the [profile reference](reference/agent-profiles.md) and [hook reference](reference/write-scope-hook.md), read alongside these current limits.
 
 Humans use [`approve_plan.py`](../.agentic-sdlc/scripts/approve_plan.py) to record a decision bound to the reviewed plan digest, baseline and any guidance. [`record_pr_approval.py`](../.agentic-sdlc/scripts/record_pr_approval.py) binds the delivery decision to the exact reviewed local branch head. These scripts record supplied human decisions; they do not authenticate a remote GitHub review. Agents cannot approve plans or PRs through the workflow.
 

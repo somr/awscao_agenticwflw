@@ -2,11 +2,12 @@
 
 This repository is a learning and validation project for an agentic software-development lifecycle built on AWS Labs CLI Agent Orchestrator (CAO). The maintained implementation lives under [.agentic-sdlc/](.agentic-sdlc/).
 
-Current repository capabilities (2026-09-21):
+Current repository capabilities (2026-10-02):
 
 - Planning (`sdlc_dev_plan`) retrieves and normalizes requirements, analyses the repository, authors a Development Plan, and performs an independent plan review before human approval. It supports developer guidance, review history, and warm starts from eligible non-converged candidates.
 - Delivery (`sdlc_deliver`) implements an approved plan, runs configured verification commands, performs independent PR review and up to three remediation rounds, and prepares a human review package. Hybrid mode is the default: a supervisor assigns registered workers sequentially, followed by an integration pass. Single-implementer mode is also available.
 - Source review (`source_review`) reviews an existing GitHub pull request in an isolated snapshot and routes validated findings into `AUTO_FIX` or `HUMAN_REQUIRED` queues. It produces feedback only; it does not apply fixes or run tests. A person edits the generated `review-draft.md` and publishes it with a separate command, as one non-blocking `COMMENT` review with comments beside the code.
+- Source remediation (`source_remediate`) fixes selected eligible findings without a ticket, verifies and independently reviews the changes, then prepares local records for human review. A separate command can push the verified commit and post GitHub done replies.
 
 Python owns orchestration, validation, Git operations, verification and routing. Human approval is recorded separately for the reviewed plan and the delivered commit. Delivery produces local PR artifacts; it does not push, open a GitHub PR or merge.
 
@@ -76,7 +77,7 @@ cao workflow run sdlc_deliver --wait --json --run-id deliver-PAY-DEMO-001-1 \
   --input ticket_id=PAY-DEMO-001 --input repository_root="$PWD" --input base_branch=main
 ```
 
-Add `--input implementation_mode=single` to use one implementer. The default hybrid mode runs workers sequentially in the same checkout.
+Add `--input implementation_mode=single` to use one implementer. The default hybrid mode runs tasks that do not depend on each other at the same time, each in its own Git worktree (at most four; `--input hybrid_max_parallel=1` runs them one after another).
 
 When Delivery reaches `AWAITING_HUMAN_REVIEW`, read `agentic-sdlc-records/PAY-DEMO-001/human-review-brief.md` and review the branch before recording a human decision:
 
@@ -100,20 +101,27 @@ cao workflow run source_review --wait --json --run-id source-review-pr42-1 \
 
 Replace the PR URL and run ID. This installer includes its five profiles and refuses to overwrite an existing workflow or profile; use the [Source-review guide](agentic-sdlc-docs/workflows/source-review.md) for upgrades, local fixture mode and optional publication. Results are `code-review.json`, `comments.md` and the editable `review-draft.md` under `.agentic-sdlc/runtime/source-review/<run-id>/`.
 
+Eligible Source review findings can be fixed with the ticket-independent
+[`source_remediate` workflow](agentic-sdlc-docs/workflows/source-remediation.md). It creates a local branch,
+verifies each batch and independently reviews the result. Records use
+`agentic-sdlc-records/source-remediation/pr-<number>-<run-id>/`. After reviewing the fixes, use the separate
+publisher to optionally push the verified commit and post GitHub done replies.
+
 ## Configure for your project
 
-The sample application lives under `app/`. To point the workflows at your own code, edit [`.agentic-sdlc/cao/specialists.json`](.agentic-sdlc/cao/specialists.json):
+The sample application lives under `app/`. `.agentic-sdlc/` is common to every project; what differs per project lives in [`agentic-sdlc-project.json`](agentic-sdlc-project.json) at the repository root:
 
 - `source_roots`: the directories where generated source is written, committed and diffed (default `["app"]`);
 - `write_profiles`: which agent profiles may write there;
-- `verification`: the commands that verify a change, so use your own build and test commands;
-- `workers` and `skills`: the specialists Delivery can assign work to.
+- `verification`: the commands that verify a change, so use your own build and test commands.
 
-Agents cannot edit this file. An invalid file stops Delivery and denies all source writes instead of falling back to `app/`. Verification commands are configured separately from the source roots. Planning does not yet consume those roots, so check that the plan's tasks fit the permitted directories before approval.
+The common [`.agentic-sdlc/cao/specialists.json`](.agentic-sdlc/cao/specialists.json) holds `workers` and `skills`, the specialists Delivery can assign work to. A skill is available only when the project defines its verification suites.
 
-The shipped registry has one general `developer` worker and AngularJS/Spark skills. Their verification commands require project files and toolchains beyond the Python payment fixture. See [source roots](agentic-sdlc-docs/workflows/delivery.md#source-roots), the [registry reference](agentic-sdlc-docs/workflows/delivery.md#registry-reference) and the [specialist/skill extension guide](agentic-sdlc-docs/workflows/hybrid-delivery.md).
+Agents cannot edit either file. An invalid file, or a per-project key set in both, stops Delivery and denies all source writes instead of falling back to `app/`. Verification commands are configured separately from the source roots. Planning does not yet consume those roots, so check that the plan's tasks fit the permitted directories before approval.
 
-Registry, skill and contract edits are read from the repository on subsequent runs. After changing Python workflow code, rebuild and reinstall the bundles; after changing profiles, reinstall them before the workflows. See [build and install](agentic-sdlc-docs/build-and-install.md) for validation-only commands and installed-copy comparisons.
+The shipped registry has one general `developer` worker and AngularJS/Spark skills. This repository's project file defines their suites, which need project files and toolchains beyond the Python payment fixture. See [source roots](agentic-sdlc-docs/workflows/delivery.md#source-roots), the [registry reference](agentic-sdlc-docs/workflows/delivery.md#registry-reference) and the [specialist/skill extension guide](agentic-sdlc-docs/workflows/hybrid-delivery.md).
+
+Project-file, registry, skill and contract edits are read from the repository on subsequent runs. After changing Python workflow code, rebuild and reinstall the bundles; after changing profiles, reinstall them before the workflows. See [build and install](agentic-sdlc-docs/build-and-install.md) for validation-only commands and installed-copy comparisons.
 
 ## Repository layout and verification
 
@@ -145,7 +153,7 @@ The [hardening plan](hardening-plan.md) is proposed work, not implemented protec
 - Agents are instructed to write one answer file, but hooks permit the broader runtime subtree; exact per-step answer authorization is still planned.
 - Delivery checks baseline ancestry, which does not detect all changes that could invalidate an approved plan. Clean-source and empty-index preconditions are currently enforced for hybrid mode, not consistently for single mode.
 - Verification runs application code and tests in host subprocesses; the agent write hook does not sandbox that execution. Delivery also shares its checkout and has no enforced run isolation.
-- Human PR decisions are local records, not verified GitHub reviews. Parallel workers, remote PR creation and deployment automation are outside the current implementation.
+- Human PR decisions are local records, not verified GitHub reviews. Remote PR creation and deployment automation are outside the current implementation. Parallel workers own files by declaration only: the hook confines each worker to its worktree and the source roots, not to its listed files.
 
 See [future versions](future-versions.md) for remaining gaps, mitigation directions and reassessment criteria, including planning/source-root alignment and failure reporting.
 
@@ -158,6 +166,7 @@ See [future versions](future-versions.md) for remaining gaps, mitigation directi
 - [Delivery contract](.agentic-sdlc/contracts/delivery-workflow.md)
 - [Hybrid delivery and specialist/skill extension guide](agentic-sdlc-docs/workflows/hybrid-delivery.md)
 - [Source-review workflow](agentic-sdlc-docs/workflows/source-review.md)
+- [Source remediation and GitHub done replies](agentic-sdlc-docs/workflows/source-remediation.md)
 - [CAO profiles](agentic-sdlc-docs/reference/agent-profiles.md)
 - [Documentation map](agentic-sdlc-docs/README.md)
 - [Payment-service fixture](app/README.md)

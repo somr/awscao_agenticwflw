@@ -13,6 +13,13 @@ from typing import Any
 
 from cao_workflow import emit_output, get_inputs
 
+from .verification import (
+    VERIFICATION_TIMEOUT_SECONDS,
+    _run_verification,
+)
+from .remediation import (
+    _remediator_completion_validator,
+)
 from .errors import (
     WorkflowContractError,
 )
@@ -33,7 +40,8 @@ from .runtime import (
     _run_json_contract_step,
     PROVIDER,
 )
-from .hybrid import run_hybrid, load_specialists
+from .hybrid import run_hybrid, load_specialists, MAX_PARALLEL_WORKERS
+from .worktrees import _git
 from .source_config import load_source_config, resolve_source_roots
 
 INPUTS = {
@@ -41,6 +49,8 @@ INPUTS = {
     "repository_root": {"type": "path", "required": True},
     "base_branch": {"type": "string", "required": False, "default": "main"},
     "implementation_mode": {"type": "string", "required": False, "default": "hybrid"},
+    # CAO reads INPUTS statically, so the default must be a literal (equal to MAX_PARALLEL_WORKERS; a test checks it).
+    "hybrid_max_parallel": {"type": "int", "required": False, "default": 4},
 }
 
 IMPLEMENTER = "sdlc_implementer"
@@ -74,13 +84,6 @@ PROTECTED_PR_REVIEW_CATEGORIES = {
 PR_REVIEW_IMPACTS = {"LOW", "MEDIUM", "HIGH"}
 PR_REVIEW_AUTOMATION = {"AUTO_FIX", "DEVELOPER_REQUIRED"}
 MEDIUM_AUTO_FIX_CONFIDENCE_THRESHOLD = 0.8
-
-
-def _git(args: list[str], *, cwd: Path) -> str:
-    result = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
-    if result.returncode != 0:
-        raise WorkflowContractError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout
 
 
 def _current_head_sha(repo: Path) -> str:
@@ -241,64 +244,33 @@ def _implement_and_commit(
     return completion
 
 
-def _hybrid_and_commit(*, repo: Path, prompt: str, evidence_dir: Path, ticket_id: str) -> tuple[dict[str, Any], list[list[str]], str]:
+def _hybrid_and_commit(
+    *, repo: Path, prompt: str, evidence_dir: Path, ticket_id: str, run_id: str, max_parallel: int,
+) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
+    """Run hybrid implementation; it commits once per task and once for integration."""
     if _git(["diff", "--cached", "--name-only"], cwd=repo).strip():
         raise WorkflowContractError("Hybrid implementation requires an empty Git index")
     roots = _source_roots(repo)
     if _source_changes(repo, roots).strip():
         raise WorkflowContractError(f"Hybrid implementation requires clean source roots ({', '.join(roots)})")
-    completion, commands, context = run_hybrid(
+    completion, commands, context, commits = run_hybrid(
         repo=repo, prompt=prompt, evidence_dir=evidence_dir,
         completion_validator=_implementer_completion_validator,
+        ticket_id=ticket_id, run_id=run_id, max_parallel=max_parallel,
     )
-    if not _source_changes(repo, roots).strip():
+    if not commits:
         raise WorkflowContractError(f"Hybrid implementation left no changes under the source roots ({', '.join(roots)})")
-    _stage_source_changes(repo, roots)
-    _git(["commit", "-m", f"[{ticket_id}] Implement approved plan (hybrid)"], cwd=repo)
-    return completion, commands, context
+    return completion, commands, context, commits
 
 
 # Fixed, deterministic verification commands — no agent, no judgment. A
 # command's exit code and captured output IS the evidence; see the module
 # docstring / plan for why this is a trusted Python subprocess call rather
 # than something delegated to an agent with execute_bash. The commands come from the
-# registry (.agentic-sdlc/cao/specialists.json, "verification"): the "application" suite
-# in single mode, the union of worker and skill suites in hybrid mode.
-VERIFICATION_TIMEOUT_SECONDS = 300
+# project's "verification" suites (agentic-sdlc-project.json, merged by load_specialists):
+# the "application" suite in single mode, the union of worker and skill suites in hybrid mode.
 
 
-def _run_verification(repo: Path, evidence_dir: Path, label: str, commands: list[list[str]]) -> dict[str, Any]:
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    command_results: list[dict[str, Any]] = []
-    all_passed = True
-    for index, command in enumerate(commands, start=1):
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=str(repo),
-                capture_output=True,
-                text=True,
-                timeout=VERIFICATION_TIMEOUT_SECONDS,
-            )
-            returncode: int | None = completed.returncode
-            stdout, stderr = completed.stdout, completed.stderr
-        except subprocess.TimeoutExpired as exc:
-            returncode = None
-            stdout = exc.stdout or ""
-            stderr = f"{exc.stderr or ''}\n[timed out after {VERIFICATION_TIMEOUT_SECONDS}s]"
-        except OSError as exc:
-            returncode = None
-            stdout, stderr = "", str(exc)
-        passed = returncode == 0
-        all_passed = all_passed and passed
-        command_results.append({"command": command, "returncode": returncode, "passed": passed})
-        _write_text(
-            evidence_dir / f"{label}-cmd{index}.log",
-            f"$ {' '.join(command)}\n\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n",
-        )
-    summary = {"passed": all_passed, "commands": command_results}
-    _write_json(evidence_dir / f"{label}.json", summary)
-    return summary
 
 
 def build_implementer_repair_prompt(
@@ -335,6 +307,7 @@ def render_pr_body(
     completion: dict[str, Any],
     verification: dict[str, Any],
     pr_head_sha: str,
+    implementation_commits: list[dict[str, Any]] | None = None,
 ) -> str:
     """Pure Python templating — no agent involved, no judgment needed to
     format already-known facts. Mirrors render_planning_context in
@@ -348,6 +321,10 @@ def render_pr_body(
         f"- `{' '.join(c['command'])}` — {'PASS' if c['passed'] else 'FAIL'} (exit {c['returncode']})"
         for c in verification.get("commands", [])
     ) or "- (no verification evidence)"
+    commit_section = ""
+    if implementation_commits:
+        commit_lines = "\n".join(f"- {c['task']}: `{c['commit'][:12]}` ({c['status']})" for c in implementation_commits)
+        commit_section = f"**Task commits (hybrid, in merge order):**\n{commit_lines}\n\n"
     return f"""## {ticket_id}
 
 Implements the approved Development Plan (`{plan_path.name}`, sha256 `{plan_sha256}`).
@@ -363,7 +340,7 @@ Implements the approved Development Plan (`{plan_path.name}`, sha256 `{plan_sha2
 **Deviations:**
 {deviations}
 
-**Verification:**
+{commit_section}**Verification:**
 {verification_lines}
 
 **PR HEAD SHA:** `{pr_head_sha}`
@@ -530,14 +507,6 @@ def escalate_unremediated_findings(
     }
 
 
-def _remediator_completion_validator(value: Any) -> Any:
-    value = _require_dict(value, "remediator completion summary")
-    for key in ("findings_addressed", "files_changed", "assumptions", "deviations"):
-        items = _require_list(value.get(key), key)
-        for index, item in enumerate(items):
-            if not isinstance(item, str):
-                raise WorkflowContractError(f"{key}[{index}] must be a string")
-    return value
 
 
 def render_human_review_brief(
@@ -690,6 +659,9 @@ def main() -> None:
     implementation_mode = inputs.get("implementation_mode", "hybrid")
     if implementation_mode not in ("hybrid", "single"):
         raise WorkflowContractError("implementation_mode must be hybrid or single")
+    max_parallel = inputs.get("hybrid_max_parallel", MAX_PARALLEL_WORKERS)
+    if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= MAX_PARALLEL_WORKERS:
+        raise WorkflowContractError(f"hybrid_max_parallel must be an integer from 1 to {MAX_PARALLEL_WORKERS}")
     if not repo.is_dir():
         raise WorkflowContractError(f"repository_root is not a directory: {repo}")
 
@@ -739,17 +711,20 @@ def main() -> None:
         "repository_baseline_sha": baseline_sha,
         "state": "READY",
         "implementation_mode": implementation_mode,
+        "hybrid_max_parallel": max_parallel if implementation_mode == "hybrid" else None,
         "source_roots": source_roots,
     })
 
     # 2. IMPLEMENTING
     verification_commands = application_commands
     skill_context = ""
+    implementation_commits: list[dict[str, Any]] = []
     if implementation_mode == "hybrid":
         try:
-            completion, verification_commands, skill_context = _hybrid_and_commit(
+            completion, verification_commands, skill_context, implementation_commits = _hybrid_and_commit(
                 repo=repo, prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
                 evidence_dir=implementing_dir / "agent-output", ticket_id=ticket_id,
+                run_id=run_id, max_parallel=max_parallel,
             )
         except (WorkflowContractError, OSError) as exc:
             failed_manifest = _read_json(delivery_manifest_path)
@@ -773,6 +748,8 @@ def main() -> None:
     delivery_manifest = _read_json(delivery_manifest_path)
     delivery_manifest["state"] = "IMPLEMENTED"
     delivery_manifest["implementation_commit_sha"] = commit_sha
+    if implementation_commits:
+        delivery_manifest["implementation_commits"] = implementation_commits
     delivery_manifest["implementer_summary"] = completion
     _write_json(delivery_manifest_path, delivery_manifest)
 
@@ -831,6 +808,7 @@ def main() -> None:
         completion=final_completion,
         verification=verification,
         pr_head_sha=pr_head_sha,
+        implementation_commits=implementation_commits,
     )
     pr_title_path = records_dir / "pr-title.txt"
     pr_body_path = records_dir / "pr-body.md"
@@ -990,6 +968,7 @@ def main() -> None:
         completion=final_completion,
         verification=verification,
         pr_head_sha=pr_head_sha,
+        implementation_commits=implementation_commits,
     )
     _write_text(pr_title_path, render_pr_title(ticket_id))
     _write_text(pr_body_path, pr_body)

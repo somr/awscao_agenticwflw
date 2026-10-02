@@ -180,6 +180,13 @@ class WriteScopeHookTest(unittest.TestCase):
                 ),
             )
 
+    def test_source_fix_reviewer_cannot_modify_source_or_canonical_evidence(self):
+        with _FakeTerminalServer('sdlc_source_fix_reviewer') as port:
+            for path in ('app/value.py', 'agentic-sdlc-records/source-remediation/pr-42-fix-001/fix-review-r1.json'):
+                assert_denied(self, run_hook(cao_terminal_id='fix-reviewer', tool_input={'file_path': path}, cao_api_port=port))
+            assert_allowed(self, run_hook(cao_terminal_id='fix-reviewer',
+                tool_input={'file_path': '.agentic-sdlc/runtime/source-remediation/fix-001/answer.json'}, cao_api_port=port))
+
     def test_supervisor_cannot_modify_application_or_registry(self):
         with _FakeTerminalServer("sdlc_code_supervisor") as port:
             for path in ("app/value.py", ".agentic-sdlc/cao/specialists.json"):
@@ -318,7 +325,7 @@ class ConfigurableSourceRootsHookTest(unittest.TestCase):
 
     ANSWER = ".agentic-sdlc/runtime/T-1/run-1/implement-v1.answer.json"
 
-    def make_repo(self, registry=None, raw_text=None) -> Path:
+    def make_repo(self, registry=None, raw_text=None, project=None) -> Path:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         repo = Path(temp.name).resolve()
@@ -327,6 +334,8 @@ class ConfigurableSourceRootsHookTest(unittest.TestCase):
             (repo / ".agentic-sdlc/cao/specialists.json").write_text(json.dumps(registry))
         if raw_text is not None:
             (repo / ".agentic-sdlc/cao/specialists.json").write_bytes(raw_text)
+        if project is not None:
+            (repo / "agentic-sdlc-project.json").write_text(json.dumps(project))
         return repo
 
     def check(self, repo, profile, paths, *, allowed, real=False):
@@ -441,6 +450,23 @@ class ConfigurableSourceRootsHookTest(unittest.TestCase):
                                        ".claude/settings.json", ".claude/hooks/restrict-write-scope.py",
                                        ".git/config", "agentic-sdlc-records/T-1/development-plan.md"], allowed=False)
         self.check(repo, "sdlc_implementer", [".agentic-sdlc/cao/specialists.json"], allowed=False, real=True)
+
+    def test_the_project_file_sets_the_roots_and_no_worker_can_edit_it(self):
+        repo = self.make_repo({"version": 1, "workers": {}}, project={"version": 1, "source_roots": ["billing/src"]})
+        self.check(repo, "sdlc_implementer", ["billing/src/A.java"], allowed=True)
+        self.check(repo, "sdlc_implementer", ["billing/src/A.java"], allowed=True, real=True)
+        self.check(repo, "sdlc_implementer", ["app/value.py"], allowed=False)
+        for profile in ("sdlc_implementer", "sdlc_remediator", "sdlc_code_supervisor"):
+            self.check(repo, profile, ["agentic-sdlc-project.json"], allowed=False)
+        self.check(repo, "sdlc_implementer", ["agentic-sdlc-project.json"], allowed=False, real=True)
+
+    def test_keys_in_both_files_or_a_broken_project_file_grant_nothing(self):
+        for registry, project in (({"source_roots": ["billing/src"]}, {"version": 1, "source_roots": ["billing/src"]}),
+                                  ({"version": 1}, {"source_roots": ["billing/src"]}),
+                                  ({"version": 1}, {"version": 1, "source_roots": [".git"]})):
+            repo = self.make_repo(registry, project=project)
+            self.check(repo, "sdlc_implementer", ["billing/src/A.java", "app/value.py"], allowed=False)
+            self.check(repo, "sdlc_implementer", [self.ANSWER], allowed=True)
 
     def test_a_failed_profile_lookup_grants_nothing_even_with_a_valid_custom_config(self):
         repo = self.make_repo({"source_roots": ["billing/src"]})

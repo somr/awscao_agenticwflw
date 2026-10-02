@@ -62,6 +62,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
         sdlc = repo / '.agentic-sdlc'
         for directory in ('contracts', 'policies', 'schemas', 'templates', 'cao'):
             shutil.copytree(ROOT / '.agentic-sdlc' / directory, sdlc / directory)
+        shutil.copy2(ROOT / 'agentic-sdlc-project.json', repo / 'agentic-sdlc-project.json')
         (repo / 'app/tests').mkdir(parents=True)
         (repo / 'app/tests/__init__.py').write_text('')
         (repo / 'app/value.py').write_text('def value():\n    return 0\n')
@@ -145,13 +146,12 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 delivery, transport = load('deliver', modular)
                 # Exercise skill-selected verification with an actual local command;
                 # the integration fixture has no AngularJS application or npm setup.
-                registry_path = repo / '.agentic-sdlc/cao/specialists.json'
-                registry = json.loads(registry_path.read_text())
-                registry['verification']['angularjs'] = [[sys.executable, '-c', 'import runpy; assert runpy.run_path("app/value.py")["value"]() >= 2']]
-                # A second source root that nobody creates: every git pathspec (implement, repair,
-                # remediation) must skip it instead of failing.
-                registry['source_roots'] = ['app', 'extra/module']
-                registry_path.write_text(json.dumps(registry))
+                def configure(config):
+                    config['verification']['angularjs'] = [[sys.executable, '-c', 'import runpy; assert runpy.run_path("app/value.py")["value"]() >= 2']]
+                    # A second source root that nobody creates: every git pathspec (implement, repair,
+                    # remediation) must skip it instead of failing.
+                    config['source_roots'] = ['app', 'extra/module']
+                self.edit_config(repo, configure)
                 human = {'id': 'H1', 'file': 'app/value.py', 'location': 'value', 'category': 'AUTHN_AUTHZ',
                     'impact': 'HIGH', 'confidence': .99, 'failure_scenario': 'Synthetic protected concern',
                     'consequence': 'Needs human review', 'remediation_direction': 'Human must assess',
@@ -162,7 +162,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 def respond(agent, step_id, prompt):
                     if agent == 'sdlc_code_supervisor':
                         return {'tasks': [{'id': 'T1', 'worker': 'developer', 'plan_reference': 'T1',
-                            'instructions': 'Implement value', 'depends_on': [], 'skills': ['sdlc-angularjs-ui']}]}
+                            'instructions': 'Implement value', 'depends_on': [], 'skills': ['sdlc-angularjs-ui'], 'owns': ['app']}]}
                     if agent == delivery.IMPLEMENTER:
                         # Real compile/test subprocesses reject the first implementation.
                         text = 'def value():\n    return 2\n' if step_id == 'implement-v1-repair-1' else 'invalid python !!!\n'
@@ -184,10 +184,11 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 self.assertEqual(git('branch', '--show-current'), 'sdlc/T-1')
                 self.assertIn((delivery.IMPLEMENTER, 'implement-v1-repair-1'), calls)
                 self.assertIn(('sdlc_code_supervisor', 'dispatch-v1'), calls)
-                self.assertIn((delivery.IMPLEMENTER, 'worker-1'), calls)
+                self.assertIn((delivery.IMPLEMENTER, 'worker-T1'), calls)
                 self.assertIn((delivery.IMPLEMENTER, 'integrate-v1'), calls)
                 self.assertTrue((records / 'human-review-brief.md').exists())
                 self.assertIn(output['pr_head_sha'], (records / 'pr-body.md').read_text())
+                self.assertIn('**Task commits (hybrid, in merge order):**\n- T1: `', (records / 'pr-body.md').read_text())
                 review = json.loads((records / 'pr-review-r2.json').read_text())
                 self.assertEqual(review['findings'][0]['automation_eligibility'], 'DEVELOPER_REQUIRED')
                 delivery_manifest = json.loads((records / 'delivery-manifest.json').read_text())
@@ -208,7 +209,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 def respond(agent, step_id, prompt):
                     if agent == 'sdlc_code_supervisor':
                         return {'tasks': [{'id': 'T1', 'worker': 'developer', 'plan_reference': 'T1',
-                            'instructions': 'Implement value', 'depends_on': [], 'skills': []}]}
+                            'instructions': 'Implement value', 'depends_on': [], 'skills': [], 'owns': ['app']}]}
                     if agent == delivery.IMPLEMENTER:
                         (repo / 'app/value.py').write_text('def value():\n    return 2\n')
                         return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
@@ -226,7 +227,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 self.assertEqual([c for c in calls if c[0] in (delivery.REMEDIATOR, delivery.PR_REVIEWER)],
                                  [(delivery.PR_REVIEWER, 'pr-review-r1'), (delivery.REMEDIATOR, 'remediate-r1')])
                 self.assertEqual(output['pr_head_sha'], git('rev-parse', 'HEAD'))
-                self.assertEqual(git('log', '--format=%s', '-1'), '[T-1] Implement approved plan (hybrid)')
+                self.assertEqual(git('log', '--format=%s', '-1'), '[T-1] T1: implement hybrid task')
                 manifest = json.loads((records / 'delivery-manifest.json').read_text())
                 self.assertEqual(manifest['state'], 'AWAITING_HUMAN_REVIEW')
                 self.assertEqual(manifest['escalated_findings'], ['A1'])
@@ -253,11 +254,15 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 self.assertEqual(git('branch', '--show-current'), 'main')
 
 
-    def edit_registry(self, repo, change):
-        path = repo / '.agentic-sdlc/cao/specialists.json'
-        registry = json.loads(path.read_text())
-        change(registry)
-        path.write_text(json.dumps(registry))
+    def edit_config(self, repo, change):
+        # Edit the combined settings, then write each key back to its file: per-project keys to
+        # agentic-sdlc-project.json, the rest to the common registry.
+        registry_path, project_path = repo / '.agentic-sdlc/cao/specialists.json', repo / 'agentic-sdlc-project.json'
+        config = {**json.loads(registry_path.read_text()), **json.loads(project_path.read_text())}
+        change(config)
+        keys = ('source_roots', 'write_profiles', 'verification')
+        project_path.write_text(json.dumps({'version': 1, **{k: config[k] for k in keys if k in config}}))
+        registry_path.write_text(json.dumps({k: v for k, v in config.items() if k not in keys}))
 
     def test_delivery_rejects_an_invalid_source_root_config_before_any_agent_runs(self):
         for modular in (False, True):
@@ -266,7 +271,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
                            lambda r: r.update(source_roots=['app'], write_profiles={'sdlc_implementer': ['elsewhere']})):
                 with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
                     repo, git, records = self.plan(Path(temp), modular)
-                    self.edit_registry(repo, change)
+                    self.edit_config(repo, change)
                     delivery, transport = load('deliver', modular)
                     with patch.object(delivery, 'get_inputs', return_value={'repository_root': str(repo), 'ticket_id': 'T-1'}), patch.object(transport, 'step') as step:
                         with self.assertRaises(delivery.WorkflowContractError):
@@ -280,7 +285,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
             with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
                 repo, git, records = self.plan(Path(temp), modular)
                 suite = [[sys.executable, '-c', 'import runpy; assert runpy.run_path("app/value.py")["value"]() >= 2']]
-                self.edit_registry(repo, lambda r: r['verification'].update(application=suite))
+                self.edit_config(repo, lambda r: r['verification'].update(application=suite))
                 delivery, transport = load('deliver', modular)
 
                 def respond(agent, step_id, prompt):
@@ -304,7 +309,7 @@ class LifecycleIntegrationTest(unittest.TestCase):
                 def rename(registry):
                     registry['verification']['tests-only'] = registry['verification'].pop('application')
                     registry['workers']['developer']['verification'] = ['tests-only']
-                self.edit_registry(repo, rename)
+                self.edit_config(repo, rename)
                 delivery, transport = load('deliver', modular)
                 with patch.object(delivery, 'get_inputs', return_value={'repository_root': str(repo), 'ticket_id': 'T-1', 'implementation_mode': 'single'}), patch.object(transport, 'step') as step:
                     with self.assertRaisesRegex(delivery.WorkflowContractError, "'application' verification suite"):

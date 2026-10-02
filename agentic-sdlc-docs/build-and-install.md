@@ -1,6 +1,6 @@
 # Modular workflows and standalone CAO deployment
 
-The three workflows share maintained Python modules. Each installer builds a
+The four workflows share maintained Python modules. Each installer builds a
 self-contained Python artifact for CAO. This removes duplicated lifecycle code while
 keeping a resumed run independent of later edits to the source package.
 
@@ -12,6 +12,7 @@ cao/
 │   ├── dev_plan.py                  # Local entry point
 │   ├── deliver.py                   # Local entry point
 │   ├── source_review.py             # Local entry point
+│   ├── source_remediate.py          # Local entry point
 │   └── install*.sh                  # Compatibility installer commands
 ├── sdlc_workflows/
 │   ├── errors.py                    # Contract/execution exception types
@@ -21,7 +22,11 @@ cao/
 │   ├── planning.py                  # Planning inputs, adapters, policy and orchestration
 │   ├── delivery.py                  # Implementation, verification, review/remediation
 │   ├── hybrid.py                    # Delivery's registry-driven supervisor/worker dispatch
-│   └── source_review.py             # PR snapshots, source review and fix routing
+│   ├── source_review.py             # PR snapshots, source review and fix routing
+│   ├── source_remediation.py        # Ticket-independent bounded fixes and independent review
+│   ├── source_review_contracts.py   # Shared Source review policy and evidence contracts
+│   ├── verification.py             # Shared trusted verification runner
+│   └── remediation.py              # Shared remediator completion contract
 ├── build_workflow.py                # Deterministic standalone bundler
 └── install_workflow.py              # Shared validation and atomic installation
 ```
@@ -78,6 +83,7 @@ installer creates a unique temporary candidate there and removes it afterwards:
 python3 .agentic-sdlc/cao/install_workflow.py dev_plan --validate-only
 python3 .agentic-sdlc/cao/install_workflow.py deliver --validate-only
 python3 .agentic-sdlc/cao/install_workflow.py source_review --validate-only
+python3 .agentic-sdlc/cao/install_workflow.py source_remediate --validate-only
 ```
 
 No registered workflow or profile is changed. The default repository root is the current
@@ -92,13 +98,15 @@ The existing commands and registered names are preserved:
 | `.agentic-sdlc/cao/workflows/install.sh` | `sdlc_dev_plan` |
 | `.agentic-sdlc/cao/workflows/install_deliver.sh` | `sdlc_deliver` |
 | `.agentic-sdlc/cao/workflows/install_source_review.sh` | `source_review` |
+| `.agentic-sdlc/cao/workflows/install_source_remediate.sh` | `source_remediate` |
 
 Each wrapper accepts an optional repository-root argument as before. `CAO_WORKFLOW_DIR`
 still controls the destination. The equivalent Python installer also supports
 `--workflow-dir` explicitly.
 
 The shared installer builds the complete dependency closure, validates its candidate,
-and then promotes it. Planning and Delivery keep the previous installed file as `.bak`.
+and then promotes it. Planning, Delivery and Source remediation keep the previous installed file as `.bak`.
+Source remediation requires its two profiles to be installed explicitly; see its [guide](workflows/source-remediation.md).
 Source Review retains its stricter existing refusal to replace an installed workflow
 or any of its five profiles; follow its [upgrade procedure](workflows/source-review.md).
 Profile installation is not transactional; inspect partial source-review installations
@@ -159,15 +167,15 @@ does. Add bundler support and regression tests before using a new module pattern
 `runtime.py` owns the same timing, retry limits, recovery policy, answer-file names and
 terminal cleanup protocol as before extraction. Its `preserve_source` option retains
 the two existing repair-prompt variants: true for Planning/Source Review, explicitly
-false for Delivery. The headless-interaction error message now says "workflow agents"
-for all three; the exception and control flow are unchanged.
+false for Delivery and remediation writes. The headless-interaction error message says "workflow agents";
+the exception and control flow are unchanged.
 
 ## Runtime assets outside the bundle
 
 A bundle contains code only. Everything a run reads from the repository at start-up is
 resolved from `repository_root`, not embedded: the contracts, policies, schemas and
-templates under `.agentic-sdlc/`, and, for hybrid Delivery, `.agentic-sdlc/cao/specialists.json`
-and `.agentic-sdlc/cao/skills/`. Changing those files takes effect on the next run without a
+templates under `.agentic-sdlc/`, the project's `agentic-sdlc-project.json`, and, for hybrid Delivery,
+`.agentic-sdlc/cao/specialists.json` and `.agentic-sdlc/cao/skills/`. Changing those files takes effect on the next run without a
 rebuild; changing Python modules requires rebuilding and reinstalling the bundle. Installing
 `sdlc_deliver` also requires the `sdlc_code_supervisor` profile, because Delivery defaults to
 `implementation_mode=hybrid` (see [hybrid delivery](workflows/hybrid-delivery.md)).

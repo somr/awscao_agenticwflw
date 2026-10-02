@@ -24,11 +24,11 @@ flowchart TD
     A["Check the plan is approved,<br/>its hash and its baseline"] --> B["Create or resume<br/>branch sdlc/ticket"]
     B --> M{Implementation mode}
     M -- hybrid --> SUP[Code Supervisor assigns tasks]
-    SUP --> WK["Workers implement,<br/>one after another"]
+    SUP --> WK["Workers implement in waves;<br/>independent tasks at the same time"]
     WK --> INT[Integration pass]
     M -- single --> IMP[One Implementer]
     INT --> VER
-    IMP --> VER["Verify with the<br/>registry commands"]
+    IMP --> VER["Verify with the<br/>project's commands"]
     VER --> OK{Passed?}
     OK -- "no, first time" --> REP[One repair turn]
     REP --> VER
@@ -49,10 +49,12 @@ flowchart TD
 1. **Check.** Python re-verifies that the plan is approved, that its hash matches, and that the approved baseline
    commit is still an ancestor of the base branch.
 2. **Branch.** Work happens on `sdlc/<ticket>`, created from the current tip of the base branch.
-3. **Implement.** In hybrid mode a read-only supervisor splits the plan into ordered assignments for registered
-   workers, Python dispatches them one after another, and an integration pass reconciles the result; in single mode
-   one implementer does everything. See [Specialists and skills](hybrid-delivery.md). Python commits the change.
-4. **Verify.** Python runs the registry's commands. One failure gets one repair turn; a second failure ends the run `BLOCKED`.
+3. **Implement.** In hybrid mode a read-only supervisor splits the plan into assignments for registered workers.
+   Python groups the assignments that do not depend on each other into waves, runs the tasks of a wave at the same
+   time in separate Git worktrees, commits each task and merges the commits in task order; an integration pass then
+   reconciles the result. In single mode one implementer does everything. See
+   [Specialists and skills](hybrid-delivery.md). Python makes every commit.
+4. **Verify.** Python runs the project's verification commands. One failure gets one repair turn; a second failure ends the run `BLOCKED`.
 5. **PR artifacts.** Title, body and diff are written locally. Nothing is pushed.
 6. **Review.** A separate read-only agent reviews the diff and classifies the findings. Python applies the routing
    policy, so an agent's own classification is never trusted: high-impact and protected-category findings always go
@@ -79,11 +81,12 @@ flowchart TD
    ```
 
 3. **Have the runtime pieces in the repository you run against:** a running `cao-server`, the write-scope hook
-   (`.claude/settings.json` and `.claude/hooks/restrict-write-scope.py`), and the registry
-   `.agentic-sdlc/cao/specialists.json`. The hook runs with the `python3` on your `PATH` and uses only the standard library.
+   (`.claude/settings.json` and `.claude/hooks/restrict-write-scope.py`), the common registry
+   `.agentic-sdlc/cao/specialists.json`, and the project's `agentic-sdlc-project.json`. The hook runs with the `python3` on your `PATH` and uses only the standard library.
 4. **Start from a clean tree.** The base branch must exist. In hybrid mode the source roots must have no uncommitted
    changes and the Git index must be empty.
-5. **Configure it for your project** if your source is not under `app/` (see [Configuration](#configuration)).
+5. **Configure it for your project** in `agentic-sdlc-project.json`: source roots and verification commands
+   (see [Configuration](#configuration)).
 
 ## Inputs
 
@@ -92,7 +95,8 @@ flowchart TD
 | `ticket_id` | yes | The ticket whose approved plan is implemented. Records live under `agentic-sdlc-records/<ticket_id>/`. |
 | `repository_root` | yes | The repository to change. CAO requires an existing directory and refuses system paths such as `/tmp`. |
 | `base_branch` | no, default `main` | The delivery branch starts from the current tip of this branch, and the plan's approved baseline must still be its ancestor. |
-| `implementation_mode` | no, default `hybrid` | `hybrid`: a supervisor assigns work to registered workers. `single`: one implementer does all the work and verification uses the registry's `application` suite. |
+| `implementation_mode` | no, default `hybrid` | `hybrid`: a supervisor assigns work to registered workers. `single`: one implementer does all the work and verification uses the project's `application` suite. |
+| `hybrid_max_parallel` | no, default `4` | Hybrid mode only: at most this many workers of a wave run at the same time (1 to 4). `1` runs every task one after another in the main checkout. |
 
 ## Run
 
@@ -112,7 +116,7 @@ left on the delivery branch**, so return with `git checkout <base_branch>` befor
 Under `agentic-sdlc-records/<ticket_id>/`:
 
 ```text
-├── delivery-manifest.json   state, mode, source roots, verification results, review rounds, remediation history, PR head SHA
+├── delivery-manifest.json   state, mode, parallel width, task commits, source roots, verification results, review rounds, remediation history, PR head SHA
 ├── pr-title.txt, pr-body.md, pr-diff.patch      the local "pull request"
 ├── pr-review-r<N>.json      each independent review round
 ├── human-review-brief.md    what to read before deciding
@@ -120,7 +124,7 @@ Under `agentic-sdlc-records/<ticket_id>/`:
 └── approval-history/        earlier decisions on superseded heads
 ```
 
-Detailed evidence (agent answers, dispatch, verification logs) stays under
+Detailed evidence (agent answers, dispatch, the wave schedule, per-task patches, verification logs) stays under
 `.agentic-sdlc/runtime/<ticket_id>/<run-id>/`, which Git ignores. The manifest state moves like this:
 
 ```mermaid
@@ -141,7 +145,7 @@ stateDiagram-v2
 
 | Outcome | Meaning | What to do |
 |---|---|---|
-| `BLOCKED`, `hybrid_implementation_failed: ...` | An implementation step broke its contract. Partial edits stay in the working tree. | See [After a `BLOCKED` run](#after-a-blocked-run). |
+| `BLOCKED`, `hybrid_implementation_failed: ...` | An implementation step broke its contract. Tasks from earlier waves stay committed on the branch; nothing from the failed wave is merged. A task that ran alone leaves its partial edits in the working tree. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | `BLOCKED`, `verification_failed_after_one_repair_attempt` | Verification still failed after one repair turn. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | `BLOCKED`, `verification_failed_after_remediation` | A remediation round broke verification. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | Run state `failed` | A check stopped the run: the plan is not approved or changed after review, the baseline is no longer an ancestor, the source-root configuration is invalid, the source roots are dirty, or a single-mode implementation or repair step changed nothing inside the source roots. | `cao workflow result <run-id> --json` carries the traceback in its `warnings` field. |
@@ -167,8 +171,8 @@ ls .agentic-sdlc/runtime/<ticket>/<run-id>/verification/                  # veri
 
 | `reason` | Usual cause | Fix |
 |---|---|---|
-| `hybrid_implementation_failed: ...` | An agent broke its contract, for example invalid output or a write outside the source roots. Its partial edits stay uncommitted in the working tree. | Usually none: retry. If the same step fails again, check the plan and the registry. |
-| `verification_failed_after_one_repair_attempt` | The code still fails the verification commands after one repair turn. | Commands wrong (missing toolchain, bad command): fix `.agentic-sdlc/cao/specialists.json` and commit it on the base branch. Plan wrong: plan again (step 3b). Code wrong: retry. |
+| `hybrid_implementation_failed: ...` | An agent broke its contract, for example invalid output or a write outside the source roots, or a worktree's write boundary differed from the main checkout's (commit or discard local edits to `.claude/`, the registry or `agentic-sdlc-project.json`). A task that ran alone leaves its partial edits uncommitted in the working tree; a parallel task's edits stay only in `<task>.patch` in the evidence. | Usually none: retry. If the same step fails again, check the plan and the registry. |
+| `verification_failed_after_one_repair_attempt` | The code still fails the verification commands after one repair turn. | Commands wrong (missing toolchain, bad command): fix `agentic-sdlc-project.json` and commit it on the base branch. Plan wrong: plan again (step 3b). Code wrong: retry. |
 | `verification_failed_after_remediation` | A remediation round broke verification. | Read the review finding it was fixing; usually retry. |
 
 **3a. Retry with the same approved plan.** From the repository root:
@@ -184,6 +188,8 @@ cao workflow run sdlc_deliver --wait --json --run-id <new-run-id> \
 ```
 
 - Use your configured source roots in place of `app`. Hybrid mode needs them clean and the Git index empty.
+- Python removes its worktrees and `sdlc-work/<run-id>/*` branches even when a run fails. Only a killed workflow
+  process leaves them behind; then run `git worktree prune` and delete those branches with `git branch -D`.
 - Renaming the branch, rather than deleting it, keeps the failed attempt for comparison. A run on an existing
   `sdlc/<ticket>` does not resume where the previous run stopped: it implements the plan again on top of what the
   branch holds, and on an already implemented branch the workers have nothing to change, so the run ends `BLOCKED`
@@ -275,37 +281,58 @@ branch is still at the reviewed head, writes `pr-approval-record.json`, and sets
 
 ## Configuration
 
-Delivery is configured by one trusted file, `.agentic-sdlc/cao/specialists.json`, plus two run inputs
-(`base_branch` and `implementation_mode`).
+Delivery reads two trusted files plus three run inputs (`base_branch`, `implementation_mode` and
+`hybrid_max_parallel`). The common registry belongs to `.agentic-sdlc/`, which every project can share unchanged.
+The project file holds everything that differs between projects.
 
 ```mermaid
 flowchart LR
-    R[".agentic-sdlc/cao/<br/>specialists.json"] --> P["Delivery preflight<br/>validates before any agent"]
-    R --> H["Write-scope hook<br/>checks every write"]
-    R --> S["Code Supervisor<br/>sees workers and skills"]
-    R --> V["Verification<br/>runs the suites"]
+    PF["agentic-sdlc-project.json<br/>roots, write profiles, verification"] --> M["Effective configuration"]
+    R[".agentic-sdlc/cao/specialists.json<br/>workers and skills"] --> M
+    M --> P["Delivery preflight<br/>validates before any agent"]
+    M --> H["Write-scope hook<br/>checks every write"]
+    M --> S["Code Supervisor<br/>sees workers and available skills"]
+    M --> V["Verification<br/>runs the suites"]
 ```
 
 | What | Where | Default |
 |---|---|---|
-| Where generated source is written, committed and diffed | `source_roots` | `["app"]` |
-| Which profiles may write there | `write_profiles` | implementer and remediator, all roots |
-| Commands that verify a change | `verification` | the sample app's `app` commands |
-| Workers, skills and their suites | `workers`, `skills` | one `developer` worker |
+| Where generated source is written, committed and diffed | `source_roots` in `agentic-sdlc-project.json` | `["app"]` |
+| Which profiles may write there | `write_profiles` in `agentic-sdlc-project.json` | implementer and remediator, all roots |
+| Commands that verify a change | `verification` in `agentic-sdlc-project.json` | none; required |
+| Workers, skills and the suites they need | `workers`, `skills` in `.agentic-sdlc/cao/specialists.json` | one `developer` worker |
 | Implementation mode | input `implementation_mode` | `hybrid` |
+| Workers running at the same time | input `hybrid_max_parallel` | `4` |
 | Base branch | input `base_branch` | `main` |
 
-The file is read from the repository when a run starts, so edits take effect on the next run. Agents cannot edit it.
-An invalid file stops Delivery before any agent runs, and the hook grants nothing while it is invalid; it never
-falls back to `app/`. If the file or the keys are absent the defaults apply.
+Both files are read from the repository when a run starts, so edits take effect on the next run. Agents can edit
+neither. An invalid file stops Delivery before any agent runs, and the hook grants nothing while it is invalid; it
+never falls back to `app/`. A per-project key set in both files is invalid, so a stale value in the common registry
+can never apply. Without a project file, Delivery and the hook read `source_roots`, `write_profiles` and
+`verification` from the registry, and without either the defaults apply.
 
 ### Registry reference
+
+The project file, `agentic-sdlc-project.json` at the repository root:
 
 ```json
 {
   "version": 1,
   "source_roots": ["app"],
   "write_profiles": {"sdlc_implementer": null, "sdlc_remediator": null},
+  "verification": {
+    "application": [["python3", "-m", "compileall", "-q", "app"],
+                    ["python3", "-m", "unittest", "discover", "-t", "app", "-s", "app/tests", "-v"]],
+    "angularjs": [["npm", "--prefix", "app/ui", "run", "verify"]]
+  }
+}
+```
+
+The common registry, `.agentic-sdlc/cao/specialists.json`:
+
+```json
+{
+  "version": 1,
   "workers": {
     "developer": {
       "profile": "sdlc_implementer",
@@ -320,49 +347,48 @@ falls back to `app/`. If the file or the keys are absent the defaults apply.
       "description": "When the supervisor should require this skill.",
       "verification": ["angularjs"]
     }
-  },
-  "verification": {
-    "application": [["python3", "-m", "compileall", "-q", "app"],
-                    ["python3", "-m", "unittest", "discover", "-t", "app", "-s", "app/tests", "-v"]],
-    "angularjs": [["npm", "--prefix", "app/ui", "run", "verify"]]
   }
 }
 ```
 
-| Key | Required | Rules |
-|---|---|---|
-| `version` | yes | Must be `1`. |
-| `source_roots` | no, default `["app"]` | See [Source roots](#source-roots). |
-| `write_profiles` | no, default implementer and remediator | Which agent profiles may write under the roots. |
-| `workers` | yes, not empty | Each worker needs `profile` (an agent profile listed in `write_profiles`), `description` (the supervisor uses it to route work), `skills` (registered skill names; may be empty) and `verification` (a non-empty list of registered suite names). |
-| `skills` | yes, not empty | Each skill needs `path` (a file below `.agentic-sdlc/cao`, normally `skills/<name>/SKILL.md`), `description`, and `verification` (a non-empty list of suites that run whenever the skill is selected). |
-| `verification` | yes, not empty | Suite name to a non-empty list of commands. A command is a non-empty list of non-empty strings: the program and its arguments, with no shell. |
+| Key | File | Required | Rules |
+|---|---|---|---|
+| `version` | both | yes | Must be `1`. The project file accepts no other keys than the three below. |
+| `source_roots` | project | no, default `["app"]` | See [Source roots](#source-roots). |
+| `write_profiles` | project | no, default implementer and remediator | Which agent profiles may write under the roots. |
+| `verification` | project | yes, not empty | Suite name to a non-empty list of commands. A command is a non-empty list of non-empty strings: the program and its arguments, with no shell. |
+| `workers` | registry | yes, not empty | Each worker needs `profile` (an agent profile listed in `write_profiles`), `description` (the supervisor uses it to route work), `skills` (registered skill names; may be empty) and `verification` (a non-empty list of suite names the project defines). |
+| `skills` | registry | no | Each skill needs `path` (a file below `.agentic-sdlc/cao`, normally `skills/<name>/SKILL.md`), `description`, and `verification` (a non-empty list of suite names that run whenever the skill is selected). |
+
+A skill is available only when the project defines all of its suites. Otherwise the supervisor never sees it, it is
+removed from every worker's skill list, and the run's `registry.json` evidence lists it under `unavailable_skills`. A
+project that does not use AngularJS therefore defines no `angularjs` suite. A worker whose suites the project does not
+define is an error.
 
 Each verification pass runs every selected command once from the repository root, with a 300-second timeout,
 removing duplicates across suites. A missing executable or a timeout is a failure. In hybrid mode the commands are
 the union of the selected workers' and skills' suites; in single mode they are the `application` suite. Changes to
-profiles or workflow code, unlike registry and skill edits, need a reinstall.
+profiles or workflow code, unlike edits to these two files and the skills, need a reinstall.
 
 ### Source roots
 
 Generated source is written, committed, verified and diffed under the **source roots**. To point the workflows at
-a multi-module project:
+a multi-module project, write its `agentic-sdlc-project.json`:
 
 ```json
 {
   "version": 1,
   "source_roots": ["billing/src", "billing/test", "shared/lib"],
   "write_profiles": {"sdlc_implementer": null, "sdlc_remediator": null},
-  "verification": {"application": [["mvn", "-q", "-pl", "billing", "verify"]]},
-  "workers": {...}, "skills": {...}
+  "verification": {"application": [["mvn", "-q", "-pl", "billing", "verify"]]}
 }
 ```
 
 - **`source_roots`**: 1 to 16 relative directories. A root that does not exist yet is fine, because a worker may
   create a new module. Not allowed: absolute paths, `..`, `.`, trailing or doubled slashes, glob characters, `:`,
-  and the SDLC's own folders (`.git`, `.claude`, `.agentic-sdlc`, `agentic-sdlc-records`, `agentic-sdlc-docs`,
-  `agentic-sdlc-local-inputs`). A root that is a symlink leaving the repository, or pointing into one of those
-  folders, is refused.
+  and the SDLC's own folders and files (`.git`, `.claude`, `.agentic-sdlc`, `agentic-sdlc-records`,
+  `agentic-sdlc-docs`, `agentic-sdlc-local-inputs`, `agentic-sdlc-project.json`). A root that is a symlink leaving
+  the repository, or pointing into one of those, is refused.
 - **`write_profiles`**: `null` gives a profile every source root; a list limits it to those directories, each equal
   to or inside a source root, for example `"sdlc_java_persistence": ["billing/src"]`. The supervisor, the PR reviewer
   and the planning and source-review profiles can never be listed.
@@ -373,8 +399,11 @@ implemented, so check the plan's task list against the roots before delivering.
 
 ## Safety boundaries
 
-- The write-scope hook confines every agent, and the roots come from the trusted registry; see
+- The write-scope hook confines every agent, and the roots come from the trusted project file; see
   [Agent answers and write scope](../reference/write-scope-hook.md). The supervisor and the reviewer can never write source.
+- A parallel worker runs in its own worktree, and the hook resolves its roots there, so it cannot write the main
+  checkout or another worker's copy. Python checks that each worktree's hook, settings, registry and project file equal the main
+  checkout's before any worker starts.
 - Verification commands are trusted configuration that Python runs without a shell. Treat a change to them as an
   executable-code change.
 - The implementer never runs tests, builds or Git; Python does, so the evidence is not an agent's claim.
@@ -384,7 +413,7 @@ implemented, so check the plan's task list against the roots before delivering.
 
 ## Tests
 
-`tests/test_deliver.py`, `tests/test_hybrid.py`, `tests/test_source_config.py`, `tests/test_restrict_write_scope.py`,
+`tests/test_deliver.py`, `tests/test_hybrid.py`, `tests/test_worktrees.py`, `tests/test_source_config.py`, `tests/test_restrict_write_scope.py`,
 `tests/test_record_pr_approval.py` and the end-to-end flows in `tests/test_workflow_integration.py`. See
 [build and install](../build-and-install.md#tests) for how to run them.
 

@@ -434,9 +434,11 @@ flowchart TD
    persists. `HUMAN_REQUIRED` findings are never auto-fixed.
 5. Commit and start a **new** review run against the new head, tracking repeated findings by stable ID and by comparison.
 
-No adapter in this repository runs these steps yet. `HUMAN_REQUIRED` corresponds to Delivery's `DEVELOPER_REQUIRED`
-route, but the JSON contracts differ, so this artifact cannot be passed straight to Delivery's remediator. An adapter
-must select findings, keep the SHA binding and map the fields.
+The [Source remediation workflow](source-remediation.md) implements this handoff without a ticket or approved
+plan. It consumes the canonical review directory, preserves Source review eligibility and SHA binding, and
+reuses Delivery's remediator and verification runner. Its dedicated independent fix reviewer assesses every
+attempted finding and the resulting PR diff at each candidate HEAD. New findings remain human work.
+The separate publisher can push verified fixes and reply to the original GitHub comments.
 
 ## Configuration
 
