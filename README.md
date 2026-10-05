@@ -2,10 +2,10 @@
 
 This repository is a learning and validation project for an agentic software-development lifecycle built on AWS Labs CLI Agent Orchestrator (CAO). The maintained implementation lives under [.agentic-sdlc/](.agentic-sdlc/).
 
-Current repository capabilities (2026-10-02):
+Current repository capabilities (2026-10-05):
 
 - Planning (`sdlc_dev_plan`) retrieves and normalizes requirements, analyses the repository, authors a Development Plan, and performs an independent plan review before human approval. It supports developer guidance, review history, and warm starts from eligible non-converged candidates.
-- Delivery (`sdlc_deliver`) implements an approved plan, runs configured verification commands, performs independent PR review and up to three remediation rounds, and prepares a human review package. Hybrid mode is the default: a supervisor assigns registered workers sequentially, followed by an integration pass. Single-implementer mode is also available.
+- Delivery (`sdlc_deliver`) implements an approved plan, runs configured verification commands, performs independent PR review and up to three remediation rounds, and prepares a human review package. Hybrid mode is the default: a supervisor assigns tasks to registered workers, independent tasks run at the same time in separate Git worktrees, and an integration pass follows. Single-implementer mode is also available. A run that ends `BLOCKED` can be resumed after a fix, keeping the tasks it finished.
 - Source review (`source_review`) reviews an existing GitHub pull request in an isolated snapshot and routes validated findings into `AUTO_FIX` or `HUMAN_REQUIRED` queues. It produces feedback only; it does not apply fixes or run tests. A person edits the generated `review-draft.md` and publishes it with a separate command, as one non-blocking `COMMENT` review with comments beside the code.
 - Source remediation (`source_remediate`) fixes selected eligible findings without a ticket, verifies and independently reviews the changes, then prepares local records for human review. A separate command can push the verified commit and post GitHub done replies.
 
@@ -88,6 +88,8 @@ python3 .agentic-sdlc/scripts/record_pr_approval.py --repository-root "$PWD" --t
 
 This decision is bound to the exact reviewed commit. Delivery leaves the checkout on its delivery branch. See the [Delivery guide](agentic-sdlc-docs/workflows/delivery.md) for outcomes, recovery and approval rules.
 
+A run that ends `BLOCKED` keeps its finished work: fix the cause on the delivery branch, commit, and run Delivery again with `--input resume=true` (see [Resume a `BLOCKED` run](agentic-sdlc-docs/workflows/delivery.md#resume-a-blocked-run)).
+
 ## Review an existing pull request
 
 Source review runs independently of Planning and Delivery. GitHub mode additionally needs authenticated `gh` and Git HTTPS read access on the server host:
@@ -144,7 +146,7 @@ SDLC_TEST_SOURCE=1 python3 -m unittest discover -s tests -v
 python3 -m unittest discover -t app -s app/tests -v
 ```
 
-These tests simulate agent responses and CAO transport; local HTTP fixtures need socket access. Real CAO/provider checks are recorded separately in the [verification records](agentic-sdlc-docs/README.md#verification-records), including the latest [configurable-source-roots check](agentic-sdlc-docs/verification/configurable-source-roots-live.md).
+These tests simulate agent responses and CAO transport; local HTTP fixtures need socket access. Real CAO/provider checks are recorded separately in the [verification records](agentic-sdlc-docs/README.md#verification-records), including the latest [delivery resume check](agentic-sdlc-docs/verification/delivery-resume-live.md).
 
 ## Current limits and planned work
 
@@ -152,6 +154,7 @@ The [hardening plan](hardening-plan.md) is proposed work, not implemented protec
 
 - Agents are instructed to write one answer file, but hooks permit the broader runtime subtree; exact per-step answer authorization is still planned.
 - Delivery checks baseline ancestry, which does not detect all changes that could invalidate an approved plan. Clean-source and empty-index preconditions are currently enforced for hybrid mode, not consistently for single mode.
+- Without `resume=true`, a run on an existing `sdlc/<ticket>` implements the plan again on top of it instead of refusing. A resume checks the recorded commits and file overlap with the base branch, not the full drift gate the hardening plan describes.
 - Verification runs application code and tests in host subprocesses; the agent write hook does not sandbox that execution. Delivery also shares its checkout and has no enforced run isolation.
 - Human PR decisions are local records, not verified GitHub reviews. Remote PR creation and deployment automation are outside the current implementation. Parallel workers own files by declaration only: the hook confines each worker to its worktree and the source roots, not to its listed files.
 

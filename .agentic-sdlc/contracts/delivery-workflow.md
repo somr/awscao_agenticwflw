@@ -77,6 +77,20 @@ Additional terminal/exception states:
 
 `BLOCKED | REJECTED | FAILED`
 
+## Resuming a BLOCKED delivery
+
+`BLOCKED` ends a run, not the delivery. Every `BLOCKED` delivery manifest records its
+reason, a resume point (`implementation` or `verification`) and the delivery branch
+head. A later run with `resume=true` continues from that point using only the
+manifest and the commits on the delivery branch: it refuses unless the plan is
+unchanged, every commit the workflow recorded is still in the branch and inside the
+source roots, and the saved assignments pass the current registry. Commits a human
+added since are listed for the independent reviewer and in the Human Review Brief,
+and the review covers the whole diff. If the base branch has changed files the
+delivery changed, the run blocks until a human merges it. Finished assignments are
+not implemented again; verification, independent review and bounded remediation
+always run again.
+
 ## Human gate
 
 Only a human reviewer may provide the final PR approval.

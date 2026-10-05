@@ -27,6 +27,12 @@ Implementation must build on that work. Use configured source roots and per-prof
 - A fourth workflow, Source remediation (`source_remediate`), fixes eligible Source review findings on its own branch. It shares the remediator profile, the hook and the verification runner, so M1 and M2 apply to it too.
 - The answer wait no longer has a fixed length: it continues while the agent shows activity and fails after five minutes without any, within the 30-minute step budget. Reinspect the working tree before each milestone because development is occurring concurrently; preserve unrelated edits.
 
+**Changes since 2026-10-02 (2026-10-05, `main`):** Delivery can resume a `BLOCKED` run ([delivery.md](agentic-sdlc-docs/workflows/delivery.md#resume-a-blocked-run), [plan](agentic-sdlc-docs/plans/delivery-resume.md), [live record](agentic-sdlc-docs/verification/delivery-resume-live.md)). It covers the resume part of §7.1 and changes what M1 and M3 must account for:
+
+- Every `BLOCKED` exit writes `reason`, `resume_point` and `branch_head_sha` to the delivery manifest (`schema_version` `1.1`), plus `base_sha`, the bundle and registry hashes, the supervisor's tasks with each task's commit, and `delivery_commits` (every commit Python made). Repair, single-mode implementation, review and remediation contract failures now end `BLOCKED` instead of `failed`.
+- `resume=true` reads only that manifest and Git, never `.agentic-sdlc/runtime/` (agents can write there; M2's tampering concern therefore does not reach resume). Before writing anything it requires an unchanged plan hash, no uncommitted tracked changes, every recorded commit still in the branch and inside the current source roots, and saved tasks that pass the current registry. Commits added by hand are accepted, listed and reviewed.
+- On resume only, base-branch commits that change files the delivery also changed end the run `BLOCKED` (`base_drift_overlap`). This is a file-overlap check between the delivery branch and the base tip, not M3's comparison against the approved baseline.
+
 ### In scope
 
 - Common preconditions and commit-scope checks for single, hybrid, repair, and remediation paths.
@@ -189,6 +195,8 @@ Resolve the base branch to an immutable commit before making decisions. Determin
 
 Do not automatically accept an existing delivery branch simply because its name matches the ticket. A branch containing earlier implementation changes should block in v1 unless an explicitly validated resume path proves the plan, run, commit, and completed-step relationship. The conservative default is a diagnostic asking the operator to reconcile the branch; never reset or delete it automatically.
 
+**Status (2026-10-05): resume path done; default block still open.** `resume=true` is that validated path: it binds the plan hash, the `BLOCKED` run and its resume point, the recorded commits (ancestry of `HEAD` and inside the roots) and the finished tasks, and it never resets or deletes the branch. Still to do here: a run *without* `resume=true` on an existing `sdlc/<ticket>` checks it out and implements the plan again on top of it; it should block with a diagnostic that points to resume or to moving the branch aside. The resume checks also do not yet include the approved-baseline drift gate of §7.2–7.3; they should run it against the branch head once it exists.
+
 ### 7.2 Conservative comparison policy
 
 Use a deterministic tree comparison with external diff/text-conversion execution disabled and NUL-delimited changed paths. Include additions, removals, type changes, and rename endpoints. Record all changed paths before classifying them.
@@ -249,7 +257,7 @@ Before approval, verify that planning actually inspected the recorded baseline: 
 - Unknown build/dependency files, root changes, hook changes, deletions, renames, and submodule changes block.
 - Exact approved-record bookkeeping is accepted; altered approval/plan evidence is not.
 - Approval/manifest baseline or guidance mismatch blocks before any agent.
-- Existing stale/divergent delivery branch is rejected despite a compatible base branch.
+- Existing stale/divergent delivery branch is rejected despite a compatible base branch. (Resume already refuses a branch that lost a recorded commit, has uncommitted tracked changes or holds delivery commits outside the roots: `tests/test_delivery_resume.py`.)
 - Base ref or checkout changes between checks block; real temporary repositories exercise these transitions.
 - Fresh revision requires new review and human approval; old decisions remain accessible.
 - Identical plan text at a new baseline can be approved as a new revision; a repeated decision for the same revision is refused.
@@ -326,7 +334,7 @@ Record versions, commit/config digests, run IDs, outcomes, and limitations. Do n
 | CAO metadata unavailable or authorization invalid | Writes denied with actionable failure evidence |
 | Code changes after plan approval | Delivery blocks pending fresh analysis, review, and human approval |
 | Approved plan text unchanged after reconciliation | New baseline-bound revision can receive its own human decision |
-| Existing delivery branch already contains implementation | Requires explicit reconciliation/resume evidence; no blind rerun |
+| Existing delivery branch already contains implementation | `resume=true` continues a `BLOCKED` delivery from its manifest (built 2026-10-05); a run without it should block instead of implementing again (still planned) |
 | Developer edits the same checkout during delivery | Still unsupported; exclusive checkout use remains required |
 
 ## 11. Definition of done

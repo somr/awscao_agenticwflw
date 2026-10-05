@@ -25,6 +25,9 @@ MAX_HYBRID_TASKS = 16
 MAX_TASK_ID_LENGTH = 40
 MAX_OWNED_PATHS = 64
 MAX_PARALLEL_WORKERS = 4
+# Task results that count as finished when a BLOCKED run is resumed ("conflict" is followed by
+# its "rerun" entry when the rerun finished).
+FINISHED_STATUSES = ("committed", "merged", "rerun", "no_changes")
 
 
 def _hybrid_asset(repo: Path, relative: str) -> Path:
@@ -192,6 +195,21 @@ def build_schedule(tasks: list[dict[str, Any]], max_parallel: int) -> dict[str, 
     }
 
 
+def verification_plan(registry: dict[str, Any], tasks: list[dict[str, Any]]) -> tuple[list[list[str]], list[str]]:
+    """The verification commands for these tasks (worker and skill suites, in order, once each) and their skills."""
+    commands: list[list[str]] = []
+    used_skills: list[str] = []
+    for task in tasks:
+        worker = registry["workers"][task["worker"]]
+        used_skills.extend(task["skills"])
+        suites = worker["verification"] + [suite for skill in task["skills"] for suite in registry["skills"][skill]["verification"]]
+        for suite in suites:
+            for command in registry["verification"][suite]:
+                if command not in commands:
+                    commands.append(command)
+    return commands, used_skills
+
+
 def hybrid_skill_context(repo: Path, registry: dict[str, Any], skills: list[str]) -> str:
     sections = []
     for name in dict.fromkeys(skills):
@@ -218,7 +236,10 @@ def _commit_message(ticket_id: str, task: dict[str, Any]) -> str:
 
 
 def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_validator: Any, ticket_id: str,
-               run_id: str, max_parallel: int) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
+               run_id: str, max_parallel: int,
+               progress: dict[str, Any] | None = None,
+               resume_from: dict[str, Any] | None = None,
+               redispatch: bool = False) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
     """Supervisor -> waves of workers -> integration; commits once per task (and once for integration).
 
     A wave of one task runs in the main checkout. A wave of two or more runs each
@@ -226,45 +247,77 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
     there and cherry-picks the commits onto the delivery branch in task order. A
     conflicting task is rerun once, alone, in the main checkout. A worker failure
     lets its wave finish, merges nothing from that wave and stops the run.
+
+    progress, when given, is filled as the run goes (dispatch, waves, one entry per
+    finished task), so a caller still has it when a later step raises.
+
+    resume_from, the hybrid record of a BLOCKED run, replaces the supervisor with its saved
+    tasks (checked against the current registry) and skips the tasks it finished; their
+    commits must already be in the branch (the caller checks). When the saved tasks no
+    longer pass and redispatch is set, the supervisor assigns only the remaining work; the
+    finished tasks stay in the results, marked earlier_dispatch, and are never run again.
     """
+    progress = {} if progress is None else progress
     registry = load_specialists(repo)
     roots = validate_source_config(registry)["source_roots"]
     _write_json(evidence_dir / "registry.json", registry)
     catalog = {"workers": registry["workers"], "skills": registry["skills"]}
-    dispatch = _run_json_contract_step(
-        agent=SUPERVISOR, label="Code supervisor", step_id="dispatch-v1", repo=repo,
-        evidence_dir=evidence_dir,
-        prompt=prompt + "\nAllocate the approved work using this catalog:\n" + json.dumps(catalog) +
-        '\nReturn {"tasks":[{"id":"T1","worker":"developer","plan_reference":"approved task reference",'
-        '"instructions":"bounded assignment and interface contracts","depends_on":[],"skills":[],'
-        '"owns":["<source-root>/path/or/folder"]}]}. '
-        'Every owns path must be inside these configured source roots: ' + json.dumps(roots) + '. '
-        "Cover every approved task, list dependencies before consumers, and use at most 16 tasks. "
-        "Python runs tasks that do not depend on each other at the same time, each in an isolated copy of the "
-        "repository, and merges them afterwards: declare depends_on only for real producer/consumer links, as in "
-        "the plan's dependency table. List in owns the files or folders each task will change, and give each "
-        "file to one task where possible; tasks whose owns overlap never run at the same time. "
-        "Do not change source. Select applicable skills explicitly.",
-        validator=lambda value: validate_dispatch(value, registry),
-    )
+
+    def supervise(extra: str = "") -> dict[str, Any]:
+        return _run_json_contract_step(
+            agent=SUPERVISOR, label="Code supervisor", step_id="dispatch-v1", repo=repo,
+            evidence_dir=evidence_dir,
+            prompt=prompt + "\nAllocate the approved work using this catalog:\n" + json.dumps(catalog) +
+            '\nReturn {"tasks":[{"id":"T1","worker":"developer","plan_reference":"approved task reference",'
+            '"instructions":"bounded assignment and interface contracts","depends_on":[],"skills":[],'
+            '"owns":["<source-root>/path/or/folder"]}]}. '
+            'Every owns path must be inside these configured source roots: ' + json.dumps(roots) + '. '
+            "Cover every approved task, list dependencies before consumers, and use at most 16 tasks. "
+            "Python runs tasks that do not depend on each other at the same time, each in an isolated copy of the "
+            "repository, and merges them afterwards: declare depends_on only for real producer/consumer links, as in "
+            "the plan's dependency table. List in owns the files or folders each task will change, and give each "
+            "file to one task where possible; tasks whose owns overlap never run at the same time. "
+            "Do not change source. Select applicable skills explicitly." + extra,
+            validator=lambda value: validate_dispatch(value, registry),
+        )
+
+    earlier: list[dict[str, Any]] = []
+    if resume_from is not None:
+        # Until new progress exists, a failure here must still report the saved record.
+        progress.update(dispatch=resume_from["dispatch"], waves=resume_from.get("waves"),
+                        tasks=list(resume_from.get("tasks", [])), integration=None)
+    if resume_from is None:
+        dispatch = supervise()
+    else:
+        try:
+            dispatch = validate_dispatch(resume_from["dispatch"], registry)
+        except WorkflowContractError:
+            if not redispatch:
+                raise
+            earlier = [dict(entry, earlier_dispatch=True) for entry in resume_from.get("tasks", [])
+                       if entry["status"] in FINISHED_STATUSES or entry.get("earlier_dispatch")]
+            resume_from = None
+            dispatch = supervise(
+                "\nThese approved tasks are already implemented and committed on the branch; inspect the source and "
+                "assign ONLY the remaining approved work:\n" + json.dumps(
+                    [{"task": e["task"], "changed_paths": e.get("changed_paths", []), "result": e["result"]} for e in earlier]))
     _write_json(evidence_dir / "dispatch.json", dispatch)
     schedule = build_schedule(dispatch["tasks"], max_parallel)
     _write_json(evidence_dir / "schedule.json", schedule)
     tasks = {task["id"]: task for task in dispatch["tasks"]}
 
-    commands: list[list[str]] = []
-    used_skills: list[str] = []
-    for task in dispatch["tasks"]:
-        worker = registry["workers"][task["worker"]]
-        used_skills.extend(task["skills"])
-        suites = worker["verification"] + [suite for skill in task["skills"] for suite in registry["skills"][skill]["verification"]]
-        for suite in suites:
-            for command in registry["verification"][suite]:
-                if command not in commands:
-                    commands.append(command)
+    commands, used_skills = verification_plan(registry, dispatch["tasks"])
 
     results: list[dict[str, Any]] = []
     by_task: dict[str, dict[str, Any]] = {}
+    progress.update(dispatch=dispatch, waves=schedule["waves"], tasks=results)
+    results.extend(earlier)  # finished under an earlier dispatch: results only, ids may repeat
+    for entry in (resume_from or {}).get("tasks", []):
+        if entry.get("earlier_dispatch"):
+            results.append(entry)
+        elif entry["status"] in FINISHED_STATUSES and entry["task"] in tasks:
+            results.append(entry)
+            by_task[entry["task"]] = entry
 
     def run_worker(task: dict[str, Any], tree: Path | None, step_id: str, extra: str = "") -> dict[str, Any]:
         prior = [{"task": a, "result": by_task[a]["result"]} for a in schedule["ancestors"][task["id"]]]
@@ -290,6 +343,9 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
 
     prune_worktrees(repo)
     for wave_no, wave in enumerate(schedule["waves"], start=1):
+        wave = [task_id for task_id in wave if task_id not in by_task]  # finished before a resume
+        if not wave:
+            continue
         if len(wave) == 1:
             run_in_main(tasks[wave[0]], wave_no, f"worker-{wave[0]}")
             continue
@@ -368,6 +424,7 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
         json.dumps({"dispatch": dispatch, "schedule": schedule["waves"], "results": results}) + "\n" + context,
     )
     integration_sha = commit_task(repo, roots, f"[{ticket_id}] Integrate hybrid assignments")
+    progress["integration"] = {"commit": integration_sha, "result": integrated}
     commits = [{"task": entry["task"], "commit": entry["commit"], "status": entry["status"]}
                for entry in results if entry["commit"] and entry["status"] != "conflict"]
     if integration_sha:

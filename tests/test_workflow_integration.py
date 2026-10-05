@@ -55,7 +55,9 @@ def context():
             'dependencies': [], 'open_questions': [], 'contradictions': [], 'retrieval_warnings': []}
 
 
-class LifecycleIntegrationTest(unittest.TestCase):
+class DeliveryHarness:
+    """Real Git and verification; simulated agents and CAO transport. Shared with test_delivery_resume."""
+
     def make_repo(self, root):
         repo = root / 'repo'
         repo.mkdir()
@@ -77,13 +79,15 @@ class LifecycleIntegrationTest(unittest.TestCase):
         git('commit', '-qm', 'Baseline')
         return repo, git
 
-    def drive(self, domain, transport, inputs, responder, run_id):
+    def drive(self, domain, transport, inputs, responder, run_id, worktrees=False):
+        """worktrees=True allows parallel workers, which run in worktrees outside the repository root."""
         calls, outputs = [], []
         def step(provider, agent, prompt, **kwargs):
             calls.append((agent, kwargs['step_id']))
             self.assertEqual(kwargs['recovery'], 'idempotent')
             self.assertFalse(kwargs['teardown'])
-            self.assertEqual(kwargs['working_directory'], inputs['repository_root'])
+            if not worktrees:
+                self.assertEqual(kwargs['working_directory'], inputs['repository_root'])
             answer = responder(agent, kwargs['step_id'], prompt)
             path = Path(re.findall(r'\n(/[^\n]+\.answer\.(?:json|md))\n', prompt)[-1])
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +102,8 @@ class LifecycleIntegrationTest(unittest.TestCase):
             stack.enter_context(patch.object(transport, '_cao_terminal_status', return_value='completed'))
             cleanup = stack.enter_context(patch.object(transport, '_cleanup_step_terminal'))
             domain.main()
-            self.assertEqual(cleanup.call_count, len(calls))
+            if not worktrees:
+                self.assertEqual(cleanup.call_count, len(calls))
         return calls, outputs[-1]
 
     def plan(self, root, modular, prompts=None, configure=None):
@@ -144,6 +149,18 @@ class LifecycleIntegrationTest(unittest.TestCase):
                        check=True, capture_output=True)
         return repo, git, records
 
+    def edit_config(self, repo, change):
+        # Edit the combined settings, then write each key back to its file: per-project keys to
+        # agentic-sdlc-project.json, the rest to the common registry.
+        registry_path, project_path = repo / '.agentic-sdlc/cao/specialists.json', repo / 'agentic-sdlc-project.json'
+        config = {**json.loads(registry_path.read_text()), **json.loads(project_path.read_text())}
+        change(config)
+        keys = ('source_roots', 'write_profiles', 'verification')
+        project_path.write_text(json.dumps({'version': 1, **{k: config[k] for k in keys if k in config}}))
+        registry_path.write_text(json.dumps({k: v for k, v in config.items() if k not in keys}))
+
+
+class LifecycleIntegrationTest(DeliveryHarness, unittest.TestCase):
     def test_plan_delivery_repair_remediation_and_human_handoff(self):
         for modular in (False, True):
             with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
@@ -257,17 +274,6 @@ class LifecycleIntegrationTest(unittest.TestCase):
                         delivery.main()
                     step.assert_not_called()
                 self.assertEqual(git('branch', '--show-current'), 'main')
-
-
-    def edit_config(self, repo, change):
-        # Edit the combined settings, then write each key back to its file: per-project keys to
-        # agentic-sdlc-project.json, the rest to the common registry.
-        registry_path, project_path = repo / '.agentic-sdlc/cao/specialists.json', repo / 'agentic-sdlc-project.json'
-        config = {**json.loads(registry_path.read_text()), **json.loads(project_path.read_text())}
-        change(config)
-        keys = ('source_roots', 'write_profiles', 'verification')
-        project_path.write_text(json.dumps({'version': 1, **{k: config[k] for k in keys if k in config}}))
-        registry_path.write_text(json.dumps({k: v for k, v in config.items() if k not in keys}))
 
     def test_planning_gives_the_source_roots_to_analyst_author_and_reviewer(self):
         for modular in (False, True):

@@ -44,11 +44,16 @@ flowchart TD
     V2 -- passed --> REV
     F -- no --> BRIEF[Human Review Brief]
     BRIEF --> H[Human decision]
+    BL -. "fix by hand, commit,<br/>run with resume=true" .-> RES{Resume point}
+    RES -- implementation --> WK
+    RES -- verification --> VER
 ```
 
 1. **Check.** Python re-verifies that the plan is approved, that its hash matches, and that the approved baseline
    commit is still an ancestor of the base branch.
-2. **Branch.** Work happens on `sdlc/<ticket>`, created from the current tip of the base branch.
+2. **Branch.** Work happens on `sdlc/<ticket>`, created from the current tip of the base branch. A run with
+   `resume=true` continues a `BLOCKED` delivery on that branch instead; see
+   [Resume a `BLOCKED` run](#resume-a-blocked-run).
 3. **Implement.** In hybrid mode a read-only supervisor splits the plan into assignments for registered workers.
    Python groups the assignments that do not depend on each other into waves, runs the tasks of a wave at the same
    time in separate Git worktrees, commits each task and merges the commits in task order; an integration pass then
@@ -97,6 +102,8 @@ flowchart TD
 | `base_branch` | no, default `main` | The delivery branch starts from the current tip of this branch, and the plan's approved baseline must still be its ancestor. |
 | `implementation_mode` | no, default `hybrid` | `hybrid`: a supervisor assigns work to registered workers. `single`: one implementer does all the work and verification uses the project's `application` suite. |
 | `hybrid_max_parallel` | no, default `4` | Hybrid mode only: at most this many workers of a wave run at the same time (1 to 4). `1` runs every task one after another in the main checkout. |
+| `resume` | no, default `false` | `true` continues the `BLOCKED` delivery recorded in `delivery-manifest.json` at its resume point instead of starting again. The implementation mode then comes from the manifest. See [Resume a `BLOCKED` run](#resume-a-blocked-run). |
+| `resume_redispatch` | no, default `false` | With `resume=true` at the `implementation` resume point: when the current registry rejects the saved tasks, the supervisor assigns only the remaining work instead of the run being refused. |
 
 ## Run
 
@@ -107,16 +114,17 @@ cao workflow run sdlc_deliver --wait --json --run-id deliver-PAY-DEMO-001-1 \
   --input ticket_id=PAY-DEMO-001 --input repository_root="$PWD" --input base_branch=main
 ```
 
-If the branch `sdlc/<ticket_id>` does not exist it is created from the tip of the base branch; if it exists it is
-checked out and continued (delete it with `git branch -D sdlc/<ticket_id>` to start again). **The working tree is
-left on the delivery branch**, so return with `git checkout <base_branch>` before doing other work.
+If the branch `sdlc/<ticket_id>` does not exist it is created from the tip of the base branch. If it exists it is
+checked out; without `resume=true` the plan is then implemented again on top of it, so move it aside first (see
+[Start again](#after-a-blocked-run)). **The working tree is left on the delivery branch**, so return with
+`git checkout <base_branch>` before doing other work.
 
 ## Results
 
 Under `agentic-sdlc-records/<ticket_id>/`:
 
 ```text
-├── delivery-manifest.json   state, mode, parallel width, task commits, source roots, verification results, review rounds, remediation history, PR head SHA
+├── delivery-manifest.json   state, mode, parallel width, the supervisor's tasks and each task's commit, source roots, verification results (with the end of each failed command's output), review rounds, remediation history, PR head SHA; when BLOCKED also reason, resume point and branch head
 ├── pr-title.txt, pr-body.md, pr-diff.patch      the local "pull request"
 ├── pr-review-r<N>.json      each independent review round
 ├── human-review-brief.md    what to read before deciding
@@ -146,9 +154,13 @@ stateDiagram-v2
 | Outcome | Meaning | What to do |
 |---|---|---|
 | `BLOCKED`, `hybrid_implementation_failed: ...` | An implementation step broke its contract. Tasks from earlier waves stay committed on the branch; nothing from the failed wave is merged. A task that ran alone leaves its partial edits in the working tree. | See [After a `BLOCKED` run](#after-a-blocked-run). |
+| `BLOCKED`, `implementation_failed: ...` | Single mode: the implementation step broke its contract or changed nothing inside the source roots. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | `BLOCKED`, `verification_failed_after_one_repair_attempt` | Verification still failed after one repair turn. | See [After a `BLOCKED` run](#after-a-blocked-run). |
+| `BLOCKED`, `repair_changed_nothing` or `repair_failed: ...` | Verification failed and the repair turn changed nothing inside the source roots, or broke its contract. A fix outside the roots (for example a build file) is one cause. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | `BLOCKED`, `verification_failed_after_remediation` | A remediation round broke verification. | See [After a `BLOCKED` run](#after-a-blocked-run). |
-| Run state `failed` | A check stopped the run: the plan is not approved or changed after review, the baseline is no longer an ancestor, the source-root configuration is invalid, the source roots are dirty, or a single-mode implementation or repair step changed nothing inside the source roots. | `cao workflow result <run-id> --json` carries the traceback in its `warnings` field. |
+| `BLOCKED`, `base_drift_overlap: <paths>` | Only on a resume: the base branch gained commits that change files this delivery also changed. | Merge the base branch into `sdlc/<ticket>` by hand, then resume again. See [Resume a `BLOCKED` run](#resume-a-blocked-run). |
+| `BLOCKED`, `review_failed: ...` | The reviewer or the remediator broke its contract. Remediation commits made before stay on the branch. | See [After a `BLOCKED` run](#after-a-blocked-run). |
+| Run state `failed` | A check stopped the run before any agent: the plan is not approved or changed after review, the baseline is no longer an ancestor, the source-root configuration is invalid, or the source roots are dirty. | `cao workflow result <run-id> --json` carries the traceback in its `warnings` field. |
 | `AWAITING_HUMAN_REVIEW` with `has_developer_required_findings` | The review found items only a human may decide, such as high-impact or protected categories. | Read the brief. See [Human decisions](#human-decisions). |
 | `AWAITING_HUMAN_REVIEW` with `escalated_findings` | The reviewer marked these findings auto-fixable, but the remediator changed nothing for them. The brief shows each one with the remediator's reason. | Read the brief; each escalated finding is a developer finding. See [Human decisions](#human-decisions). |
 | `convergence_limit_reached` | Automatic remediation used all three rounds and auto-fixable findings remain. | Read the brief; treat the remaining findings as developer findings. See [Human decisions](#human-decisions). |
@@ -156,10 +168,13 @@ stateDiagram-v2
 ### After a `BLOCKED` run
 
 No command moves a delivery out of `BLOCKED`, and `record_pr_approval.py` refuses it. You leave `BLOCKED` by fixing
-the cause and starting a new Delivery run, which writes a new manifest. The failed run's manifest, its runtime
-evidence and its commits on `sdlc/<ticket>` stay in place until you move them.
+the cause and then either resuming (step 3a, which keeps the finished work), starting again (3b) or changing the plan
+(3c). Every `BLOCKED` manifest records `reason`, `resume_point` and the branch head, so resuming needs nothing else
+from the failed run.
 
-**1. Find the cause.** Read `reason` in the run output and the evidence behind it:
+**1. Find the cause.** Read `reason` in `delivery-manifest.json` (also in the run output) and the evidence behind
+it. The manifest keeps the end of each failed verification command's output, which survives when the runtime
+evidence below is gone (for example after a container run):
 
 ```bash
 cao workflow result <run-id> --json
@@ -171,15 +186,28 @@ ls .agentic-sdlc/runtime/<ticket>/<run-id>/verification/                  # veri
 
 | `reason` | Usual cause | Fix |
 |---|---|---|
-| `hybrid_implementation_failed: ...` | An agent broke its contract, for example invalid output or a write outside the source roots, or a worktree's write boundary differed from the main checkout's (commit or discard local edits to `.claude/`, the registry or `agentic-sdlc-project.json`). A task that ran alone leaves its partial edits uncommitted in the working tree; a parallel task's edits stay only in `<task>.patch` in the evidence. | Usually none: retry. If the same step fails again, check the plan and the registry. |
-| `verification_failed_after_one_repair_attempt` | The code still fails the verification commands after one repair turn. | Commands wrong (missing toolchain, bad command): fix `agentic-sdlc-project.json` and commit it on the base branch. Plan wrong: plan again (step 3b). Code wrong: retry. |
-| `verification_failed_after_remediation` | A remediation round broke verification. | Read the review finding it was fixing; usually retry. |
+| `hybrid_implementation_failed: ...` | An agent broke its contract, for example invalid output or a write outside the source roots, or a worktree's write boundary differed from the main checkout's (commit or discard local edits to `.claude/`, the registry or `agentic-sdlc-project.json`). A task that ran alone leaves its partial edits uncommitted in the working tree; a parallel task's edits stay only in `<task>.patch` in the evidence. | Discard the partial edits (see 3a), then resume: finished tasks are kept. If the same step fails again, check the plan and the registry. |
+| `verification_failed_after_one_repair_attempt` | The code still fails the verification commands after one repair turn. | Code or build file wrong: fix it by hand on `sdlc/<ticket>`, commit, resume. Commands wrong (missing toolchain, bad command): fix `agentic-sdlc-project.json`, commit, resume. Plan wrong: plan again (3c). |
+| `repair_changed_nothing`, `repair_failed: ...` | The failure needs a change the repair turn could not make, often in a build file outside the source roots. | Read the failed commands' `output_tail` in the manifest, fix by hand on `sdlc/<ticket>`, commit, resume. |
+| `verification_failed_after_remediation` | A remediation round broke verification. | Read the review finding it was fixing; fix by hand and resume, or just resume. |
+| `implementation_failed: ...`, `review_failed: ...` | An agent broke its contract. | Usually none: resume. |
+| `base_drift_overlap: <paths>` | The base branch changed files this delivery changed. | Merge the base branch into `sdlc/<ticket>` (not rebase), commit the merge, resume. |
 
-**3a. Retry with the same approved plan.** From the repository root:
+**3a. Resume.** From the repository root, on `sdlc/<ticket>` with every change committed:
 
 ```bash
-# The configured source roots that exist (without agentic-sdlc-project.json, list them from the registry or use app).
+# Only after hybrid_implementation_failed: drop a task's partial, uncommitted edits.
 ROOTS=$(python3 -c 'import json,os; r=json.load(open("agentic-sdlc-project.json")).get("source_roots",["app"]); print(" ".join(x for x in r if os.path.exists(x)))')
+git restore --staged --worktree -- $ROOTS && git clean -fd -- $ROOTS
+cao workflow run sdlc_deliver --wait --json --run-id <new-run-id> \
+  --input ticket_id=<ticket> --input repository_root="$PWD" --input base_branch=main --input resume=true
+```
+
+See [Resume a `BLOCKED` run](#resume-a-blocked-run) for what it checks and does.
+
+**3b. Start again with the same approved plan.** This implements the whole plan from scratch:
+
+```bash
 git restore --staged --worktree -- $ROOTS           # only after hybrid_implementation_failed: drop partial edits
 git clean -fd -- $ROOTS                             #   and the new files they created
 git checkout main                                   # Delivery leaves you on sdlc/<ticket>
@@ -189,19 +217,18 @@ cao workflow run sdlc_deliver --wait --json --run-id <new-run-id> \
   --input ticket_id=<ticket> --input repository_root="$PWD" --input base_branch=main
 ```
 
-- `ROOTS` holds your configured source roots; Git refuses a path that does not exist, so roots not created yet are skipped. Hybrid mode needs the roots clean and the Git index empty.
+- `ROOTS` (from 3a) holds your configured source roots; Git refuses a path that does not exist, so roots not created
+  yet are skipped. Hybrid mode needs the roots clean and the Git index empty.
 - Python removes its worktrees and `sdlc-work/<run-id>/*` branches even when a run fails. Only a killed workflow
   process leaves them behind; then run `git worktree prune` and delete those branches with `git branch -D`.
-- Renaming the branch, rather than deleting it, keeps the failed attempt for comparison. A run on an existing
-  `sdlc/<ticket>` does not resume where the previous run stopped: it implements the plan again on top of what the
-  branch holds, and on an already implemented branch the workers have nothing to change, so the run ends `BLOCKED`
-  with `hybrid_implementation_failed`.
+- Renaming the branch, rather than deleting it, keeps the failed attempt for comparison. Without `resume=true`, a run
+  on an existing `sdlc/<ticket>` implements the plan again on top of what the branch holds.
 - The new run overwrites most PR artifacts, but a stale `pr-review-r<N>.json` or `human-review-brief.md` from the
   failed run would survive if you did not remove them. The plan files (`development-plan.md`, `plan-review.json`,
   `execution-manifest.json`, `plan-approval-record.json`) stay.
 
-**3b. Change the plan instead.** Planning refuses to overwrite an approved plan, so move the ticket's records aside
-first. Committed records stay in Git history.
+**3c. Change the plan instead.** Planning refuses to overwrite an approved plan, so move the ticket's records aside
+first. Committed records stay in Git history. A changed plan cannot be resumed.
 
 ```bash
 git checkout main
@@ -211,12 +238,62 @@ git commit -m "Supersede the <ticket> plan"
 ```
 
 Then run [Planning](planning.md#run), approve the new plan with `approve_plan.py`, commit the new records, and continue
-with step 3a from the branch rename.
+with step 3b from the branch rename.
 
 **4. Check the new outcome.** `AWAITING_HUMAN_REVIEW` continues in [Human decisions](#human-decisions); `BLOCKED`
-again means back to step 1. Every retry implements the whole plan again, so a failure that keeps coming back needs a
-change to the plan or the registry, not another retry. A fix you make by hand on a `BLOCKED` branch cannot be reviewed
-or approved by the workflow.
+again means back to step 1. A failure that keeps coming back needs a change to the plan or the registry, not another
+attempt.
+
+### Resume a `BLOCKED` run
+
+A run with `resume=true` continues from the `BLOCKED` manifest and the commits on `sdlc/<ticket>`; it reads nothing
+from the failed run's `.agentic-sdlc/runtime/`, so it also works when that folder was lost (for example in a
+container that mounts only `.git`, `agentic-sdlc-records/` and the sources).
+
+```mermaid
+flowchart TD
+    M["Read the BLOCKED manifest<br/>(before anything is written)"] --> C{"Plan hash, branch,<br/>commits, roots, tasks OK?"}
+    C -- no --> X["Refused: run failed,<br/>manifest unchanged"]
+    C -- yes --> D{"Base branch changed<br/>the same files?"}
+    D -- yes --> B["BLOCKED base_drift_overlap"]
+    D -- no --> P{resume_point}
+    P -- implementation --> I["Saved tasks: skip finished ones,<br/>run the rest, integrate"]
+    P -- verification --> V[Verify]
+    I --> V
+    V --> R["Repair, PR, review,<br/>remediation as usual"]
+```
+
+**It refuses**, before writing anything, so the `BLOCKED` manifest stays for the next attempt, when:
+
+- the manifest is missing, not `BLOCKED`, written before resume existed (`schema_version` other than `1.1`), for another
+  ticket, or for a plan whose hash has changed since;
+- `sdlc/<ticket>` does not exist, has uncommitted changes to tracked files, or no longer contains a commit the manifest
+  records (the recorded branch head and every commit Delivery made). Add commits on top, a merge included; never rebase
+  or reset;
+- a commit Delivery made touches a path outside the current source roots;
+- in hybrid mode, the saved supervisor tasks fail the current registry's rules (for example a worker was renamed),
+  unless `resume_redispatch=true` lets the supervisor assign the remaining work at the `implementation` resume point.
+
+**It continues** at the manifest's `resume_point`:
+
+| `resume_point` | After | What runs |
+|---|---|---|
+| `implementation` | `hybrid_implementation_failed`, `implementation_failed` | Hybrid: the saved tasks without the supervisor; tasks whose commit is recorded are skipped and their results go to dependent tasks; the remaining waves and the integration pass run. A parallel wave that failed merged nothing, so all of its tasks run again. Without saved tasks (the supervisor failed) and in single mode, implementation starts again. |
+| `verification` | every other reason | No implementation: verification (with one repair turn), PR artifacts, review and remediation, using the recorded implementation summary and commits. |
+
+**Commits added by hand** after the recorded branch head are accepted anywhere, also outside the source roots (for
+example a build file). Python lists each with its paths in the manifest (`hand_commits`), the PR body, the reviewer's
+prompt and the brief's residual risks; the review covers the whole diff, so a hand change is reviewed like any other.
+
+**Base branch drift.** Python records how many commits the base branch is ahead of `sdlc/<ticket>` and which files
+both changed (`base_drift`). No shared files: the run continues and the PR body says the merged result was not
+verified. Shared files: the run ends `BLOCKED` with `base_drift_overlap`; merge the base branch into `sdlc/<ticket>` by
+hand and resume again.
+
+**Budgets and records.** The repair turn and the three remediation rounds start again on each resume; `totals` in the
+manifest counts runs, repair turns and remediation rounds across the whole chain. Review records continue the earlier
+numbering (`pr-review-r<N>.json`). The new manifest names the run it continued in `resumed_from`, together with that
+run's bundle identity (`bundle`: hashes of the workflow bundle and of the merged registry and project settings).
 
 A plan that names files outside the configured source roots cannot be implemented. The agents are told to report
 those tasks as deviations instead of writing them, and the hook denies the write anyway.
@@ -412,11 +489,14 @@ implemented, so check the plan's task list against the roots before delivering.
 - The review is independent and read-only, and its routing is recomputed by Python.
 - Remediation is bounded to three rounds and always followed by verification and a fresh review.
 - Approval is a human act, bound to the plan's SHA-256 and to the exact reviewed head commit.
+- A resume trusts only the delivery manifest, which agents cannot write, and Git: every recorded commit must still be
+  in the branch, and commits added since are listed and reviewed. It never reads the runtime folder agents can write.
 
 ## Tests
 
 `tests/test_deliver.py`, `tests/test_hybrid.py`, `tests/test_worktrees.py`, `tests/test_source_config.py`, `tests/test_restrict_write_scope.py`,
-`tests/test_record_pr_approval.py` and the end-to-end flows in `tests/test_workflow_integration.py`. See
+`tests/test_record_pr_approval.py` and the end-to-end flows in `tests/test_workflow_integration.py` and
+`tests/test_delivery_resume.py` (what each `BLOCKED` exit records, and every resume path). See
 [build and install](../build-and-install.md#tests) for how to run them.
 
 ## See also
