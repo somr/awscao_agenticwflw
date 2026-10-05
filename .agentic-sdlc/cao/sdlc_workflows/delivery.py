@@ -5,6 +5,7 @@ standalone CAO deployment without changing this workflow's policy or inputs.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -21,6 +22,7 @@ from .remediation import (
     _remediator_completion_validator,
 )
 from .errors import (
+    NoSourceChangesError,
     WorkflowContractError,
 )
 from .artifacts import (
@@ -58,6 +60,9 @@ PR_REVIEWER = "sdlc_pr_reviewer"
 REMEDIATOR = "sdlc_remediator"
 # pr-review.md: "Default maximum autonomous remediation rounds: 3."
 MAX_REMEDIATION_ROUNDS = 3
+# 1.1: everything a later run needs to resume a BLOCKED delivery (reason, resume_point,
+# branch_head_sha, base_sha, bundle identity, hybrid progress, failed-command output).
+MANIFEST_SCHEMA_VERSION = "1.1"
 
 # PR review vocabulary — encodes .agentic-sdlc/policies/pr-review.md's finding
 # model and routing policy as executable constants. classify_pr_review()
@@ -237,7 +242,7 @@ def _implement_and_commit(
         validator=_implementer_completion_validator,
     )
     if not _source_changes(repo, roots).strip():
-        raise WorkflowContractError(f"{step_id} completed but left no changes under the source roots ({', '.join(roots)})")
+        raise NoSourceChangesError(f"{step_id} completed but left no changes under the source roots ({', '.join(roots)})")
     _stage_source_changes(repo, roots)
     task_list = ", ".join(completion.get("tasks_completed", [])) or "(no tasks reported)"
     _git(["commit", "-m", f"[{ticket_id}] {action_label} (tasks: {task_list})"], cwd=repo)
@@ -246,6 +251,7 @@ def _implement_and_commit(
 
 def _hybrid_and_commit(
     *, repo: Path, prompt: str, evidence_dir: Path, ticket_id: str, run_id: str, max_parallel: int,
+    progress: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
     """Run hybrid implementation; it commits once per task and once for integration."""
     if _git(["diff", "--cached", "--name-only"], cwd=repo).strip():
@@ -256,7 +262,7 @@ def _hybrid_and_commit(
     completion, commands, context, commits = run_hybrid(
         repo=repo, prompt=prompt, evidence_dir=evidence_dir,
         completion_validator=_implementer_completion_validator,
-        ticket_id=ticket_id, run_id=run_id, max_parallel=max_parallel,
+        ticket_id=ticket_id, run_id=run_id, max_parallel=max_parallel, progress=progress,
     )
     if not commits:
         raise WorkflowContractError(f"Hybrid implementation left no changes under the source roots ({', '.join(roots)})")
@@ -285,10 +291,45 @@ Governance policy: {governance}
 
 {_roots_line(repo)}
 
-Failed verification commands:
+Failed verification commands, each with the end of its output (output_tail):
 {json.dumps(failed, indent=2)}
 
 Fix the implementation under the source roots so verification passes. Do not weaken, skip, or delete any test assertion to make it pass — if a test looks wrong given the plan, say so in your output instead of changing the test. Keep changes scoped to fixing the failure; do not otherwise expand scope beyond the plan."""
+
+
+def _json_sha256(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def _bundle_identity(registry: dict[str, Any]) -> dict[str, Any]:
+    """Which workflow code and settings ran: compared when a later run resumes this one."""
+    bundle = globals().get("SDLC_BUNDLE_MANIFEST")  # defined only in the generated CAO bundle
+    return {"manifest_sha256": _json_sha256(bundle) if bundle else None, "registry_sha256": _json_sha256(registry)}
+
+
+def _hybrid_record(progress: dict[str, Any]) -> dict[str, Any]:
+    """The manifest's copy of hybrid progress; a conflict's patch stays in the runtime evidence."""
+    return {
+        "dispatch": progress.get("dispatch"),
+        "waves": progress.get("waves"),
+        "tasks": [{key: value for key, value in entry.items() if key != "conflict_patch"}
+                  for entry in progress.get("tasks", [])],
+        "integration": progress.get("integration"),
+    }
+
+
+def _end_blocked(manifest_path: Path, manifest: dict[str, Any], repo: Path, reason: str, resume_point: str) -> None:
+    """Write a complete BLOCKED manifest: the only record a later resume run can read."""
+    manifest.update(state="BLOCKED", reason=reason, resume_point=resume_point, branch_head_sha=_current_head_sha(repo))
+    _write_json(manifest_path, manifest)
+    emit_output({
+        "workflow_outcome": "BLOCKED",
+        "ticket_id": manifest["ticket_id"],
+        "run_id": manifest["workflow_run_id"],
+        "reason": reason,
+        "resume_point": resume_point,
+        "delivery_manifest": str(manifest_path),
+    })
 
 
 def _compute_delivery_diff(repo: Path, base_branch: str, delivery_branch: str) -> str:
@@ -698,7 +739,7 @@ def main() -> None:
     # 1. READY
     _ensure_delivery_branch(repo, delivery_branch, base_branch)
     _write_json(delivery_manifest_path, {
-        "schema_version": "1.0",
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "ticket_id": ticket_id,
         "delivery_workflow": "sdlc_deliver",
         "delivery_workflow_version": "1.0",
@@ -709,6 +750,9 @@ def main() -> None:
         "delivery_branch": delivery_branch,
         "plan_sha256": manifest["plan_sha256"],
         "repository_baseline_sha": baseline_sha,
+        "base_sha": _git(["merge-base", base_branch, delivery_branch], cwd=repo).strip(),
+        "bundle": _bundle_identity(registry),
+        "totals": {"runs": 1, "repair_turns": 0, "remediation_rounds": 0},
         "state": "READY",
         "implementation_mode": implementation_mode,
         "hybrid_max_parallel": max_parallel if implementation_mode == "hybrid" else None,
@@ -719,29 +763,33 @@ def main() -> None:
     verification_commands = application_commands
     skill_context = ""
     implementation_commits: list[dict[str, Any]] = []
+    progress: dict[str, Any] = {}
     if implementation_mode == "hybrid":
         try:
             completion, verification_commands, skill_context, implementation_commits = _hybrid_and_commit(
                 repo=repo, prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
                 evidence_dir=implementing_dir / "agent-output", ticket_id=ticket_id,
-                run_id=run_id, max_parallel=max_parallel,
+                run_id=run_id, max_parallel=max_parallel, progress=progress,
             )
         except (WorkflowContractError, OSError) as exc:
             failed_manifest = _read_json(delivery_manifest_path)
-            failed_manifest.update(state="BLOCKED", reason=f"hybrid_implementation_failed: {exc}")
-            _write_json(delivery_manifest_path, failed_manifest)
-            emit_output({"workflow_outcome": "BLOCKED", "ticket_id": ticket_id, "run_id": run_id,
-                         "reason": failed_manifest["reason"], "delivery_manifest": str(delivery_manifest_path)})
+            failed_manifest["hybrid"] = _hybrid_record(progress)
+            _end_blocked(delivery_manifest_path, failed_manifest, repo, f"hybrid_implementation_failed: {exc}", "implementation")
             return
     else:
-        completion = _implement_and_commit(
-            prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
-            step_id="implement-v1",
-            repo=repo,
-            evidence_dir=implementing_dir / "agent-output",
-            ticket_id=ticket_id,
-            action_label="Implement approved plan",
-        )
+        try:
+            completion = _implement_and_commit(
+                prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
+                step_id="implement-v1",
+                repo=repo,
+                evidence_dir=implementing_dir / "agent-output",
+                ticket_id=ticket_id,
+                action_label="Implement approved plan",
+            )
+        except (WorkflowContractError, OSError) as exc:
+            _end_blocked(delivery_manifest_path, _read_json(delivery_manifest_path), repo,
+                         f"implementation_failed: {exc}", "implementation")
+            return
     _write_json(implementing_dir / "completion-v1.json", completion)
     commit_sha = _current_head_sha(repo)
 
@@ -750,6 +798,8 @@ def main() -> None:
     delivery_manifest["implementation_commit_sha"] = commit_sha
     if implementation_commits:
         delivery_manifest["implementation_commits"] = implementation_commits
+    if progress:
+        delivery_manifest["hybrid"] = _hybrid_record(progress)
     delivery_manifest["implementer_summary"] = completion
     _write_json(delivery_manifest_path, delivery_manifest)
 
@@ -758,14 +808,22 @@ def main() -> None:
     verification = _run_verification(repo, verifying_dir, "verify-v1", verification_commands)
     repair_completion: dict[str, Any] | None = None
     if not verification["passed"]:
-        repair_completion = _implement_and_commit(
-            prompt=build_implementer_repair_prompt(repo, plan_path, delivery_contract, governance, verification) + "\n" + skill_context,
-            step_id="implement-v1-repair-1",
-            repo=repo,
-            evidence_dir=implementing_dir / "agent-output",
-            ticket_id=ticket_id,
-            action_label="Repair after verification failure",
-        )
+        try:
+            repair_completion = _implement_and_commit(
+                prompt=build_implementer_repair_prompt(repo, plan_path, delivery_contract, governance, verification) + "\n" + skill_context,
+                step_id="implement-v1-repair-1",
+                repo=repo,
+                evidence_dir=implementing_dir / "agent-output",
+                ticket_id=ticket_id,
+                action_label="Repair after verification failure",
+            )
+        except (WorkflowContractError, OSError) as exc:
+            failed_manifest = _read_json(delivery_manifest_path)
+            failed_manifest["verification"] = verification
+            failed_manifest["totals"]["repair_turns"] += 1
+            reason = "repair_changed_nothing" if isinstance(exc, NoSourceChangesError) else f"repair_failed: {exc}"
+            _end_blocked(delivery_manifest_path, failed_manifest, repo, reason, "verification")
+            return
         _write_json(implementing_dir / "completion-v1-repair-1.json", repair_completion)
         commit_sha = _current_head_sha(repo)
         verification = _run_verification(repo, verifying_dir, "verify-v1-repair-1", verification_commands)
@@ -774,18 +832,11 @@ def main() -> None:
     delivery_manifest["implementation_commit_sha"] = commit_sha
     if repair_completion is not None:
         delivery_manifest["implementer_repair_summary"] = repair_completion
+        delivery_manifest["totals"]["repair_turns"] += 1
     delivery_manifest["verification"] = verification
 
     if not verification["passed"]:
-        delivery_manifest["state"] = "BLOCKED"
-        _write_json(delivery_manifest_path, delivery_manifest)
-        emit_output({
-            "workflow_outcome": "BLOCKED",
-            "ticket_id": ticket_id,
-            "run_id": run_id,
-            "reason": "verification_failed_after_one_repair_attempt",
-            "delivery_manifest": str(delivery_manifest_path),
-        })
+        _end_blocked(delivery_manifest_path, delivery_manifest, repo, "verification_failed_after_one_repair_attempt", "verification")
         return
 
     delivery_manifest["state"] = "VERIFIED"
@@ -854,79 +905,87 @@ def main() -> None:
         _write_json(records_dir / f"pr-review-r{round_no}.json", result)
         return result
 
-    review = _review(review_round, pr_head_sha, diff_text, verification)
-
-    # 6. REMEDIATING — bounded loop, max MAX_REMEDIATION_ROUNDS (pr-review.md
-    # default: 3). Only findings the workflow itself classified AUTO_FIX are
-    # ever handed to the remediator — never a DEVELOPER_REQUIRED finding
-    # (governance #6/#7). Every remediation batch is followed by independent
-    # re-verification (governance #8) and a fresh review of the new HEAD
-    # (governance #9/#10) — the remediator's own completion claim is never
-    # trusted as proof a finding is actually fixed.
     remediating_dir = runtime_dir / "remediation"
     remediation_history: list[dict[str, Any]] = []
     blocked_reason: str | None = None
+    try:
+        review = _review(review_round, pr_head_sha, diff_text, verification)
 
-    while review["has_auto_fix"] and review_round < MAX_REMEDIATION_ROUNDS:
-        auto_fix_findings = [f for f in review["findings"] if f["automation_eligibility"] == "AUTO_FIX"]
-        remediation_step_id = f"remediate-r{review_round}"
-        remediation_completion = _run_json_contract_step(
-            preserve_source=False,
-            agent=REMEDIATOR,
-            prompt=build_remediator_prompt(repo, plan_path, delivery_contract, pr_review_policy, governance, auto_fix_findings) + "\n" + skill_context,
-            label="Remediator",
-            step_id=remediation_step_id,
-            repo=repo,
-            evidence_dir=remediating_dir / "agent-output",
-            validator=_remediator_completion_validator,
-        )
-        _write_json(remediating_dir / f"{remediation_step_id}-completion.json", remediation_completion)
+        # 6. REMEDIATING — bounded loop, max MAX_REMEDIATION_ROUNDS (pr-review.md
+        # default: 3). Only findings the workflow itself classified AUTO_FIX are
+        # ever handed to the remediator — never a DEVELOPER_REQUIRED finding
+        # (governance #6/#7). Every remediation batch is followed by independent
+        # re-verification (governance #8) and a fresh review of the new HEAD
+        # (governance #9/#10) — the remediator's own completion claim is never
+        # trusted as proof a finding is actually fixed.
+        while review["has_auto_fix"] and review_round < MAX_REMEDIATION_ROUNDS:
+            auto_fix_findings = [f for f in review["findings"] if f["automation_eligibility"] == "AUTO_FIX"]
+            remediation_step_id = f"remediate-r{review_round}"
+            remediation_completion = _run_json_contract_step(
+                preserve_source=False,
+                agent=REMEDIATOR,
+                prompt=build_remediator_prompt(repo, plan_path, delivery_contract, pr_review_policy, governance, auto_fix_findings) + "\n" + skill_context,
+                label="Remediator",
+                step_id=remediation_step_id,
+                repo=repo,
+                evidence_dir=remediating_dir / "agent-output",
+                validator=_remediator_completion_validator,
+            )
+            _write_json(remediating_dir / f"{remediation_step_id}-completion.json", remediation_completion)
 
-        if not _source_changes(repo, source_roots).strip():
-            # pr-review.md convergence rule: escalate when verification cannot
-            # establish correctness. A remediator that changes nothing is
-            # saying no source change can fix these findings (for example
-            # missing verification evidence), so they go to the human
-            # instead of failing a run whose HEAD already passed verification.
-            review = escalate_unremediated_findings(review, auto_fix_findings, remediation_completion)
+            if not _source_changes(repo, source_roots).strip():
+                # pr-review.md convergence rule: escalate when verification cannot
+                # establish correctness. A remediator that changes nothing is
+                # saying no source change can fix these findings (for example
+                # missing verification evidence), so they go to the human
+                # instead of failing a run whose HEAD already passed verification.
+                review = escalate_unremediated_findings(review, auto_fix_findings, remediation_completion)
+                remediation_history.append({
+                    "round": review_round,
+                    "remediation_step_id": remediation_step_id,
+                    "findings_addressed": [],
+                    "commit_sha": None,
+                    "verification_passed": None,
+                    "escalated_findings": [f["id"] for f in auto_fix_findings],
+                    "remediator_deviations": remediation_completion.get("deviations", []),
+                })
+                break
+            _stage_source_changes(repo, source_roots)
+            addressed = ", ".join(remediation_completion.get("findings_addressed", [])) or "(none reported)"
+            _git(["commit", "-m", f"[{ticket_id}] Remediate findings ({addressed})"], cwd=repo)
+            commit_sha = _current_head_sha(repo)
+            pr_head_sha = commit_sha
+
+            # Governance #8: verify after every remediation batch. A remediation
+            # that breaks verification is escalation-worthy, not something to
+            # retry blindly — stop the loop rather than looping on a regression.
+            verification = _run_verification(repo, verifying_dir, f"verify-remediate-r{review_round}", verification_commands)
+            diff_text = _compute_delivery_diff(repo, base_branch, delivery_branch)
+
             remediation_history.append({
                 "round": review_round,
                 "remediation_step_id": remediation_step_id,
-                "findings_addressed": [],
-                "commit_sha": None,
-                "verification_passed": None,
-                "escalated_findings": [f["id"] for f in auto_fix_findings],
-                "remediator_deviations": remediation_completion.get("deviations", []),
+                "findings_addressed": remediation_completion.get("findings_addressed", []),
+                "commit_sha": commit_sha,
+                "verification_passed": verification["passed"],
             })
-            break
-        _stage_source_changes(repo, source_roots)
-        addressed = ", ".join(remediation_completion.get("findings_addressed", [])) or "(none reported)"
-        _git(["commit", "-m", f"[{ticket_id}] Remediate findings ({addressed})"], cwd=repo)
-        commit_sha = _current_head_sha(repo)
-        pr_head_sha = commit_sha
 
-        # Governance #8: verify after every remediation batch. A remediation
-        # that breaks verification is escalation-worthy, not something to
-        # retry blindly — stop the loop rather than looping on a regression.
-        verification = _run_verification(repo, verifying_dir, f"verify-remediate-r{review_round}", verification_commands)
-        diff_text = _compute_delivery_diff(repo, base_branch, delivery_branch)
+            if not verification["passed"]:
+                blocked_reason = "verification_failed_after_remediation"
+                break
 
-        remediation_history.append({
-            "round": review_round,
-            "remediation_step_id": remediation_step_id,
-            "findings_addressed": remediation_completion.get("findings_addressed", []),
-            "commit_sha": commit_sha,
-            "verification_passed": verification["passed"],
-        })
-
-        if not verification["passed"]:
-            blocked_reason = "verification_failed_after_remediation"
-            break
-
-        review_round += 1
-        # Governance #9: fresh review evidence for the new HEAD — never
-        # trust the remediator's own claim that a finding is resolved.
-        review = _review(review_round, pr_head_sha, diff_text, verification)
+            review_round += 1
+            # Governance #9: fresh review evidence for the new HEAD — never
+            # trust the remediator's own claim that a finding is resolved.
+            review = _review(review_round, pr_head_sha, diff_text, verification)
+    except (WorkflowContractError, OSError) as exc:
+        # A reviewer or remediator that breaks its contract ends a defined state that a
+        # later run can resume from verification; any remediation commits stay on the branch.
+        failed_manifest = _read_json(delivery_manifest_path)
+        failed_manifest.update(review_rounds=review_round, remediation_history=remediation_history, verification=verification)
+        failed_manifest["totals"]["remediation_rounds"] += len(remediation_history)
+        _end_blocked(delivery_manifest_path, failed_manifest, repo, f"review_failed: {exc}", "verification")
+        return
 
     convergence_limit_reached = review_round >= MAX_REMEDIATION_ROUNDS and review["has_auto_fix"]
 
@@ -943,16 +1002,10 @@ def main() -> None:
     ]
     delivery_manifest["convergence_limit_reached"] = convergence_limit_reached
 
+    delivery_manifest["totals"]["remediation_rounds"] += len(remediation_history)
+
     if blocked_reason is not None:
-        delivery_manifest["state"] = "BLOCKED"
-        _write_json(delivery_manifest_path, delivery_manifest)
-        emit_output({
-            "workflow_outcome": "BLOCKED",
-            "ticket_id": ticket_id,
-            "run_id": run_id,
-            "reason": blocked_reason,
-            "delivery_manifest": str(delivery_manifest_path),
-        })
+        _end_blocked(delivery_manifest_path, delivery_manifest, repo, blocked_reason, "verification")
         return
 
     # Re-render the PR artifacts against the final post-remediation HEAD/diff

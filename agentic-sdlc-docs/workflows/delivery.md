@@ -116,7 +116,7 @@ left on the delivery branch**, so return with `git checkout <base_branch>` befor
 Under `agentic-sdlc-records/<ticket_id>/`:
 
 ```text
-├── delivery-manifest.json   state, mode, parallel width, task commits, source roots, verification results, review rounds, remediation history, PR head SHA
+├── delivery-manifest.json   state, mode, parallel width, the supervisor's tasks and each task's commit, source roots, verification results (with the end of each failed command's output), review rounds, remediation history, PR head SHA; when BLOCKED also reason, resume point and branch head
 ├── pr-title.txt, pr-body.md, pr-diff.patch      the local "pull request"
 ├── pr-review-r<N>.json      each independent review round
 ├── human-review-brief.md    what to read before deciding
@@ -146,9 +146,12 @@ stateDiagram-v2
 | Outcome | Meaning | What to do |
 |---|---|---|
 | `BLOCKED`, `hybrid_implementation_failed: ...` | An implementation step broke its contract. Tasks from earlier waves stay committed on the branch; nothing from the failed wave is merged. A task that ran alone leaves its partial edits in the working tree. | See [After a `BLOCKED` run](#after-a-blocked-run). |
+| `BLOCKED`, `implementation_failed: ...` | Single mode: the implementation step broke its contract or changed nothing inside the source roots. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | `BLOCKED`, `verification_failed_after_one_repair_attempt` | Verification still failed after one repair turn. | See [After a `BLOCKED` run](#after-a-blocked-run). |
+| `BLOCKED`, `repair_changed_nothing` or `repair_failed: ...` | Verification failed and the repair turn changed nothing inside the source roots, or broke its contract. A fix outside the roots (for example a build file) is one cause. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | `BLOCKED`, `verification_failed_after_remediation` | A remediation round broke verification. | See [After a `BLOCKED` run](#after-a-blocked-run). |
-| Run state `failed` | A check stopped the run: the plan is not approved or changed after review, the baseline is no longer an ancestor, the source-root configuration is invalid, the source roots are dirty, or a single-mode implementation or repair step changed nothing inside the source roots. | `cao workflow result <run-id> --json` carries the traceback in its `warnings` field. |
+| `BLOCKED`, `review_failed: ...` | The reviewer or the remediator broke its contract. Remediation commits made before stay on the branch. | See [After a `BLOCKED` run](#after-a-blocked-run). |
+| Run state `failed` | A check stopped the run before any agent: the plan is not approved or changed after review, the baseline is no longer an ancestor, the source-root configuration is invalid, or the source roots are dirty. | `cao workflow result <run-id> --json` carries the traceback in its `warnings` field. |
 | `AWAITING_HUMAN_REVIEW` with `has_developer_required_findings` | The review found items only a human may decide, such as high-impact or protected categories. | Read the brief. See [Human decisions](#human-decisions). |
 | `AWAITING_HUMAN_REVIEW` with `escalated_findings` | The reviewer marked these findings auto-fixable, but the remediator changed nothing for them. The brief shows each one with the remediator's reason. | Read the brief; each escalated finding is a developer finding. See [Human decisions](#human-decisions). |
 | `convergence_limit_reached` | Automatic remediation used all three rounds and auto-fixable findings remain. | Read the brief; treat the remaining findings as developer findings. See [Human decisions](#human-decisions). |
@@ -159,7 +162,9 @@ No command moves a delivery out of `BLOCKED`, and `record_pr_approval.py` refuse
 the cause and starting a new Delivery run, which writes a new manifest. The failed run's manifest, its runtime
 evidence and its commits on `sdlc/<ticket>` stay in place until you move them.
 
-**1. Find the cause.** Read `reason` in the run output and the evidence behind it:
+**1. Find the cause.** Read `reason` in `delivery-manifest.json` (also in the run output) and the evidence behind
+it. The manifest keeps the end of each failed verification command's output, which survives when the runtime
+evidence below is gone (for example after a container run):
 
 ```bash
 cao workflow result <run-id> --json
@@ -173,7 +178,9 @@ ls .agentic-sdlc/runtime/<ticket>/<run-id>/verification/                  # veri
 |---|---|---|
 | `hybrid_implementation_failed: ...` | An agent broke its contract, for example invalid output or a write outside the source roots, or a worktree's write boundary differed from the main checkout's (commit or discard local edits to `.claude/`, the registry or `agentic-sdlc-project.json`). A task that ran alone leaves its partial edits uncommitted in the working tree; a parallel task's edits stay only in `<task>.patch` in the evidence. | Usually none: retry. If the same step fails again, check the plan and the registry. |
 | `verification_failed_after_one_repair_attempt` | The code still fails the verification commands after one repair turn. | Commands wrong (missing toolchain, bad command): fix `agentic-sdlc-project.json` and commit it on the base branch. Plan wrong: plan again (step 3b). Code wrong: retry. |
+| `repair_changed_nothing`, `repair_failed: ...` | The failure needs a change the repair turn could not make, often in a build file outside the source roots. | Read the failed commands' `output_tail` in the manifest. A build-file problem: fix it on the base branch, or add its folder to the source roots. Then retry. |
 | `verification_failed_after_remediation` | A remediation round broke verification. | Read the review finding it was fixing; usually retry. |
+| `implementation_failed: ...`, `review_failed: ...` | An agent broke its contract. | Usually none: retry. |
 
 **3a. Retry with the same approved plan.** From the repository root:
 

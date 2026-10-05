@@ -192,6 +192,21 @@ def build_schedule(tasks: list[dict[str, Any]], max_parallel: int) -> dict[str, 
     }
 
 
+def verification_plan(registry: dict[str, Any], tasks: list[dict[str, Any]]) -> tuple[list[list[str]], list[str]]:
+    """The verification commands for these tasks (worker and skill suites, in order, once each) and their skills."""
+    commands: list[list[str]] = []
+    used_skills: list[str] = []
+    for task in tasks:
+        worker = registry["workers"][task["worker"]]
+        used_skills.extend(task["skills"])
+        suites = worker["verification"] + [suite for skill in task["skills"] for suite in registry["skills"][skill]["verification"]]
+        for suite in suites:
+            for command in registry["verification"][suite]:
+                if command not in commands:
+                    commands.append(command)
+    return commands, used_skills
+
+
 def hybrid_skill_context(repo: Path, registry: dict[str, Any], skills: list[str]) -> str:
     sections = []
     for name in dict.fromkeys(skills):
@@ -218,7 +233,8 @@ def _commit_message(ticket_id: str, task: dict[str, Any]) -> str:
 
 
 def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_validator: Any, ticket_id: str,
-               run_id: str, max_parallel: int) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
+               run_id: str, max_parallel: int,
+               progress: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
     """Supervisor -> waves of workers -> integration; commits once per task (and once for integration).
 
     A wave of one task runs in the main checkout. A wave of two or more runs each
@@ -226,7 +242,11 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
     there and cherry-picks the commits onto the delivery branch in task order. A
     conflicting task is rerun once, alone, in the main checkout. A worker failure
     lets its wave finish, merges nothing from that wave and stops the run.
+
+    progress, when given, is filled as the run goes (dispatch, waves, one entry per
+    finished task), so a caller still has it when a later step raises.
     """
+    progress = {} if progress is None else progress
     registry = load_specialists(repo)
     roots = validate_source_config(registry)["source_roots"]
     _write_json(evidence_dir / "registry.json", registry)
@@ -252,19 +272,11 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
     _write_json(evidence_dir / "schedule.json", schedule)
     tasks = {task["id"]: task for task in dispatch["tasks"]}
 
-    commands: list[list[str]] = []
-    used_skills: list[str] = []
-    for task in dispatch["tasks"]:
-        worker = registry["workers"][task["worker"]]
-        used_skills.extend(task["skills"])
-        suites = worker["verification"] + [suite for skill in task["skills"] for suite in registry["skills"][skill]["verification"]]
-        for suite in suites:
-            for command in registry["verification"][suite]:
-                if command not in commands:
-                    commands.append(command)
+    commands, used_skills = verification_plan(registry, dispatch["tasks"])
 
     results: list[dict[str, Any]] = []
     by_task: dict[str, dict[str, Any]] = {}
+    progress.update(dispatch=dispatch, waves=schedule["waves"], tasks=results)
 
     def run_worker(task: dict[str, Any], tree: Path | None, step_id: str, extra: str = "") -> dict[str, Any]:
         prior = [{"task": a, "result": by_task[a]["result"]} for a in schedule["ancestors"][task["id"]]]
@@ -368,6 +380,7 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
         json.dumps({"dispatch": dispatch, "schedule": schedule["waves"], "results": results}) + "\n" + context,
     )
     integration_sha = commit_task(repo, roots, f"[{ticket_id}] Integrate hybrid assignments")
+    progress["integration"] = {"commit": integration_sha, "result": integrated}
     commits = [{"task": entry["task"], "commit": entry["commit"], "status": entry["status"]}
                for entry in results if entry["commit"] and entry["status"] != "conflict"]
     if integration_sha:

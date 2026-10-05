@@ -55,7 +55,9 @@ def context():
             'dependencies': [], 'open_questions': [], 'contradictions': [], 'retrieval_warnings': []}
 
 
-class LifecycleIntegrationTest(unittest.TestCase):
+class DeliveryHarness:
+    """Real Git and verification; simulated agents and CAO transport. Shared with test_delivery_resume."""
+
     def make_repo(self, root):
         repo = root / 'repo'
         repo.mkdir()
@@ -144,6 +146,18 @@ class LifecycleIntegrationTest(unittest.TestCase):
                        check=True, capture_output=True)
         return repo, git, records
 
+    def edit_config(self, repo, change):
+        # Edit the combined settings, then write each key back to its file: per-project keys to
+        # agentic-sdlc-project.json, the rest to the common registry.
+        registry_path, project_path = repo / '.agentic-sdlc/cao/specialists.json', repo / 'agentic-sdlc-project.json'
+        config = {**json.loads(registry_path.read_text()), **json.loads(project_path.read_text())}
+        change(config)
+        keys = ('source_roots', 'write_profiles', 'verification')
+        project_path.write_text(json.dumps({'version': 1, **{k: config[k] for k in keys if k in config}}))
+        registry_path.write_text(json.dumps({k: v for k, v in config.items() if k not in keys}))
+
+
+class LifecycleIntegrationTest(DeliveryHarness, unittest.TestCase):
     def test_plan_delivery_repair_remediation_and_human_handoff(self):
         for modular in (False, True):
             with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
@@ -257,17 +271,6 @@ class LifecycleIntegrationTest(unittest.TestCase):
                         delivery.main()
                     step.assert_not_called()
                 self.assertEqual(git('branch', '--show-current'), 'main')
-
-
-    def edit_config(self, repo, change):
-        # Edit the combined settings, then write each key back to its file: per-project keys to
-        # agentic-sdlc-project.json, the rest to the common registry.
-        registry_path, project_path = repo / '.agentic-sdlc/cao/specialists.json', repo / 'agentic-sdlc-project.json'
-        config = {**json.loads(registry_path.read_text()), **json.loads(project_path.read_text())}
-        change(config)
-        keys = ('source_roots', 'write_profiles', 'verification')
-        project_path.write_text(json.dumps({'version': 1, **{k: config[k] for k in keys if k in config}}))
-        registry_path.write_text(json.dumps({k: v for k, v in config.items() if k not in keys}))
 
     def test_planning_gives_the_source_roots_to_analyst_author_and_reviewer(self):
         for modular in (False, True):
