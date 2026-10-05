@@ -93,3 +93,12 @@ Not in scope: crash resume, automatic merge or rebase of the base branch, pushin
 `AWAITING_HUMAN_REVIEW`.
 
 ## 6. Progress notes
+- 2026-10-05, step 1 done (`6b0e9b7`). Live `deliver-resume-live-1` (bundle installed as `sdlc_deliver_resume`, throwaway
+  clone of PAY-DEMO-001 with a verification command that always fails with a pom.xml-style error): 7 tasks in 4 waves,
+  6 task commits, the repair turn changed nothing, run ended `BLOCKED` `repair_changed_nothing` (before: `failed`);
+  the manifest held the tasks, commits, bundle identity and the error text in `output_tail`.
+- 2026-10-05, step 2 done (`7915943`). Live `deliver-resume-live-2`: a hand commit on the branch removed the failing
+  command from `agentic-sdlc-project.json`; `resume=true` ran only review, one real remediation round and a second
+  review, ending `AWAITING_HUMAN_REVIEW`. The hand commit was listed in the manifest, PR body and brief, and the
+  reviewer raised a `DEVELOPER_REQUIRED` finding that the hand fix removed the check instead of fixing the build.
+- 2026-10-05, step 3 code done (`21de628`); live check next.
