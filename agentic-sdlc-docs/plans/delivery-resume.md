@@ -1,6 +1,6 @@
 # Plan: resume a BLOCKED Delivery run
 
-Status: **done 2026-10-05** (branch `feature/delivery-resume`, not merged). Progress notes are at the end.
+Status: **done 2026-10-05; merged into `main` (`1f7599c`)**. Progress notes are at the end.
 
 ## 1. Why
 

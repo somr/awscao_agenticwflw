@@ -1,6 +1,6 @@
 # Plan: non-converged planning, developer guidance and warm start
 
-Status: **in progress** (written 2026-09-20). M0 done (section 5a). M1 done and live-verified (run `plan-PAY-DEMO-001-20`). M2 (guidance) and M3 (reviewer history) implemented and unit-tested (155 tests, both modes); their live checks are folded into M5. M4 (warm start) implemented and unit-tested (160 tests, both modes). **M5 done: live end-to-end verified** (section 5f). Remaining: human approval of the demo plan, commit/merge, and the open questions in section 6.
+Status: **done; merged into `main` 2026-09-20** (written 2026-09-20). M0 done (section 5a). M1 done and live-verified (run `plan-PAY-DEMO-001-20`). M2 (guidance) and M3 (reviewer history) implemented and unit-tested (155 tests, both modes); their live checks are folded into M5. M4 (warm start) implemented and unit-tested (160 tests, both modes). **M5 done: live end-to-end verified** (section 5f). Section 6 lists the questions that were open when the work finished.
 Scope: Planning Workflow 1 (`sdlc_dev_plan`, `.agentic-sdlc/cao/sdlc_workflows/planning.py`) and its profiles, contracts and tests.
 
 ## 1. Problem

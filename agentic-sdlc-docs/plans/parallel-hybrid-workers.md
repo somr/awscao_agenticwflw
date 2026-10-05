@@ -1,6 +1,6 @@
 # Plan: run independent hybrid workers in parallel
 
-Status: **implemented and live-verified 2026-10-01 on the branch; not merged** (written 2026-10-01; branch `feature/parallel-hybrid-workers` from `main` at `ee6658a`, after the profile-consistency merge). Decisions D3, D5, D6 and D7 were updated the same day with your answers; no questions are open.
+Status: **implemented and live-verified 2026-10-01; merged into `main` 2026-10-02 (`6529776`)** (written 2026-10-01; branch `feature/parallel-hybrid-workers` from `main` at `ee6658a`, after the profile-consistency merge). Decisions D3, D5, D6 and D7 were updated the same day with your answers; no questions are open.
 Scope: Delivery in hybrid mode. Workers whose tasks do not depend on each other run at the same time, each in its own Git worktree, and Python merges their results in a fixed order. Single mode, the supervisor's read-only role, the integration pass, verification, review and remediation stay as they are.
 
 ## 1. Problem

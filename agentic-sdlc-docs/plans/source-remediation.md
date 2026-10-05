@@ -1,6 +1,6 @@
 # Plan: remediate source-review findings
 
-Status: **approved, implemented, and integrated into `feature/project-config`**.
+Status: **approved, implemented, and merged into `main` 2026-10-02 (`6529776`, through `feature/project-config`)**.
 Prepared 2026-10-01 against `f3c8103`; implementation started from `8bc6985` in a separate worktree.
 The user approved implementation and the flat records layout, then explicitly authorized integration
 and removal of the isolated worktree on 2026-10-02.
