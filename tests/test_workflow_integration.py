@@ -79,13 +79,15 @@ class DeliveryHarness:
         git('commit', '-qm', 'Baseline')
         return repo, git
 
-    def drive(self, domain, transport, inputs, responder, run_id):
+    def drive(self, domain, transport, inputs, responder, run_id, worktrees=False):
+        """worktrees=True allows parallel workers, which run in worktrees outside the repository root."""
         calls, outputs = [], []
         def step(provider, agent, prompt, **kwargs):
             calls.append((agent, kwargs['step_id']))
             self.assertEqual(kwargs['recovery'], 'idempotent')
             self.assertFalse(kwargs['teardown'])
-            self.assertEqual(kwargs['working_directory'], inputs['repository_root'])
+            if not worktrees:
+                self.assertEqual(kwargs['working_directory'], inputs['repository_root'])
             answer = responder(agent, kwargs['step_id'], prompt)
             path = Path(re.findall(r'\n(/[^\n]+\.answer\.(?:json|md))\n', prompt)[-1])
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,7 +102,8 @@ class DeliveryHarness:
             stack.enter_context(patch.object(transport, '_cao_terminal_status', return_value='completed'))
             cleanup = stack.enter_context(patch.object(transport, '_cleanup_step_terminal'))
             domain.main()
-            self.assertEqual(cleanup.call_count, len(calls))
+            if not worktrees:
+                self.assertEqual(cleanup.call_count, len(calls))
         return calls, outputs[-1]
 
     def plan(self, root, modular, prompts=None, configure=None):

@@ -6,6 +6,7 @@ what each BLOCKED exit leaves in the manifest, in both the deployed bundle and t
 """
 from __future__ import annotations
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -318,20 +319,103 @@ class ResumeFromVerificationTest(DeliveryHarness, unittest.TestCase):
                 self.assertEqual(manifest['latest_review_path'], 'agentic-sdlc-records/T-1/pr-review-r2.json')
                 self.assertEqual(manifest['totals'], {'runs': 2, 'repair_turns': 0, 'remediation_rounds': 1})
 
-    def test_resume_from_implementation_is_refused_for_now(self):
+
+
+
+class ResumeFromImplementationTest(DeliveryHarness, unittest.TestCase):
+    """Implementation stopped part-way: a resume skips finished tasks and runs the rest."""
+
+    def run_delivery(self, repo, modular, respond, run_id, resume=False, max_parallel=4):
+        delivery, transport = load('deliver', modular)
+        inputs = {'repository_root': str(repo), 'ticket_id': 'T-1', 'resume': resume, 'hybrid_max_parallel': max_parallel}
+        return self.drive(delivery, transport, inputs, respond, run_id, worktrees=True)
+
+    def agents(self, repo, prompts, dispatch, failing=()):
+        """Workers write app/<task>.py; tasks in failing break their contract; reviews are clean."""
+        def respond(agent, step_id, prompt):
+            prompts[step_id] = prompt
+            if agent == 'sdlc_code_supervisor':
+                return dispatch
+            if agent == 'sdlc_pr_reviewer':
+                return {'summary': 'Fine', 'findings': []}
+            task = step_id.split('-')[1] if step_id.startswith('worker-') else None
+            if task in failing:
+                return 'not json'
+            if task:
+                tree = re.search(r'isolated working copy of the repository at (\S+)\. ', prompt)
+                root = Path(tree.group(1)) if tree else repo
+                (root / f'app/{task.lower()}.py').write_text(f'NAME = "{task}"\n')
+            else:  # integration
+                (repo / 'app/value.py').write_text(GOOD_VALUE)
+            return completion(task or 'integration', files=[f'app/{(task or "value").lower()}.py'])
+        return respond
+
+    def test_finished_tasks_are_skipped_and_the_rest_run(self):
+        dispatch = {'tasks': [dict(t, owns=[f"app/{t['id'].lower()}.py"]) for t in TWO_TASKS['tasks']]}
         for modular in (False, True):
             with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
                 repo, git, records = self.plan(Path(temp), modular)
-                def respond(agent, step_id, prompt):
-                    if agent == 'sdlc_code_supervisor':
-                        return TWO_TASKS
-                    if step_id.startswith('worker-T2'):
-                        return 'not json'
-                    (repo / 'app/value.py').write_text(GOOD_VALUE)
-                    return completion('T1', files=['app/value.py'])
-                self.run_delivery(repo, modular, respond, 'impl-blocked')
-                with self.assertRaisesRegex(ValueError, 'not available yet'):
-                    self.run_delivery(repo, modular, self.reviewer({}), 'impl-resume', resume=True)
+                output = self.run_delivery(repo, modular, self.agents(repo, {}, dispatch, failing=('T2',)), 'impl-blocked')[1]
+                self.assertTrue(output['reason'].startswith('hybrid_implementation_failed'), output)
+                t1_commit = git('rev-parse', 'HEAD')
+                prompts = {}
+                calls, output = self.run_delivery(repo, modular, self.agents(repo, prompts, {'tasks': []}), 'impl-resumed', resume=True)
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW', output)
+                self.assertEqual([c[1] for c in calls], ['worker-T2', 'integrate-v1', 'pr-review-r1'])
+                # The dependent task sees the finished task's recorded result.
+                self.assertIn('"task": "T1"', prompts['worker-T2'])
+                manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual([(t['task'], t['status']) for t in manifest['hybrid']['tasks']],
+                                 [('T1', 'committed'), ('T2', 'committed')])
+                self.assertEqual(manifest['hybrid']['tasks'][0]['commit'], t1_commit)
+                self.assertEqual([c['task'] for c in manifest['implementation_commits']], ['T1', 'T2', 'integration'])
+                shas = [c['sha'] for c in manifest['delivery_commits']]
+                self.assertEqual(len(shas), len(set(shas)))
+                self.assertEqual(len(shas), 3)
+                self.assertEqual(git('log', '--format=%s', 'main..HEAD').split('\n'),
+                                 ['[T-1] Integrate hybrid assignments', '[T-1] T2: implement hybrid task', '[T-1] T1: implement hybrid task'])
+                self.assertEqual(manifest['resumed_from']['resume_point'], 'implementation')
+
+    def test_a_failed_parallel_wave_runs_again_completely(self):
+        dispatch = {'tasks': [
+            {'id': 'T1', 'worker': 'developer', 'plan_reference': 'T1', 'instructions': 'One', 'depends_on': [], 'skills': [], 'owns': ['app/t1.py']},
+            {'id': 'T2', 'worker': 'developer', 'plan_reference': 'T2', 'instructions': 'Two', 'depends_on': [], 'skills': [], 'owns': ['app/t2.py']},
+        ]}
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.plan(Path(temp), modular)
+                output = self.run_delivery(repo, modular, self.agents(repo, {}, dispatch, failing=('T2',)), 'wave-blocked')[1]
+                self.assertTrue(output['reason'].startswith('hybrid_implementation_failed'), output)
+                manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual(manifest['hybrid']['tasks'], [])  # nothing from a failed wave is merged
+                calls, output = self.run_delivery(repo, modular, self.agents(repo, {}, {'tasks': []}), 'wave-resumed', resume=True)
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW', output)
+                self.assertEqual(sorted(c[1] for c in calls if c[1].startswith('worker-')), ['worker-T1', 'worker-T2'])
+                self.assertNotIn('dispatch-v1', [c[1] for c in calls])
+
+    def test_saved_tasks_that_the_current_registry_rejects_are_refused(self):
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.plan(Path(temp), modular)
+                self.run_delivery(repo, modular, self.agents(repo, {}, TWO_TASKS, failing=('T2',)), 'impl-blocked')
+                before = (records / 'delivery-manifest.json').read_text()
+                def rename_worker(config):
+                    config['workers'] = {'engineer': config['workers']['developer']}
+                self.edit_config(repo, rename_worker)
+                git('commit', '-qam', 'Rename the developer worker')
+                with self.assertRaisesRegex(ValueError, 'Unregistered worker'):
+                    self.run_delivery(repo, modular, self.agents(repo, {}, {'tasks': []}), 'impl-refused', resume=True)
+                self.assertEqual((records / 'delivery-manifest.json').read_text(), before)
+
+    def test_without_saved_tasks_the_supervisor_runs_again(self):
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.plan(Path(temp), modular)
+                output = self.run_delivery(repo, modular, self.agents(repo, {}, {'tasks': 'invalid'}), 'dispatch-blocked')[1]
+                self.assertTrue(output['reason'].startswith('hybrid_implementation_failed'), output)
+                calls, output = self.run_delivery(repo, modular, self.agents(repo, {}, ONE_TASK), 'dispatch-resumed', resume=True)
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW', output)
+                self.assertEqual([c[1] for c in calls][:2], ['dispatch-v1', 'worker-T1'])
 
 
 if __name__ == '__main__':

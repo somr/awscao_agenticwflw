@@ -256,7 +256,7 @@ def _implement_and_commit(
 
 def _hybrid_and_commit(
     *, repo: Path, prompt: str, evidence_dir: Path, ticket_id: str, run_id: str, max_parallel: int,
-    progress: dict[str, Any] | None = None,
+    progress: dict[str, Any] | None = None, resume_from: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
     """Run hybrid implementation; it commits once per task and once for integration."""
     if _git(["diff", "--cached", "--name-only"], cwd=repo).strip():
@@ -267,7 +267,7 @@ def _hybrid_and_commit(
     completion, commands, context, commits = run_hybrid(
         repo=repo, prompt=prompt, evidence_dir=evidence_dir,
         completion_validator=_implementer_completion_validator,
-        ticket_id=ticket_id, run_id=run_id, max_parallel=max_parallel, progress=progress,
+        ticket_id=ticket_id, run_id=run_id, max_parallel=max_parallel, progress=progress, resume_from=resume_from,
     )
     if not commits:
         raise WorkflowContractError(f"Hybrid implementation left no changes under the source roots ({', '.join(roots)})")
@@ -341,9 +341,11 @@ def _end_blocked(manifest_path: Path, manifest: dict[str, Any], repo: Path, reas
 
 def _record_delivery_commits(manifest_path: Path, entries: list[dict[str, str]]) -> None:
     """Append commits Python made for this delivery; a resume checks they are still in the branch."""
-    if entries:
-        manifest = _read_json(manifest_path)
-        manifest.setdefault("delivery_commits", []).extend(entries)
+    manifest = _read_json(manifest_path)
+    recorded = manifest.setdefault("delivery_commits", [])
+    new = [entry for entry in entries if entry["sha"] not in {r["sha"] for r in recorded}]
+    if new:
+        recorded.extend(new)
         _write_json(manifest_path, manifest)
 
 
@@ -784,8 +786,6 @@ def main() -> None:
     previous = load_resumable_manifest(delivery_manifest_path, ticket_id=ticket_id, plan_sha256=manifest["plan_sha256"]) if resume else None
     if previous is not None:
         implementation_mode = previous["implementation_mode"]
-        if previous["resume_point"] == "implementation":
-            raise WorkflowContractError("resuming from implementation is not available yet; start a new delivery")
     # Both modes: validate the source roots and the registry before any agent runs.
     source_roots = _source_roots(repo)
     registry = load_specialists(repo)
@@ -811,8 +811,10 @@ def main() -> None:
         # Every check runs before the new manifest replaces the earlier one, so a refused
         # resume leaves the BLOCKED manifest in place for the next attempt.
         check_branch(repo, previous, source_roots)
-        if implementation_mode == "hybrid":
-            dispatch = validate_dispatch((previous.get("hybrid") or {}).get("dispatch"), registry)
+        saved_dispatch = (previous.get("hybrid") or {}).get("dispatch")
+        if implementation_mode == "hybrid" and (saved_dispatch or previous["resume_point"] == "verification"):
+            # D2: the saved tasks must pass the current bundle's rules and registry.
+            dispatch = validate_dispatch(saved_dispatch, registry)
             verification_commands, used_skills = verification_plan(registry, dispatch["tasks"])
             skill_context = hybrid_skill_context(repo, registry, used_skills)
         totals = dict(previous.get("totals") or {"runs": 1, "repair_turns": 0, "remediation_rounds": 0})
@@ -861,15 +863,19 @@ def main() -> None:
     # 2. IMPLEMENTING (a resume from verification keeps the earlier run's implementation)
     implementation_commits: list[dict[str, Any]] = []
     progress: dict[str, Any] = {}
-    if previous is not None:
+    if previous is not None and previous["resume_point"] == "verification":
         completion = _merge_completions(previous.get("implementer_summary"), previous.get("implementer_repair_summary"))
         implementation_commits = previous.get("implementation_commits", [])
     elif implementation_mode == "hybrid":
+        # A resume from implementation continues from the saved tasks; without them (the
+        # supervisor itself failed) it starts the hybrid implementation again.
+        saved = (previous or {}).get("hybrid") or {}
+        resume_from = saved if previous is not None and saved.get("dispatch") else None
         try:
             completion, verification_commands, skill_context, implementation_commits = _hybrid_and_commit(
                 repo=repo, prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
                 evidence_dir=implementing_dir / "agent-output", ticket_id=ticket_id,
-                run_id=run_id, max_parallel=max_parallel, progress=progress,
+                run_id=run_id, max_parallel=max_parallel, progress=progress, resume_from=resume_from,
             )
         except (WorkflowContractError, OSError) as exc:
             _record_delivery_commits(delivery_manifest_path, _task_commits(progress))
@@ -899,7 +905,7 @@ def main() -> None:
 
     delivery_manifest = _read_json(delivery_manifest_path)
     delivery_manifest["state"] = "IMPLEMENTED"
-    if previous is None:
+    if previous is None or previous["resume_point"] == "implementation":
         delivery_manifest["implementation_commit_sha"] = commit_sha
     if implementation_commits:
         delivery_manifest["implementation_commits"] = implementation_commits
