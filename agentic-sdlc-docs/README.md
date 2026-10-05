@@ -52,6 +52,7 @@ Implementation design history; use the workflow guides above for current operati
 - [Source remediation](plans/source-remediation.md)
 - [Consolidation and follow-ups](plans/consolidation-and-follow-ups.md)
 - [Resume a BLOCKED Delivery run](plans/delivery-resume.md)
+- [Per-suite verification timeouts and repair turns](plans/verification-timeouts-and-repair-turns.md) (planned)
 
 ## Verification records
 
