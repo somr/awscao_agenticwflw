@@ -88,6 +88,8 @@ python3 .agentic-sdlc/scripts/record_pr_approval.py --repository-root "$PWD" --t
 
 This decision is bound to the exact reviewed commit. Delivery leaves the checkout on its delivery branch. See the [Delivery guide](agentic-sdlc-docs/workflows/delivery.md) for outcomes, recovery and approval rules.
 
+A run that ends `BLOCKED` keeps its finished work: fix the cause on the delivery branch, commit, and run Delivery again with `--input resume=true` (see [Resume a `BLOCKED` run](agentic-sdlc-docs/workflows/delivery.md#resume-a-blocked-run)).
+
 ## Review an existing pull request
 
 Source review runs independently of Planning and Delivery. GitHub mode additionally needs authenticated `gh` and Git HTTPS read access on the server host:
