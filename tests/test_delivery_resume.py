@@ -6,10 +6,12 @@ what each BLOCKED exit leaves in the manifest, in both the deployed bundle and t
 """
 from __future__ import annotations
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_workflow_integration import DeliveryHarness, load
 
 TWO_TASKS = {'tasks': [
@@ -131,6 +133,205 @@ class BlockedManifestTest(DeliveryHarness, unittest.TestCase):
                 git, prompts, output, manifest = self.deliver(temp, modular, responder, 'resume-review-1')
                 self.assert_resumable(manifest, output, git, 'review_failed', 'verification')
                 self.assertTrue(manifest['verification']['passed'])
+
+
+
+class ResumeFromVerificationTest(DeliveryHarness, unittest.TestCase):
+    """A BLOCKED verification, a hand fix committed on the branch, then resume=true."""
+
+    def blocked(self, temp, modular):
+        """First run: the worker writes broken code and the repair turn changes nothing."""
+        repo, git, records = self.plan(Path(temp), modular)
+        def respond(agent, step_id, prompt):
+            if agent == 'sdlc_code_supervisor':
+                return ONE_TASK
+            if step_id == 'worker-T1':
+                (repo / 'app/value.py').write_text('broken python !!!\n')
+            return completion('T1')
+        output = self.run_delivery(repo, modular, respond, 'first-run')[1]
+        self.assertEqual(output['reason'], 'repair_changed_nothing')
+        return repo, git, records
+
+    def run_delivery(self, repo, modular, respond, run_id, resume=False):
+        delivery, transport = load('deliver', modular)
+        inputs = {'repository_root': str(repo), 'ticket_id': 'T-1', 'resume': resume}
+        return self.drive(delivery, transport, inputs, respond, run_id)
+
+    def hand_fix(self, repo, git):
+        """What a developer does: fix the code and a build file outside the source roots, and commit."""
+        (repo / 'app/value.py').write_text(GOOD_VALUE)
+        (repo / 'pom.xml').write_text('<project/>\n')
+        git('add', 'app/value.py', 'pom.xml')
+        git('commit', '-qm', 'Fix value and pom.xml by hand')
+        return git('rev-parse', 'HEAD')
+
+    def reviewer(self, prompts):
+        def respond(agent, step_id, prompt):
+            prompts[step_id] = prompt
+            if agent == 'sdlc_pr_reviewer':
+                return {'summary': 'Looks fine', 'findings': []}
+            raise AssertionError(f'{agent} {step_id} must not run on a resume from verification')
+        return respond
+
+    def test_resume_verifies_and_reviews_the_hand_fix_without_implementing_again(self):
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.blocked(temp, modular)
+                first = json.loads((records / 'delivery-manifest.json').read_text())
+                fix = self.hand_fix(repo, git)
+                prompts = {}
+                calls, output = self.run_delivery(repo, modular, self.reviewer(prompts), 'second-run', resume=True)
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW', output)
+                self.assertEqual([c[1] for c in calls], ['pr-review-r1'])
+                self.assertEqual(output['resumed_from'], 'first-run')
+                manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual(manifest['workflow_run_id'], 'second-run')
+                self.assertEqual(manifest['resumed_from']['run_id'], 'first-run')
+                self.assertEqual(manifest['resumed_from']['reason'], 'repair_changed_nothing')
+                self.assertEqual([c['sha'] for c in manifest['hand_commits']], [fix])
+                self.assertEqual(manifest['hand_commits'][0]['paths'], ['app/value.py', 'pom.xml'])
+                self.assertEqual(manifest['base_drift']['commits_behind'], 0)
+                self.assertEqual(manifest['delivery_commits'], first['delivery_commits'])
+                self.assertEqual(manifest['base_sha'], first['base_sha'])
+                self.assertEqual(manifest['totals'], {'runs': 2, 'repair_turns': 1, 'remediation_rounds': 0})
+                self.assertTrue(manifest['verification']['passed'])
+                self.assertEqual(manifest['pr_head_sha'], fix)
+                for text in (prompts['pr-review-r1'], (records / 'pr-body.md').read_text(),
+                             (records / 'human-review-brief.md').read_text()):
+                    self.assertIn(f'Commit {fix[:12]} was added by hand', text)
+                    self.assertIn('pom.xml', text)
+                self.assertIn('pom.xml', (records / 'pr-diff.patch').read_text())
+
+    def test_a_refused_resume_leaves_the_blocked_manifest_for_the_next_attempt(self):
+        cases = {
+            'uncommitted': ('resume needs every change committed',
+                            lambda repo, git: (repo / '.gitignore').write_text((repo / '.gitignore').read_text() + '# not committed\n')),
+            'reset': ('no longer in the delivery branch',
+                      lambda repo, git: git('reset', '-q', '--hard', 'main')),
+            'roots': ('outside the current source roots',
+                      lambda repo, git: self.narrow_roots(repo, git)),
+        }
+        for modular in (False, True):
+            for name, (message, change) in cases.items():
+                with self.subTest(modular=modular, case=name), tempfile.TemporaryDirectory() as temp:
+                    repo, git, records = self.blocked(temp, modular)
+                    before = (records / 'delivery-manifest.json').read_text()
+                    change(repo, git)
+                    with self.assertRaisesRegex(ValueError, message):
+                        self.run_delivery(repo, modular, self.reviewer({}), 'refused', resume=True)
+                    self.assertEqual((records / 'delivery-manifest.json').read_text(), before)
+
+    def narrow_roots(self, repo, git):
+        def change(config):
+            config['source_roots'] = ['app/tests']
+        self.edit_config(repo, change)
+        git('commit', '-qam', 'Narrow the source roots')
+
+    def test_resume_needs_a_blocked_manifest(self):
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.plan(Path(temp), modular)
+                with self.assertRaisesRegex(ValueError, 'none found'):
+                    self.run_delivery(repo, modular, self.reviewer({}), 'no-manifest', resume=True)
+                manifest_path = records / 'delivery-manifest.json'
+                manifest_path.write_text(json.dumps({'schema_version': '1.0', 'state': 'BLOCKED'}))
+                with self.assertRaisesRegex(ValueError, 'only 1.1 records enough'):
+                    self.run_delivery(repo, modular, self.reviewer({}), 'old-manifest', resume=True)
+
+    def test_base_branch_changes_to_the_same_files_stop_until_merged_by_hand(self):
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.blocked(temp, modular)
+                self.hand_fix(repo, git)
+                git('checkout', '-q', 'main')
+                (repo / 'app/value.py').write_text('def value():\n    return 4\n')
+                git('commit', '-qam', 'Someone changed value on main')
+                git('checkout', '-q', 'sdlc/T-1')
+                calls, output = self.run_delivery(repo, modular, self.reviewer({}), 'drift-run', resume=True)
+                self.assertEqual(calls, [])
+                self.assertEqual(output['reason'], 'base_drift_overlap: app/value.py')
+                self.assertEqual(output['resume_point'], 'verification')
+                manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual(manifest['base_drift']['commits_behind'], 1)
+                # The human merges main (resolving the conflict); the merge keeps the recorded commits.
+                git('merge', '-q', 'main', '-X', 'ours', '-m', 'Merge main into the delivery')
+                prompts = {}
+                calls, output = self.run_delivery(repo, modular, self.reviewer(prompts), 'merged-run', resume=True)
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW', output)
+                manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual(manifest['base_drift']['commits_behind'], 0)
+                self.assertEqual(manifest['resumed_from']['reason'], 'base_drift_overlap: app/value.py')
+                self.assertEqual([c['subject'] for c in manifest['hand_commits']],
+                                 ['Fix value and pom.xml by hand', 'Merge main into the delivery'])
+                self.assertEqual(manifest['totals']['runs'], 3)
+
+    def test_base_branch_changes_elsewhere_are_recorded_and_the_resume_continues(self):
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.blocked(temp, modular)
+                self.hand_fix(repo, git)
+                git('checkout', '-q', 'main')
+                (repo / 'README.md').write_text('changed on main\n')
+                git('add', 'README.md')
+                git('commit', '-qm', 'Unrelated change on main')
+                git('checkout', '-q', 'sdlc/T-1')
+                prompts = {}
+                calls, output = self.run_delivery(repo, modular, self.reviewer(prompts), 'drift-ok', resume=True)
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW', output)
+                manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual((manifest['base_drift']['commits_behind'], manifest['base_drift']['overlapping_paths']), (1, []))
+                self.assertIn('1 commit(s) ahead of the delivery branch', (records / 'pr-body.md').read_text())
+
+    def test_review_records_continue_the_earlier_numbering(self):
+        finding = {'id': 'A1', 'file': 'app/value.py', 'location': 'value', 'category': 'CORRECTNESS',
+                   'impact': 'LOW', 'confidence': .9, 'failure_scenario': 'Two, expected three',
+                   'consequence': 'Wrong value', 'remediation_direction': 'Return three',
+                   'automation_eligibility': 'AUTO_FIX', 'reason': 'Local fix',
+                   'localized_and_bounded': True, 'deterministically_verifiable': True}
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.plan(Path(temp), modular)
+                def respond(agent, step_id, prompt):
+                    if agent == 'sdlc_code_supervisor':
+                        return ONE_TASK
+                    if agent == 'sdlc_pr_reviewer':
+                        if step_id == 'pr-review-r1':
+                            return {'summary': 'One fix', 'findings': [finding]}
+                        return {'summary': 'Invalid', 'findings': [{'id': 'X1', 'category': 'NOT_A_CATEGORY'}]}
+                    if agent == 'sdlc_remediator':
+                        (repo / 'app/value.py').write_text(GOOD_VALUE)
+                        return {'findings_addressed': ['A1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
+                    (repo / 'app/value.py').write_text('def value():\n    return 2\n')
+                    return completion('T1', files=['app/value.py'])
+                output = self.run_delivery(repo, modular, respond, 'review-blocked')[1]
+                self.assertTrue(output['reason'].startswith('review_failed'), output)
+                first = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual(first['review_rounds'], 1)
+                self.assertEqual(first['totals']['remediation_rounds'], 1)
+                self.assertEqual([c['step'] for c in first['delivery_commits']], ['task T1', 'remediate-r1'])
+                calls, output = self.run_delivery(repo, modular, self.reviewer({}), 'review-resumed', resume=True)
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW', output)
+                self.assertEqual(output['review_round'], 2)
+                self.assertEqual(json.loads((records / 'pr-review-r1.json').read_text())['findings'][0]['id'], 'A1')
+                self.assertEqual(json.loads((records / 'pr-review-r2.json').read_text())['findings'], [])
+                manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual(manifest['latest_review_path'], 'agentic-sdlc-records/T-1/pr-review-r2.json')
+                self.assertEqual(manifest['totals'], {'runs': 2, 'repair_turns': 0, 'remediation_rounds': 1})
+
+    def test_resume_from_implementation_is_refused_for_now(self):
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.plan(Path(temp), modular)
+                def respond(agent, step_id, prompt):
+                    if agent == 'sdlc_code_supervisor':
+                        return TWO_TASKS
+                    if step_id.startswith('worker-T2'):
+                        return 'not json'
+                    (repo / 'app/value.py').write_text(GOOD_VALUE)
+                    return completion('T1', files=['app/value.py'])
+                self.run_delivery(repo, modular, respond, 'impl-blocked')
+                with self.assertRaisesRegex(ValueError, 'not available yet'):
+                    self.run_delivery(repo, modular, self.reviewer({}), 'impl-resume', resume=True)
 
 
 if __name__ == '__main__':

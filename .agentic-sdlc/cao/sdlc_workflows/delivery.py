@@ -42,7 +42,10 @@ from .runtime import (
     _run_json_contract_step,
     PROVIDER,
 )
-from .hybrid import run_hybrid, load_specialists, MAX_PARALLEL_WORKERS
+from .hybrid import (
+    run_hybrid, load_specialists, validate_dispatch, verification_plan, hybrid_skill_context, MAX_PARALLEL_WORKERS,
+)
+from .resume import load_resumable_manifest, check_branch, hand_commits, base_drift
 from .worktrees import _git
 from .source_config import load_source_config, resolve_source_roots
 
@@ -53,6 +56,8 @@ INPUTS = {
     "implementation_mode": {"type": "string", "required": False, "default": "hybrid"},
     # CAO reads INPUTS statically, so the default must be a literal (equal to MAX_PARALLEL_WORKERS; a test checks it).
     "hybrid_max_parallel": {"type": "int", "required": False, "default": 4},
+    # Continue a BLOCKED delivery from its manifest instead of starting again (see delivery.md).
+    "resume": {"type": "bool", "required": False, "default": False},
 }
 
 IMPLEMENTER = "sdlc_implementer"
@@ -329,7 +334,48 @@ def _end_blocked(manifest_path: Path, manifest: dict[str, Any], repo: Path, reas
         "reason": reason,
         "resume_point": resume_point,
         "delivery_manifest": str(manifest_path),
+        "next_action": f"Fix the cause, commit the fix on {manifest['delivery_branch']}, then run Delivery again "
+                       "with resume=true; it continues at the resume point.",
     })
+
+
+def _record_delivery_commits(manifest_path: Path, entries: list[dict[str, str]]) -> None:
+    """Append commits Python made for this delivery; a resume checks they are still in the branch."""
+    if entries:
+        manifest = _read_json(manifest_path)
+        manifest.setdefault("delivery_commits", []).extend(entries)
+        _write_json(manifest_path, manifest)
+
+
+def _task_commits(progress: dict[str, Any]) -> list[dict[str, str]]:
+    entries = [{"sha": e["commit"], "step": f"task {e['task']}"} for e in progress.get("tasks", [])
+               if e.get("commit") and e.get("status") != "conflict"]
+    integration = progress.get("integration") or {}
+    if integration.get("commit"):
+        entries.append({"sha": integration["commit"], "step": "integration"})
+    return entries
+
+
+def _resume_notes(manifest: dict[str, Any]) -> list[str]:
+    """Facts a reviewer and the human must know about a resumed delivery, rendered by Python."""
+    previous = manifest.get("resumed_from")
+    if not previous:
+        return []
+    notes = [f"This delivery resumed run {previous['run_id']} (BLOCKED: {previous['reason']}) at {previous['resume_point']}."]
+    for commit in manifest.get("hand_commits", []):
+        notes.append(f"Commit {commit['sha'][:12]} was added by hand, not by an agent: {commit['subject']} "
+                     f"(changes {', '.join(commit['paths']) or 'no files'}).")
+    drift = manifest.get("base_drift") or {}
+    if drift.get("commits_behind"):
+        notes.append(f"The base branch is {drift['commits_behind']} commit(s) ahead of the delivery branch; they share no "
+                     "changed files, but the merged result was not verified.")
+    return notes
+
+
+def _merge_completions(*completions: dict[str, Any] | None) -> dict[str, Any]:
+    keys = ("tasks_completed", "files_changed", "assumptions", "deviations")
+    present = [c for c in completions if c]
+    return {key: list(dict.fromkeys(item for c in present for item in c.get(key, []))) for key in keys}
 
 
 def _compute_delivery_diff(repo: Path, base_branch: str, delivery_branch: str) -> str:
@@ -349,6 +395,7 @@ def render_pr_body(
     verification: dict[str, Any],
     pr_head_sha: str,
     implementation_commits: list[dict[str, Any]] | None = None,
+    resume_notes: list[str] | None = None,
 ) -> str:
     """Pure Python templating — no agent involved, no judgment needed to
     format already-known facts. Mirrors render_planning_context in
@@ -366,6 +413,8 @@ def render_pr_body(
     if implementation_commits:
         commit_lines = "\n".join(f"- {c['task']}: `{c['commit'][:12]}` ({c['status']})" for c in implementation_commits)
         commit_section = f"**Task commits (hybrid, in merge order):**\n{commit_lines}\n\n"
+    if resume_notes:
+        commit_section += "**Resumed delivery:**\n" + "\n".join(f"- {note}" for note in resume_notes) + "\n\n"
     return f"""## {ticket_id}
 
 Implements the approved Development Plan (`{plan_path.name}`, sha256 `{plan_sha256}`).
@@ -401,7 +450,12 @@ def build_pr_reviewer_prompt(
     diff_text: str,
     verification: dict[str, Any],
     pr_head_sha: str,
+    resume_notes: list[str] | None = None,
 ) -> str:
+    history = ""
+    if resume_notes:
+        history = "\nDelivery history (recorded by the workflow; review hand-made commits like any other change):\n" + \
+            "\n".join(f"- {note}" for note in resume_notes) + "\n"
     return f"""Independently review the candidate PR diff below for repository {repo}. You did not write this diff.
 
 Approved Development Plan: {plan_path}
@@ -410,7 +464,7 @@ Governance policy: {governance}
 PR review and remediation policy: {pr_review_policy}
 PR HEAD SHA under review: {pr_head_sha}
 Source roots (the only places the remediator may edit): {", ".join(_source_roots(repo))}
-
+{history}
 Verification evidence (already run independently by the workflow, not by you):
 {json.dumps(verification, indent=2)}
 
@@ -561,6 +615,7 @@ def render_human_review_brief(
     remediation_history: list[dict[str, Any]],
     verification: dict[str, Any],
     convergence_limit_reached: bool,
+    resume_notes: list[str] | None = None,
 ) -> str:
     """Deterministic Python rendering of the human-review-brief template from
     canonical JSON — same pattern as render_planning_context in dev_plan.py:
@@ -628,7 +683,7 @@ def render_human_review_brief(
             other_lines.append(f"- {rendered}")
     other_text = "\n".join(other_lines) or "- (none)"
 
-    residual = list(final_completion.get("deviations", []))
+    residual = list(final_completion.get("deviations", [])) + list(resume_notes or [])
     if convergence_limit_reached:
         residual.append(
             f"Remediation round limit ({MAX_REMEDIATION_ROUNDS}) was reached with unresolved "
@@ -703,6 +758,9 @@ def main() -> None:
     max_parallel = inputs.get("hybrid_max_parallel", MAX_PARALLEL_WORKERS)
     if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= MAX_PARALLEL_WORKERS:
         raise WorkflowContractError(f"hybrid_max_parallel must be an integer from 1 to {MAX_PARALLEL_WORKERS}")
+    resume = inputs.get("resume", False)
+    if not isinstance(resume, bool):
+        raise WorkflowContractError("resume must be true or false")
     if not repo.is_dir():
         raise WorkflowContractError(f"repository_root is not a directory: {repo}")
 
@@ -721,6 +779,13 @@ def main() -> None:
             raise WorkflowContractError(f"required SDLC file is missing: {required}")
 
     manifest = _check_plan_approved(records_dir, plan_path, repo, base_branch)
+    delivery_manifest_path = records_dir / "delivery-manifest.json"
+    # A resume reads the earlier manifest before anything overwrites it, and takes its mode.
+    previous = load_resumable_manifest(delivery_manifest_path, ticket_id=ticket_id, plan_sha256=manifest["plan_sha256"]) if resume else None
+    if previous is not None:
+        implementation_mode = previous["implementation_mode"]
+        if previous["resume_point"] == "implementation":
+            raise WorkflowContractError("resuming from implementation is not available yet; start a new delivery")
     # Both modes: validate the source roots and the registry before any agent runs.
     source_roots = _source_roots(repo)
     registry = load_specialists(repo)
@@ -734,10 +799,37 @@ def main() -> None:
             )
     baseline_sha = manifest["repository_baseline_sha"]
     delivery_branch = f"sdlc/{ticket_id}"
-    delivery_manifest_path = records_dir / "delivery-manifest.json"
 
     # 1. READY
-    _ensure_delivery_branch(repo, delivery_branch, base_branch)
+    carried: dict[str, Any] = {}
+    verification_commands = application_commands
+    skill_context = ""
+    if previous is not None:
+        if subprocess.run(["git", "rev-parse", "--verify", delivery_branch], cwd=str(repo), capture_output=True).returncode:
+            raise WorkflowContractError(f"resume needs the delivery branch {delivery_branch}; it does not exist")
+        _ensure_delivery_branch(repo, delivery_branch, base_branch)
+        # Every check runs before the new manifest replaces the earlier one, so a refused
+        # resume leaves the BLOCKED manifest in place for the next attempt.
+        check_branch(repo, previous, source_roots)
+        if implementation_mode == "hybrid":
+            dispatch = validate_dispatch((previous.get("hybrid") or {}).get("dispatch"), registry)
+            verification_commands, used_skills = verification_plan(registry, dispatch["tasks"])
+            skill_context = hybrid_skill_context(repo, registry, used_skills)
+        totals = dict(previous.get("totals") or {"runs": 1, "repair_turns": 0, "remediation_rounds": 0})
+        totals["runs"] += 1
+        carried = {key: previous[key] for key in (
+            "implementation_commits", "hybrid", "implementer_summary", "implementer_repair_summary",
+            "implementation_commit_sha", "verification", "review_rounds", "delivery_commits") if key in previous}
+        carried.update(
+            base_sha=previous["base_sha"],
+            totals=totals,
+            resumed_from={key: previous.get(key) for key in ("workflow_run_id", "state", "reason", "resume_point", "bundle")},
+            hand_commits=previous.get("hand_commits", []) + hand_commits(repo, previous["branch_head_sha"]),
+            base_drift=base_drift(repo, base_branch, previous["base_sha"]),
+        )
+        carried["resumed_from"]["run_id"] = carried["resumed_from"].pop("workflow_run_id")
+    else:
+        _ensure_delivery_branch(repo, delivery_branch, base_branch)
     _write_json(delivery_manifest_path, {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "ticket_id": ticket_id,
@@ -757,14 +849,22 @@ def main() -> None:
         "implementation_mode": implementation_mode,
         "hybrid_max_parallel": max_parallel if implementation_mode == "hybrid" else None,
         "source_roots": source_roots,
+        **carried,
     })
+    resume_notes = _resume_notes(carried)
+    if previous is not None and carried["base_drift"]["overlapping_paths"]:
+        # D6: the base branch changed files this delivery changed; a human merges it (or plans again).
+        _end_blocked(delivery_manifest_path, _read_json(delivery_manifest_path), repo,
+                     "base_drift_overlap: " + ", ".join(carried["base_drift"]["overlapping_paths"]), previous["resume_point"])
+        return
 
-    # 2. IMPLEMENTING
-    verification_commands = application_commands
-    skill_context = ""
+    # 2. IMPLEMENTING (a resume from verification keeps the earlier run's implementation)
     implementation_commits: list[dict[str, Any]] = []
     progress: dict[str, Any] = {}
-    if implementation_mode == "hybrid":
+    if previous is not None:
+        completion = _merge_completions(previous.get("implementer_summary"), previous.get("implementer_repair_summary"))
+        implementation_commits = previous.get("implementation_commits", [])
+    elif implementation_mode == "hybrid":
         try:
             completion, verification_commands, skill_context, implementation_commits = _hybrid_and_commit(
                 repo=repo, prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
@@ -772,6 +872,7 @@ def main() -> None:
                 run_id=run_id, max_parallel=max_parallel, progress=progress,
             )
         except (WorkflowContractError, OSError) as exc:
+            _record_delivery_commits(delivery_manifest_path, _task_commits(progress))
             failed_manifest = _read_json(delivery_manifest_path)
             failed_manifest["hybrid"] = _hybrid_record(progress)
             _end_blocked(delivery_manifest_path, failed_manifest, repo, f"hybrid_implementation_failed: {exc}", "implementation")
@@ -790,12 +891,16 @@ def main() -> None:
             _end_blocked(delivery_manifest_path, _read_json(delivery_manifest_path), repo,
                          f"implementation_failed: {exc}", "implementation")
             return
+        _record_delivery_commits(delivery_manifest_path, [{"sha": _current_head_sha(repo), "step": "implement-v1"}])
+    if progress:
+        _record_delivery_commits(delivery_manifest_path, _task_commits(progress))
     _write_json(implementing_dir / "completion-v1.json", completion)
     commit_sha = _current_head_sha(repo)
 
     delivery_manifest = _read_json(delivery_manifest_path)
     delivery_manifest["state"] = "IMPLEMENTED"
-    delivery_manifest["implementation_commit_sha"] = commit_sha
+    if previous is None:
+        delivery_manifest["implementation_commit_sha"] = commit_sha
     if implementation_commits:
         delivery_manifest["implementation_commits"] = implementation_commits
     if progress:
@@ -826,6 +931,7 @@ def main() -> None:
             return
         _write_json(implementing_dir / "completion-v1-repair-1.json", repair_completion)
         commit_sha = _current_head_sha(repo)
+        _record_delivery_commits(delivery_manifest_path, [{"sha": commit_sha, "step": "implement-v1-repair-1"}])
         verification = _run_verification(repo, verifying_dir, "verify-v1-repair-1", verification_commands)
 
     delivery_manifest = _read_json(delivery_manifest_path)
@@ -860,6 +966,7 @@ def main() -> None:
         verification=verification,
         pr_head_sha=pr_head_sha,
         implementation_commits=implementation_commits,
+        resume_notes=resume_notes,
     )
     pr_title_path = records_dir / "pr-title.txt"
     pr_body_path = records_dir / "pr-body.md"
@@ -880,6 +987,9 @@ def main() -> None:
 
     # 5. AGENT_REVIEWING
     review_round = 1
+    # Review records continue the earlier run's numbering; the remediation budget starts again (D7).
+    review_offset = (previous or {}).get("review_rounds") or 0
+    reviews_written = [0]  # reviews of this run with a record, for the numbering of a later resume
     reviewing_dir = runtime_dir / "review"
 
     def _review(round_no: int, sha: str, diff: str, verif: dict[str, Any]) -> dict[str, Any]:
@@ -895,6 +1005,7 @@ def main() -> None:
                 diff_text=diff,
                 verification=verif,
                 pr_head_sha=sha,
+                resume_notes=resume_notes,
             ),
             label="PR Reviewer",
             step_id=f"pr-review-r{round_no}",
@@ -902,7 +1013,8 @@ def main() -> None:
             evidence_dir=reviewing_dir / "agent-output",
             validator=lambda value, sha=sha: classify_pr_review(value, pr_head_sha=sha),
         )
-        _write_json(records_dir / f"pr-review-r{round_no}.json", result)
+        _write_json(records_dir / f"pr-review-r{review_offset + round_no}.json", result)
+        reviews_written[0] = round_no
         return result
 
     remediating_dir = runtime_dir / "remediation"
@@ -941,7 +1053,7 @@ def main() -> None:
                 # instead of failing a run whose HEAD already passed verification.
                 review = escalate_unremediated_findings(review, auto_fix_findings, remediation_completion)
                 remediation_history.append({
-                    "round": review_round,
+                    "round": review_offset + review_round,
                     "remediation_step_id": remediation_step_id,
                     "findings_addressed": [],
                     "commit_sha": None,
@@ -954,6 +1066,7 @@ def main() -> None:
             addressed = ", ".join(remediation_completion.get("findings_addressed", [])) or "(none reported)"
             _git(["commit", "-m", f"[{ticket_id}] Remediate findings ({addressed})"], cwd=repo)
             commit_sha = _current_head_sha(repo)
+            _record_delivery_commits(delivery_manifest_path, [{"sha": commit_sha, "step": remediation_step_id}])
             pr_head_sha = commit_sha
 
             # Governance #8: verify after every remediation batch. A remediation
@@ -963,7 +1076,7 @@ def main() -> None:
             diff_text = _compute_delivery_diff(repo, base_branch, delivery_branch)
 
             remediation_history.append({
-                "round": review_round,
+                "round": review_offset + review_round,
                 "remediation_step_id": remediation_step_id,
                 "findings_addressed": remediation_completion.get("findings_addressed", []),
                 "commit_sha": commit_sha,
@@ -982,7 +1095,7 @@ def main() -> None:
         # A reviewer or remediator that breaks its contract ends a defined state that a
         # later run can resume from verification; any remediation commits stay on the branch.
         failed_manifest = _read_json(delivery_manifest_path)
-        failed_manifest.update(review_rounds=review_round, remediation_history=remediation_history, verification=verification)
+        failed_manifest.update(review_rounds=review_offset + reviews_written[0], remediation_history=remediation_history, verification=verification)
         failed_manifest["totals"]["remediation_rounds"] += len(remediation_history)
         _end_blocked(delivery_manifest_path, failed_manifest, repo, f"review_failed: {exc}", "verification")
         return
@@ -992,8 +1105,8 @@ def main() -> None:
     delivery_manifest = _read_json(delivery_manifest_path)
     delivery_manifest["implementation_commit_sha"] = commit_sha
     delivery_manifest["pr_head_sha"] = pr_head_sha
-    delivery_manifest["review_rounds"] = review_round
-    delivery_manifest["latest_review_path"] = str((records_dir / f"pr-review-r{review_round}.json").relative_to(repo))
+    delivery_manifest["review_rounds"] = review_offset + review_round
+    delivery_manifest["latest_review_path"] = str((records_dir / f"pr-review-r{review_offset + review_round}.json").relative_to(repo))
     delivery_manifest["latest_review_has_developer_required"] = review["has_developer_required"]
     delivery_manifest["latest_review_has_auto_fix"] = review["has_auto_fix"]
     delivery_manifest["remediation_history"] = remediation_history
@@ -1022,6 +1135,7 @@ def main() -> None:
         verification=verification,
         pr_head_sha=pr_head_sha,
         implementation_commits=implementation_commits,
+        resume_notes=resume_notes,
     )
     _write_text(pr_title_path, render_pr_title(ticket_id))
     _write_text(pr_body_path, pr_body)
@@ -1040,6 +1154,7 @@ def main() -> None:
         remediation_history=remediation_history,
         verification=verification,
         convergence_limit_reached=convergence_limit_reached,
+        resume_notes=resume_notes,
     )
     brief_path = records_dir / "human-review-brief.md"
     _write_text(brief_path, brief_text)
@@ -1053,8 +1168,9 @@ def main() -> None:
         "ticket_id": ticket_id,
         "run_id": run_id,
         "delivery_branch": delivery_branch,
+        "resumed_from": (carried.get("resumed_from") or {}).get("run_id"),
         "pr_head_sha": pr_head_sha,
-        "review_round": review_round,
+        "review_round": review_offset + review_round,
         "findings_count": len(review["findings"]),
         "has_developer_required_findings": review["has_developer_required"],
         "has_auto_fix_findings": review["has_auto_fix"],
