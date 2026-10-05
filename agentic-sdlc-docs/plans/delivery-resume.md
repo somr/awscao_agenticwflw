@@ -1,6 +1,6 @@
 # Plan: resume a BLOCKED Delivery run
 
-Status: **in progress** (written 2026-10-05, branch `feature/delivery-resume`). Progress notes are at the end.
+Status: **done 2026-10-05** (branch `feature/delivery-resume`, not merged). Progress notes are at the end.
 
 ## 1. Why
 
@@ -101,4 +101,9 @@ Not in scope: crash resume, automatic merge or rebase of the base branch, pushin
   command from `agentic-sdlc-project.json`; `resume=true` ran only review, one real remediation round and a second
   review, ending `AWAITING_HUMAN_REVIEW`. The hand commit was listed in the manifest, PR body and brief, and the
   reviewer raised a `DEVELOPER_REQUIRED` finding that the hand fix removed the check instead of fixing the build.
-- 2026-10-05, step 3 code done (`21de628`); live check next.
+- 2026-10-05, step 3 done (`21de628`). Live `deliver-resume-live-3` ended `BLOCKED` `hybrid_implementation_failed`
+  after 4 of 7 tasks (an uncommitted edit to the project file failed wave 3's worktree check);
+  `deliver-resume-live-4` with `resume=true` ran only T4, T5, T7, integration and review, ending `AWAITING_HUMAN_REVIEW`.
+- 2026-10-05, step 4 done (`bddcaa7`): `resume_redispatch`, tests only.
+- 2026-10-05, step 5 done (`76c7640`): `delivery.md`, the delivery contract and the README. Record:
+  [delivery-resume-live.md](../verification/delivery-resume-live.md).

@@ -54,6 +54,7 @@ Implementation design history; use the workflow guides above for current operati
 - [Source-remediation verification and remaining live checks](verification/source-remediation.md)
 - [Hybrid delivery live verification](verification/hybrid-delivery-live.md)
 - [Configurable source roots live verification](verification/configurable-source-roots-live.md)
+- [Delivery resume live verification](verification/delivery-resume-live.md)
 
 ## Examples
 
