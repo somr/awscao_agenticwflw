@@ -58,6 +58,9 @@ INPUTS = {
     "hybrid_max_parallel": {"type": "int", "required": False, "default": 4},
     # Continue a BLOCKED delivery from its manifest instead of starting again (see delivery.md).
     "resume": {"type": "bool", "required": False, "default": False},
+    # On a resume from implementation whose saved tasks the current registry rejects: let the
+    # supervisor assign only the remaining work instead of refusing.
+    "resume_redispatch": {"type": "bool", "required": False, "default": False},
 }
 
 IMPLEMENTER = "sdlc_implementer"
@@ -256,7 +259,7 @@ def _implement_and_commit(
 
 def _hybrid_and_commit(
     *, repo: Path, prompt: str, evidence_dir: Path, ticket_id: str, run_id: str, max_parallel: int,
-    progress: dict[str, Any] | None = None, resume_from: dict[str, Any] | None = None,
+    progress: dict[str, Any] | None = None, resume_from: dict[str, Any] | None = None, redispatch: bool = False,
 ) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
     """Run hybrid implementation; it commits once per task and once for integration."""
     if _git(["diff", "--cached", "--name-only"], cwd=repo).strip():
@@ -268,6 +271,7 @@ def _hybrid_and_commit(
         repo=repo, prompt=prompt, evidence_dir=evidence_dir,
         completion_validator=_implementer_completion_validator,
         ticket_id=ticket_id, run_id=run_id, max_parallel=max_parallel, progress=progress, resume_from=resume_from,
+        redispatch=redispatch,
     )
     if not commits:
         raise WorkflowContractError(f"Hybrid implementation left no changes under the source roots ({', '.join(roots)})")
@@ -761,8 +765,11 @@ def main() -> None:
     if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= MAX_PARALLEL_WORKERS:
         raise WorkflowContractError(f"hybrid_max_parallel must be an integer from 1 to {MAX_PARALLEL_WORKERS}")
     resume = inputs.get("resume", False)
-    if not isinstance(resume, bool):
-        raise WorkflowContractError("resume must be true or false")
+    redispatch = inputs.get("resume_redispatch", False)
+    if not isinstance(resume, bool) or not isinstance(redispatch, bool):
+        raise WorkflowContractError("resume and resume_redispatch must be true or false")
+    if redispatch and not resume:
+        raise WorkflowContractError("resume_redispatch needs resume=true")
     if not repo.is_dir():
         raise WorkflowContractError(f"repository_root is not a directory: {repo}")
 
@@ -812,7 +819,8 @@ def main() -> None:
         # resume leaves the BLOCKED manifest in place for the next attempt.
         check_branch(repo, previous, source_roots)
         saved_dispatch = (previous.get("hybrid") or {}).get("dispatch")
-        if implementation_mode == "hybrid" and (saved_dispatch or previous["resume_point"] == "verification"):
+        redispatching = redispatch and previous["resume_point"] == "implementation"
+        if implementation_mode == "hybrid" and not redispatching and (saved_dispatch or previous["resume_point"] == "verification"):
             # D2: the saved tasks must pass the current bundle's rules and registry.
             dispatch = validate_dispatch(saved_dispatch, registry)
             verification_commands, used_skills = verification_plan(registry, dispatch["tasks"])
@@ -876,6 +884,7 @@ def main() -> None:
                 repo=repo, prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
                 evidence_dir=implementing_dir / "agent-output", ticket_id=ticket_id,
                 run_id=run_id, max_parallel=max_parallel, progress=progress, resume_from=resume_from,
+                redispatch=redispatch,
             )
         except (WorkflowContractError, OSError) as exc:
             _record_delivery_commits(delivery_manifest_path, _task_commits(progress))

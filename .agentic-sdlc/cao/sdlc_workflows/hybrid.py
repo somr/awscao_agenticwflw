@@ -238,7 +238,8 @@ def _commit_message(ticket_id: str, task: dict[str, Any]) -> str:
 def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_validator: Any, ticket_id: str,
                run_id: str, max_parallel: int,
                progress: dict[str, Any] | None = None,
-               resume_from: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
+               resume_from: dict[str, Any] | None = None,
+               redispatch: bool = False) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
     """Supervisor -> waves of workers -> integration; commits once per task (and once for integration).
 
     A wave of one task runs in the main checkout. A wave of two or more runs each
@@ -252,17 +253,18 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
 
     resume_from, the hybrid record of a BLOCKED run, replaces the supervisor with its saved
     tasks (checked against the current registry) and skips the tasks it finished; their
-    commits must already be in the branch (the caller checks).
+    commits must already be in the branch (the caller checks). When the saved tasks no
+    longer pass and redispatch is set, the supervisor assigns only the remaining work; the
+    finished tasks stay in the results, marked earlier_dispatch, and are never run again.
     """
     progress = {} if progress is None else progress
     registry = load_specialists(repo)
     roots = validate_source_config(registry)["source_roots"]
     _write_json(evidence_dir / "registry.json", registry)
     catalog = {"workers": registry["workers"], "skills": registry["skills"]}
-    if resume_from is not None:
-        dispatch = validate_dispatch(resume_from["dispatch"], registry)
-    else:
-        dispatch = _run_json_contract_step(
+
+    def supervise(extra: str = "") -> dict[str, Any]:
+        return _run_json_contract_step(
             agent=SUPERVISOR, label="Code supervisor", step_id="dispatch-v1", repo=repo,
             evidence_dir=evidence_dir,
             prompt=prompt + "\nAllocate the approved work using this catalog:\n" + json.dumps(catalog) +
@@ -275,9 +277,30 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
             "repository, and merges them afterwards: declare depends_on only for real producer/consumer links, as in "
             "the plan's dependency table. List in owns the files or folders each task will change, and give each "
             "file to one task where possible; tasks whose owns overlap never run at the same time. "
-            "Do not change source. Select applicable skills explicitly.",
+            "Do not change source. Select applicable skills explicitly." + extra,
             validator=lambda value: validate_dispatch(value, registry),
         )
+
+    earlier: list[dict[str, Any]] = []
+    if resume_from is not None:
+        # Until new progress exists, a failure here must still report the saved record.
+        progress.update(dispatch=resume_from["dispatch"], waves=resume_from.get("waves"),
+                        tasks=list(resume_from.get("tasks", [])), integration=None)
+    if resume_from is None:
+        dispatch = supervise()
+    else:
+        try:
+            dispatch = validate_dispatch(resume_from["dispatch"], registry)
+        except WorkflowContractError:
+            if not redispatch:
+                raise
+            earlier = [dict(entry, earlier_dispatch=True) for entry in resume_from.get("tasks", [])
+                       if entry["status"] in FINISHED_STATUSES or entry.get("earlier_dispatch")]
+            resume_from = None
+            dispatch = supervise(
+                "\nThese approved tasks are already implemented and committed on the branch; inspect the source and "
+                "assign ONLY the remaining approved work:\n" + json.dumps(
+                    [{"task": e["task"], "changed_paths": e.get("changed_paths", []), "result": e["result"]} for e in earlier]))
     _write_json(evidence_dir / "dispatch.json", dispatch)
     schedule = build_schedule(dispatch["tasks"], max_parallel)
     _write_json(evidence_dir / "schedule.json", schedule)
@@ -288,8 +311,11 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
     results: list[dict[str, Any]] = []
     by_task: dict[str, dict[str, Any]] = {}
     progress.update(dispatch=dispatch, waves=schedule["waves"], tasks=results)
+    results.extend(earlier)  # finished under an earlier dispatch: results only, ids may repeat
     for entry in (resume_from or {}).get("tasks", []):
-        if entry["status"] in FINISHED_STATUSES and entry["task"] in tasks:
+        if entry.get("earlier_dispatch"):
+            results.append(entry)
+        elif entry["status"] in FINISHED_STATUSES and entry["task"] in tasks:
             results.append(entry)
             by_task[entry["task"]] = entry
 

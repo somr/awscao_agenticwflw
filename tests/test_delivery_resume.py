@@ -418,5 +418,81 @@ class ResumeFromImplementationTest(DeliveryHarness, unittest.TestCase):
                 self.assertEqual([c[1] for c in calls][:2], ['dispatch-v1', 'worker-T1'])
 
 
+    def blocked_then_renamed(self, temp, modular):
+        """T1 finished, T2 failed; then the registry renames the worker the saved tasks use."""
+        repo, git, records = self.plan(Path(temp), modular)
+        self.run_delivery(repo, modular, self.agents(repo, {}, TWO_TASKS, failing=('T2',)), 'impl-blocked')
+        def rename_worker(config):
+            config['workers'] = {'engineer': config['workers']['developer']}
+        self.edit_config(repo, rename_worker)
+        git('commit', '-qam', 'Rename the developer worker')
+        return repo, git, records
+
+    def redispatch_run(self, repo, modular, respond, run_id):
+        delivery, transport = load('deliver', modular)
+        inputs = {'repository_root': str(repo), 'ticket_id': 'T-1', 'resume': True, 'resume_redispatch': True}
+        return self.drive(delivery, transport, inputs, respond, run_id, worktrees=True)
+
+    def test_redispatch_assigns_only_the_remaining_work(self):
+        # The new dispatch reuses the id T1 on purpose: ids of an earlier dispatch must not count as finished.
+        remaining = {'tasks': [{'id': 'T1', 'worker': 'engineer', 'plan_reference': 'T2', 'instructions': 'Write extra',
+                                'depends_on': [], 'skills': [], 'owns': ['app/t1.py']}]}
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.blocked_then_renamed(temp, modular)
+                old_t1 = json.loads((records / 'delivery-manifest.json').read_text())['hybrid']['tasks'][0]
+                prompts = {}
+                calls, output = self.redispatch_run(repo, modular, self.agents(repo, prompts, remaining), 'redispatched')
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW', output)
+                self.assertEqual([c[1] for c in calls], ['dispatch-v1', 'worker-T1', 'integrate-v1', 'pr-review-r1'])
+                self.assertIn('assign ONLY the remaining approved work', prompts['dispatch-v1'])
+                self.assertIn('"task": "T1"', prompts['dispatch-v1'])
+                manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                tasks = manifest['hybrid']['tasks']
+                self.assertEqual(tasks[0], dict(old_t1, earlier_dispatch=True))
+                self.assertEqual([t['task'] for t in tasks], ['T1', 'T1'])
+                self.assertNotIn('earlier_dispatch', tasks[1])
+                self.assertEqual(manifest['hybrid']['dispatch'], remaining)
+                self.assertEqual(manifest['implementation_commits'][0]['commit'], old_t1['commit'])
+
+    def test_a_failed_redispatch_keeps_the_saved_tasks_for_the_next_resume(self):
+        remaining = {'tasks': [{'id': 'T9', 'worker': 'engineer', 'plan_reference': 'T2', 'instructions': 'Write extra',
+                                'depends_on': [], 'skills': [], 'owns': ['app/t9.py']}]}
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.blocked_then_renamed(temp, modular)
+                saved = json.loads((records / 'delivery-manifest.json').read_text())['hybrid']
+                output = self.redispatch_run(repo, modular, self.agents(repo, {}, {'tasks': 'invalid'}), 'redispatch-failed')[1]
+                self.assertTrue(output['reason'].startswith('hybrid_implementation_failed'), output)
+                manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual(manifest['hybrid']['dispatch'], saved['dispatch'])
+                self.assertEqual(manifest['hybrid']['tasks'], saved['tasks'])
+                calls, output = self.redispatch_run(repo, modular, self.agents(repo, {}, remaining), 'redispatch-again')
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW', output)
+                self.assertEqual([c[1] for c in calls][:2], ['dispatch-v1', 'worker-T9'])
+
+    def test_a_resume_after_a_redispatch_does_not_mistake_an_old_task_for_a_new_one(self):
+        remaining = {'tasks': [{'id': 'T1', 'worker': 'engineer', 'plan_reference': 'T2', 'instructions': 'Write extra',
+                                'depends_on': [], 'skills': [], 'owns': ['app/t1.py']}]}
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.blocked_then_renamed(temp, modular)
+                output = self.redispatch_run(repo, modular, self.agents(repo, {}, remaining, failing=('T1',)), 'new-t1-failed')[1]
+                self.assertTrue(output['reason'].startswith('hybrid_implementation_failed'), output)
+                # The old T1 finished, the new T1 did not: a plain resume must run the new T1.
+                calls, output = self.run_delivery(repo, modular, self.agents(repo, {}, {'tasks': []}), 'new-t1-resumed', resume=True)
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW', output)
+                self.assertIn('worker-T1', [c[1] for c in calls])
+
+    def test_redispatch_needs_resume(self):
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.plan(Path(temp), modular)
+                delivery, transport = load('deliver', modular)
+                inputs = {'repository_root': str(repo), 'ticket_id': 'T-1', 'resume_redispatch': True}
+                with self.assertRaisesRegex(ValueError, 'needs resume=true'):
+                    self.drive(delivery, transport, inputs, self.agents(repo, {}, ONE_TASK), 'no-resume')
+
+
 if __name__ == '__main__':
     unittest.main()
