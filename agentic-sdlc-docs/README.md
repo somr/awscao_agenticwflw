@@ -45,6 +45,7 @@ Implementation design history; use the workflow guides above for current operati
 
 - [Planning guidance and warm start](plans/planning-guidance-and-warm-start.md)
 - [Configurable source roots](plans/configurable-source-roots.md)
+- [Resume a BLOCKED Delivery run](plans/delivery-resume.md)
 
 ## Verification records
 
