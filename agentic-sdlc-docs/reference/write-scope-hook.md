@@ -1,6 +1,6 @@
 # Agent answers and write scope
 
-All three workflows work the same way at the boundary between Python and the agents: an agent returns its
+All four workflows work the same way at the boundary between Python and the agents: an agent returns its
 result by **writing a file**, and a repository hook decides which files any agent may write. This page is the
 authoritative description of both. It is a security design, so keep it in step with the code it names.
 
@@ -93,8 +93,8 @@ the registry or a published record.
 
 | Role | Writable |
 |---|---|
-| Planning agents, the code supervisor, the PR reviewer | Only their answer file under `.agentic-sdlc/runtime/` |
-| Implementer, remediator, and any worker profile listed in `write_profiles` | The answer file, plus the configured source roots |
+| Planning agents, the code supervisor, the PR reviewer, the source fix reviewer | Anything under `.agentic-sdlc/runtime/`; they are told to write only their answer file, and exact per-step authorization is planned in the [hardening plan](../../hardening-plan.md) |
+| Implementer, remediator, and any worker profile listed in `write_profiles` | The same runtime area, plus the configured source roots |
 | Source-review agents | Only the answer area of the run's isolated workspace, through a hook generated for that workspace (see [source review](../workflows/source-review.md)) |
 | Nobody | The protected folders above |
 
@@ -131,7 +131,7 @@ surfacing as denied writes. See [Delivery](../workflows/delivery.md#configuratio
 |---|---|
 | The hook, including its standalone copy of the validator | `.claude/hooks/restrict-write-scope.py` |
 | Hook wiring | `.claude/settings.json` |
-| The validator used by Delivery (bundled into the workflow) | `.agentic-sdlc/cao/sdlc_workflows/source_config.py` |
+| The validator used by Planning, Delivery and Source remediation (bundled into each workflow) | `.agentic-sdlc/cao/sdlc_workflows/source_config.py` |
 | Answer-file protocol and JSON repair | `.agentic-sdlc/cao/sdlc_workflows/runtime.py` |
 | Trusted configuration | `agentic-sdlc-project.json` (per project) and `.agentic-sdlc/cao/specialists.json` (common) |
 

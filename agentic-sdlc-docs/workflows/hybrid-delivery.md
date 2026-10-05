@@ -88,8 +88,11 @@ timeout counts as a failure, never as success.
 
 An implementation step that breaks its contract, or a graph that fails validation, blocks Delivery. Tasks from
 earlier waves stay committed; nothing from the failing wave is merged. A task that ran alone in the main checkout
-leaves its partial edits in the working tree for inspection. Inspect or discard them, then run again with a
-fresh run ID. The other stop reasons are in the [Delivery guide](delivery.md#when-a-run-stops-early).
+leaves its partial edits in the working tree for inspection. Inspect and discard them, fix the cause, then run
+Delivery again with `resume=true` and a fresh run ID: it reuses the saved assignments, skips the tasks whose commits
+are recorded and runs the rest ([Resume a `BLOCKED` run](delivery.md#resume-a-blocked-run)). If the registry changed
+so that the saved assignments are no longer valid, add `resume_redispatch=true` to let the supervisor assign only the
+remaining work. The other stop reasons are in the [Delivery guide](delivery.md#when-a-run-stops-early).
 
 ## Choosing what to add
 

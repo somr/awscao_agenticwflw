@@ -30,7 +30,7 @@ Follow these when adding or editing a profile.
 
 **Frontmatter**
 - `name`: never rename an existing profile. The write-scope hook, the workflows, the installer and tests refer to these names.
-- `description`: one sentence that starts with what the agent does and names its workflow (Planning, Delivery or Source review), never by number. CAO uses it only for `cao profile list` and search; the agent never sees it.
+- `description`: one sentence that starts with what the agent does and names its workflow (Planning, Delivery, Source review or Source remediation), never by number. CAO uses it only for `cao profile list` and search; the agent never sees it.
 - `provider: claude_code`.
 - `role: reviewer` on every profile, including those that write source. CAO uses `role` only to pick default tools when `allowedTools` is missing. Every profile sets `allowedTools`, so `role` has no effect today, and `reviewer` is the safest fallback (no shell) if the list were ever removed.
 - `allowedTools: ["fs_read", "fs_list", "fs_write"]` on every profile. Do not add `@builtin`: it changes nothing for Claude Code, but on other providers such as OpenCode it grants shell access. Where an agent may write is decided by the hooks, not by this list.
@@ -42,7 +42,7 @@ Follow these when adding or editing a profile.
 
 All profiles use the `claude_code` provider. The delivery supervisor proposes assignments to registered workers and selects required skills. Python validates and executes those assignments and owns stage ordering, retries and artifact persistence. Agents do not launch other agents directly. See [hybrid delivery and extension guide](../workflows/hybrid-delivery.md).
 
-All 13 files set `role: reviewer` and the same `allowedTools` (`fs_read`, `fs_list`, `fs_write`); see [Profile conventions](#profile-conventions) for why. Do not infer permissions from the profile name. Python owns Git operations and verification; human approval is recorded separately. Delivery currently prepares local PR artifacts, while source review can inspect an existing GitHub PR.
+All 14 files set `role: reviewer` and the same `allowedTools` (`fs_read`, `fs_list`, `fs_write`); see [Profile conventions](#profile-conventions) for why. Do not infer permissions from the profile name. Python owns Git operations and verification; human approval is recorded separately. Delivery currently prepares local PR artifacts, while source review can inspect an existing GitHub PR.
 
 The profiles instruct each agent to write one answer file. **Current hooks enforce a broader runtime directory boundary**, as shown below; exact per-step output authorization is proposed in [the hardening plan](../../hardening-plan.md).
 
@@ -102,7 +102,7 @@ See [installation and usage](../workflows/source-remediation.md).
 
 ## Write scope and validation warnings
 
-The profiles grant `fs_write` so agents can save their final answers. For planning and delivery, that grant is constrained by the repository's trusted `PreToolUse` hook in `.claude/settings.json`; source review generates its own guard in the isolated workspace. CAO's `--dangerously-skip-permissions` means Claude permission rules alone cannot provide this path restriction. The roots the implementer and remediator may write are configuration, not profile text: they come from `source_roots` and `write_profiles` in `.agentic-sdlc/cao/specialists.json` (see the [registry reference](../workflows/delivery.md#registry-reference)), so changing them does not require reinstalling a profile. Read [agent answers and write scope](write-scope-hook.md) alongside the actual hooks before changing profiles or runtime answer paths; the table above distinguishes intended answer-only behavior from current enforcement.
+The profiles grant `fs_write` so agents can save their final answers. For planning and delivery, that grant is constrained by the repository's trusted `PreToolUse` hook in `.claude/settings.json`; source review generates its own guard in the isolated workspace. CAO's `--dangerously-skip-permissions` means Claude permission rules alone cannot provide this path restriction. The roots the implementer and remediator may write are configuration, not profile text: they come from `source_roots` and `write_profiles` in the project's `agentic-sdlc-project.json` (see [source roots](../workflows/delivery.md#source-roots)), so changing them does not require reinstalling a profile. Read [agent answers and write scope](write-scope-hook.md) alongside the actual hooks before changing profiles or runtime answer paths; the table above distinguishes intended answer-only behavior from current enforcement.
 
 CAO's validator may warn that `fs_write` is outside its recognized vocabulary. The installed Claude Code mapping supports it, and the warning does not affect validation or installation in the tested CAO version. Do not silence the warning by granting broader tools.
 
@@ -194,6 +194,6 @@ cao profile show sdlc_pr_reviewer
 
 Keep the `--provider` argument and frontmatter aligned. CAO installation chooses the explicit flag before frontmatter; installation alone does not modify the workflow's explicit `step()` provider. See [CAO CLI installation options](https://awslabs.github.io/cli-agent-orchestrator/docs/reference/cli-commands/#cao-install).
 
-Rebuild/reinstall affected workflow bundles after runtime changes; the shared runtime is embedded into all three. Use [the build/install guide](../build-and-install.md) and respect source review's no-overwrite upgrade procedure. Finish active runs before replacing shared definitions or hooks.
+Rebuild/reinstall affected workflow bundles after runtime changes; the shared runtime is embedded into all four. Use [the build/install guide](../build-and-install.md) and respect source review's no-overwrite upgrade procedure. Finish active runs before replacing shared definitions or hooks.
 
 Check source and bundled tests, then run a disposable live fixture proving: the selected profile uses the new provider; other profiles retain theirs; the answer file and JSON contract work; forbidden writes/commands are denied; and repair, timeout, cleanup and replay behave correctly. A successful `cao launch --provider codex` only validates a direct launch, not this workflow path. No profile/provider switch was performed as part of this documentation update.

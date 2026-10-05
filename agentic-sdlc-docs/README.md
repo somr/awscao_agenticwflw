@@ -11,7 +11,7 @@ Start with the [project README](../README.md) for the quick start and current ca
 | Build, validate, install or upgrade workflows | [Build and install](build-and-install.md) |
 | Run the workflow test suites | [Tests](build-and-install.md#tests) |
 | Plan work, supply guidance, warm-start or approve a plan | [Planning](workflows/planning.md) |
-| Deliver a plan, configure source roots or record a delivery decision | [Delivery](workflows/delivery.md) |
+| Deliver a plan, resume a blocked delivery, configure source roots or record a delivery decision | [Delivery](workflows/delivery.md) |
 | Review an existing PR or publish feedback | [Source review](workflows/source-review.md) |
 | Fix eligible review findings without a ticket and publish done replies | [Source remediation](workflows/source-remediation.md) |
 | Extend Delivery with workers, skills or verification toolchains | [Specialists and skills](workflows/hybrid-delivery.md) |
@@ -24,6 +24,7 @@ Start with the [project README](../README.md) for the quick start and current ca
 - Runtime contracts: [Planning](../.agentic-sdlc/contracts/planning-workflow.md), [Context package](../.agentic-sdlc/contracts/context-package.md), [Delivery](../.agentic-sdlc/contracts/delivery-workflow.md).
 - Runtime policies: [Governance](../.agentic-sdlc/policies/governance.md), [PR review](../.agentic-sdlc/policies/pr-review.md).
 - Source-review specifications: [Contract](contracts/source-review-workflow.md), [Policy](policies/source-review.md).
+- Source-remediation specifications: [Contract](contracts/source-remediation-workflow.md), [Policy](policies/source-remediation.md).
 - Schema: [Planning Context](../.agentic-sdlc/schemas/planning-context.schema.json).
 
 ## Templates
@@ -45,6 +46,11 @@ Implementation design history; use the workflow guides above for current operati
 
 - [Planning guidance and warm start](plans/planning-guidance-and-warm-start.md)
 - [Configurable source roots](plans/configurable-source-roots.md)
+- [Source review comments alongside the code](plans/source-review-inline-comments.md)
+- [Consistent agent profiles](plans/profile-consistency.md)
+- [Parallel hybrid workers](plans/parallel-hybrid-workers.md)
+- [Source remediation](plans/source-remediation.md)
+- [Consolidation and follow-ups](plans/consolidation-and-follow-ups.md)
 - [Resume a BLOCKED Delivery run](plans/delivery-resume.md)
 
 ## Verification records
@@ -54,6 +60,10 @@ Implementation design history; use the workflow guides above for current operati
 - [Source-remediation verification and remaining live checks](verification/source-remediation.md)
 - [Hybrid delivery live verification](verification/hybrid-delivery-live.md)
 - [Configurable source roots live verification](verification/configurable-source-roots-live.md)
+- [Parallel workers worktree spike](verification/parallel-workers-spike.md)
+- [Parallel workers live verification](verification/parallel-workers-live.md)
+- [Consolidated branch live verification](verification/consolidation-live.md)
+- [Activity-based answer wait spike](verification/activity-wait-spike.md)
 - [Delivery resume live verification](verification/delivery-resume-live.md)
 
 ## Examples

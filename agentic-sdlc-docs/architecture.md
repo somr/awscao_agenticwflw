@@ -1,6 +1,6 @@
 # Agentic SDLC architecture on AWS Labs CAO
 
-This guide describes the implemented learning prototype as of **2026-09-21**. Workflow code and runtime contracts live in [`.agentic-sdlc/`](../.agentic-sdlc/); this directory holds project documentation. Start with the [root README](../README.md) for installation and commands.
+This guide describes the implemented learning prototype as of **2026-10-05**. Workflow code and runtime contracts live in [`.agentic-sdlc/`](../.agentic-sdlc/); this directory holds project documentation. Start with the [root README](../README.md) for installation and commands.
 
 ## System overview
 
@@ -36,9 +36,12 @@ The maintained modules are under [`.agentic-sdlc/cao/sdlc_workflows/`](../.agent
 | `planning.py`, `delivery.py`, `source_review.py`, `source_remediation.py` | Workflow inputs, domain contracts, routing and orchestration |
 | `hybrid.py` | Specialist registry, supervisor assignments, wave schedule, parallel workers, skill injection and verification-suite selection |
 | `worktrees.py` | Per-task Git worktrees, trusted-file check, per-task commits and ordered cherry-picks |
+| `resume.py` | Delivery resume: reads a `BLOCKED` manifest and checks the delivery branch, hand commits and base-branch drift |
 | `runtime.py` | CAO steps, answer-file delivery, completion checks, bounded JSON repair and terminal cleanup |
+| `verification.py`, `remediation.py` | Trusted verification runner and the remediator's output contract, shared by Delivery and Source remediation |
+| `source_review_contracts.py`, `review_comments.py`, `source_remediation_support.py` | Source-review finding contracts and routing, stable comment identity, and remediation helpers shared with the publishers |
 | `artifacts.py`, `validation.py`, `errors.py` | Evidence files, digests, validation helpers and error types |
-| `source_config.py` | Source-root and write-profile validation used by Delivery; the hook carries a standalone copy checked by parity tests |
+| `source_config.py` | Project-file loading and source-root and write-profile validation for Planning, Delivery and Source remediation; the hook carries a standalone copy checked by parity tests |
 
 The common agent-step protocol is shown below. Each workflow supplies its profile, prompt and output contract; it retains its own domain policy. In particular, Delivery and Source Review use different finding-routing rules.
 
@@ -97,7 +100,7 @@ Non-converged candidates preserve the plan, context, analysis, reviews and diges
 
 ### Delivery: approved plan to a reviewed branch
 
-Delivery checks the plan approval and configured source roots, then creates or continues `sdlc/<ticket>`. A new branch starts at the current base-branch tip; the approved baseline must be an ancestor of that tip. The default hybrid mode uses a supervisor and registered workers. `implementation_mode=single` uses one implementer.
+Delivery checks the plan approval and configured source roots, then creates `sdlc/<ticket>` or, with `resume=true`, continues a `BLOCKED` delivery on it. A new branch starts at the current base-branch tip; the approved baseline must be an ancestor of that tip. The default hybrid mode uses a supervisor and registered workers. `implementation_mode=single` uses one implementer.
 
 ```mermaid
 flowchart TD
@@ -113,20 +116,21 @@ flowchart TD
     COMMIT -->|Pass| REVIEW["Local PR artifacts<br/>and independent PR Reviewer"]
     COMMIT -->|First verification failure| REPAIR["One implementation repair turn"]
     REPAIR --> COMMIT
-    COMMIT -->|Verification still fails| BLOCK["Stop with failure evidence"]
+    COMMIT -->|Verification still fails| BLOCK["BLOCKED: reason and<br/>resume point recorded"]
     REVIEW --> ROUTE{"Python routes findings"}
     ROUTE -->|Eligible and rounds remain| REM["Remediator: at most three rounds"]
     REM --> VERIFY["Python commits and verifies again"]
     VERIFY -->|Pass| REVIEW
     VERIFY -->|Fail| BLOCK
     ROUTE -->|No further automatic fixes| BRIEF["Human Review Brief<br/>AWAITING_HUMAN_REVIEW"]
+    BLOCK -.->|"Human fix, commit,<br/>new run with resume=true"| CHECK
 ```
 
 The supervisor proposes 1–16 ordered assignments with their dependencies and the files each will change; Python validates worker names, skills, dependencies and ownership before dispatch. Python groups independent tasks into waves and runs up to `hybrid_max_parallel` (default 4) workers of a wave at the same time, each in a fresh session in its own Git worktree; a wave of one task runs in the main checkout. After each wave Python commits every task and cherry-picks the commits in task order; a conflicting task is rerun once in the main checkout. The integration pass checks the whole feature. The run itself still uses one delivery checkout (no per-run worktree).
 
 [`specialists.json`](../.agentic-sdlc/cao/specialists.json), common to every project, connects workers to profiles and skills; the project's [`agentic-sdlc-project.json`](../agentic-sdlc-project.json) sets the source roots, write profiles and verification suites. Hybrid verification uses the deduplicated union of selected worker and skill commands; single mode uses the `application` suite. Python runs commands without a shell, with timeouts, and repeats verification after repair or remediation. The registry currently ships one general `developer` worker and AngularJS/Spark skills; those skill suites need their own project files and toolchains.
 
-Protected or high-impact findings go to human handling. Exhausting automatic remediation also leads to a brief with unresolved findings, and so does a remediation round that changes nothing: its findings are escalated to the human. Some exceptions currently end the CAO run as `failed` without updating the manifest to `BLOCKED`; the [Delivery guide](workflows/delivery.md) documents those outcomes. See [hybrid delivery](workflows/hybrid-delivery.md) for extension procedures.
+Protected or high-impact findings go to human handling. Exhausting automatic remediation also leads to a brief with unresolved findings, and so does a remediation round that changes nothing: its findings are escalated to the human. An agent step that breaks its contract or a repair that changes nothing ends the run `BLOCKED`; only the checks before any agent runs end it `failed`. A `BLOCKED` manifest records the reason, the resume point, the branch head and the finished tasks, so a later run with `resume=true` continues from there using only that manifest and Git. See the [Delivery guide](workflows/delivery.md#resume-a-blocked-run) for resume and [hybrid delivery](workflows/hybrid-delivery.md) for extension procedures.
 
 ### Source review: an independent PR snapshot
 
@@ -179,7 +183,7 @@ flowchart LR
     ASSETS -->|Read from repository_root| RUN
 ```
 
-CAO snapshots the entry script, not its Python import tree, so local entry points must not be copied directly into the workflow installation directory. Bundling preserves the workflow code when that script is relocated or replayed. It does **not** freeze every external asset or make every workflow resumable; Source Review refuses reuse of an existing run directory, and Planning warm starts use new runs.
+CAO snapshots the entry script, not its Python import tree, so local entry points must not be copied directly into the workflow installation directory. Bundling preserves the workflow code when that script is relocated or replayed. It does **not** freeze every external asset, and no workflow relies on CAO's own resume: Source Review refuses reuse of an existing run directory, and Planning warm starts and Delivery resumes are new runs that read durable records.
 
 Python edits require rebuilding and reinstalling affected bundles. Profile edits require profile reinstallation. Repository assets such as the registry, skills and contracts remain outside the bundle and are read by subsequent runs. Planning and Delivery profiles are installed separately before their workflows; Source Review's installer includes its five profiles and refuses to overwrite an existing installation. See [build and install](build-and-install.md).
 
@@ -197,7 +201,9 @@ Tooling, project data and detailed execution evidence have separate locations:
 | `agentic-sdlc-records/<ticket>/candidates/<run-id>/` | Non-approvable planning snapshots and human-needed reports |
 | `.agentic-sdlc/runtime/<ticket>/<run-id>/` | Planning/Delivery answers, raw output, dispatch and verification logs; Git-ignored |
 | `.agentic-sdlc/runtime/source-review/<run-id>/` | Source-review object store, workspace, report and optional publication receipt; Git-ignored |
-| `agentic-sdlc-local-inputs/` | Requirements fixtures, demonstration records and source-review fixture generator |
+| `agentic-sdlc-records/source-remediation/<review>-<run-id>/` | Source-remediation manifest, authorization, fix reviews, verification and Human Review Brief |
+| `.agentic-sdlc/runtime/source-remediation/<run-id>/` | Source-remediation logs and agent answers; Git-ignored |
+| `agentic-sdlc-local-inputs/` | Requirements fixtures and the source-review fixture generator |
 | `agentic-sdlc-docs/` | Guides, reference material and dated verification records |
 | `app/`, `tests/` | Payment-service example and workflow test suites, respectively |
 
@@ -223,6 +229,7 @@ The [hardening plan](../hardening-plan.md) proposes exact answer-file authorizat
 
 - Baseline ancestry does not establish that intervening changes preserve the plan's assumptions.
 - Clean-source and empty-index checks are enforced for hybrid mode, not consistently for single mode. Delivery requires exclusive use of its checkout; concurrency isolation is not enforced.
+- Without `resume=true`, Delivery on an existing `sdlc/<ticket>` implements the plan again on top of it instead of refusing. A resume checks recorded commits and file overlap with the base branch, not the full drift gate the hardening plan proposes.
 - Planning gives the configured source roots to its agents and the reviewer flags tasks outside them, but that is an instruction, not a check of the plan text; a human still confirms that approved tasks fit Delivery's write scope.
 - Verification executes agent-editable application code and tests on the host without a dedicated sandbox.
 

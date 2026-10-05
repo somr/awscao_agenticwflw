@@ -64,8 +64,8 @@ independent: it re-verifies each finding and may raise new ones.
    bash .agentic-sdlc/cao/workflows/install.sh "$PWD"
    ```
 
-   It registers as `sdlc_dev_plan`. CAO's registry is shared by every project on the machine, so all workflow and
-   profile names carry the `sdlc_` prefix. See [build and install](../build-and-install.md) for what the installer does.
+   It registers as `sdlc_dev_plan`. CAO's registry is shared by every project on the machine, so the Planning and
+   Delivery workflows and every profile carry the `sdlc_` prefix. See [build and install](../build-and-install.md) for what the installer does.
 
 ## Inputs
 

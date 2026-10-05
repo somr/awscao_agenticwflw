@@ -1,7 +1,7 @@
 # Source-only review and fix-routing policy
 
-Policy version: `source-review-v1`. This policy applies only to Workflow 3; it does not
-replace Workflow 2's PR review policy.
+Policy version: `source-review-v1`. This policy applies only to Source review (and the findings Source
+remediation consumes from it); it does not replace Delivery's PR review policy.
 
 ## Accepted finding
 

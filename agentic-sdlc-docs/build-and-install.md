@@ -22,11 +22,16 @@ cao/
 │   ├── planning.py                  # Planning inputs, adapters, policy and orchestration
 │   ├── delivery.py                  # Implementation, verification, review/remediation
 │   ├── hybrid.py                    # Delivery's registry-driven supervisor/worker dispatch
+│   ├── worktrees.py                 # Per-task worktrees, commits and ordered cherry-picks
+│   ├── resume.py                    # Resuming a BLOCKED delivery from its manifest
+│   ├── source_config.py             # Project file, source roots and write profiles
 │   ├── source_review.py             # PR snapshots, source review and fix routing
 │   ├── source_remediation.py        # Ticket-independent bounded fixes and independent review
 │   ├── source_review_contracts.py   # Shared Source review policy and evidence contracts
-│   ├── verification.py             # Shared trusted verification runner
-│   └── remediation.py              # Shared remediator completion contract
+│   ├── source_remediation_support.py # Remediation helpers shared with its publisher
+│   ├── review_comments.py           # Stable identity of published review comments
+│   ├── verification.py              # Shared trusted verification runner
+│   └── remediation.py               # Shared remediator completion contract
 ├── build_workflow.py                # Deterministic standalone bundler
 └── install_workflow.py              # Shared validation and atomic installation
 ```
@@ -69,6 +74,7 @@ From the repository root:
 python3 .agentic-sdlc/cao/build_workflow.py dev_plan --output /tmp/sdlc_dev_plan.py
 python3 .agentic-sdlc/cao/build_workflow.py deliver --output /tmp/sdlc_deliver.py
 python3 .agentic-sdlc/cao/build_workflow.py source_review --output /tmp/source_review.py
+python3 .agentic-sdlc/cao/build_workflow.py source_remediate --output /tmp/source_remediate.py
 ```
 
 These commands require no CAO server and do not install profiles or run agents.
@@ -124,24 +130,26 @@ the previous artifact and restore it if a later environment-dependent check fail
 
 ## Check that CAO matches the repository
 
-Installed workflows are frozen copies, so after any change compare them with a fresh build. The paths are
-CAO's defaults (`~/.aws/cli-agent-orchestrator/`; `CAO_WORKFLOW_DIR` moves the workflows):
+Installed workflows are frozen copies, so after any change compare them with a fresh build. A change to a shared
+module (for example `errors.py` or `verification.py`) changes every bundle that includes it, so check all four
+workflows, not only the one you worked on. The paths are CAO's defaults (`~/.aws/cli-agent-orchestrator/`;
+`CAO_WORKFLOW_DIR` moves the workflows):
 
 ```bash
-for w in dev_plan deliver; do
-  python3 .agentic-sdlc/cao/build_workflow.py "$w" --output "/tmp/check_$w.py" > /dev/null
-  cmp -s "/tmp/check_$w.py" ~/.aws/cli-agent-orchestrator/workflows/sdlc_$w.py && echo "sdlc_$w matches" || echo "sdlc_$w DIFFERS"
-done
-for pair in context-normalizer:sdlc_context_normalizer planning-analyst:sdlc_planning_analyst plan-author:sdlc_plan_author \
-            plan-reviewer:sdlc_plan_reviewer code-supervisor:sdlc_code_supervisor implementer:sdlc_implementer \
-            pr-reviewer:sdlc_pr_reviewer remediator:sdlc_remediator; do
-  cmp -s ~/.aws/cli-agent-orchestrator/agent-context/${pair##*:}.md ".agentic-sdlc/cao/profiles/${pair%%:*}.md" \
+for pair in dev_plan:sdlc_dev_plan deliver:sdlc_deliver source_review:source_review source_remediate:source_remediate; do
+  python3 .agentic-sdlc/cao/build_workflow.py "${pair%%:*}" --output "/tmp/check_${pair%%:*}.py" > /dev/null
+  cmp -s "/tmp/check_${pair%%:*}.py" ~/.aws/cli-agent-orchestrator/workflows/${pair##*:}.py \
     && echo "${pair##*:} matches" || echo "${pair##*:} DIFFERS"
+done
+for profile in .agentic-sdlc/cao/profiles/*.md; do
+  name=$(sed -n 's/^name: *//p' "$profile" | head -1)
+  cmp -s ~/.aws/cli-agent-orchestrator/agent-context/$name.md "$profile" && echo "$name matches" || echo "$name DIFFERS"
 done
 ```
 
 After pulling changes, run the tests, reinstall the profiles that differ, then reinstall the workflows that
-differ (profiles first), and use new run IDs. Registry, skill and contract edits need no reinstall because
+differ (profiles first; `source_review` needs its [upgrade procedure](workflows/source-review.md#upgrading)), and use new
+run IDs. Registry, skill and contract edits need no reinstall because
 they are read from the repository when a run starts.
 
 ## Editing and extending modules
@@ -197,7 +205,7 @@ test class. Local HTTP fixture tests require socket access.
 Additional packaging tests cover deterministic output and dependency digests, module
 conflicts, execution in isolated Python with no source-package path, frozen bundles
 surviving dependency changes, exact terminal cleanup, and installer collision/failure
-handling. Further suites cover the write-scope hook (including the configurable source roots, and a parity test that runs the workflow's validator and the hook's copy over one corpus), non-converged planning, developer guidance, warm start, reviewer history and hybrid delivery. The integration tests use real Git commits and application verification
+handling. Further suites cover the write-scope hook (including the configurable source roots, and a parity test that runs the workflow's validator and the hook's copy over one corpus), non-converged planning, developer guidance, warm start, reviewer history, hybrid delivery with parallel worktree waves, Delivery resume and Source remediation. The integration tests use real Git commits and application verification
 subprocesses, with only agent responses/CAO transport simulated. They cover planning
 JSON repair and plan revision, digest-bound approval, delivery verification repair,
 automatic remediation, protected findings, re-review and human handoff.
