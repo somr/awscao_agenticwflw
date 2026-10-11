@@ -101,7 +101,7 @@ cao workflow run source_review --wait --json --run-id source-review-pr42-1 \
   --input pr_url=https://github.com/OWNER/REPO/pull/42
 ```
 
-Replace the PR URL and run ID. This installer includes its five profiles and refuses to overwrite an existing workflow or profile; use the [Source-review guide](agentic-sdlc-docs/workflows/source-review.md) for upgrades, local fixture mode and optional publication. Results are `code-review.json`, `comments.md` and the editable `review-draft.md` under `.agentic-sdlc/runtime/source-review/<run-id>/`.
+Replace the PR URL and run ID. This installer includes its five profiles and refuses to overwrite an existing workflow or profile; use the [Source-review guide](agentic-sdlc-docs/workflows/source-review.md) for upgrades, local fixture mode and optional publication. Results are `code-review.json`, `comments.md` and the editable `review-draft.md` under `agentic-sdlc-records/source-review/<repo>-pr<N>/<run-id>/`; the working files stay in `.agentic-sdlc/runtime/source-review/<run-id>/`.
 
 Eligible Source review findings can be fixed with the ticket-independent
 [`source_remediate` workflow](agentic-sdlc-docs/workflows/source-remediation.md). It creates a local branch,

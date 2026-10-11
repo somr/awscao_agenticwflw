@@ -200,7 +200,8 @@ Tooling, project data and detailed execution evidence have separate locations:
 | `agentic-sdlc-records/<ticket>/` | Durable plans, guidance, reviews, approval records and manifests, intended for Git; outside the embeddable tooling directory |
 | `agentic-sdlc-records/<ticket>/candidates/<run-id>/` | Non-approvable planning snapshots and human-needed reports |
 | `.agentic-sdlc/runtime/<ticket>/<run-id>/` | Planning/Delivery answers, raw output, dispatch and verification logs; Git-ignored |
-| `.agentic-sdlc/runtime/source-review/<run-id>/` | Source-review object store, workspace, report and optional publication receipt; Git-ignored |
+| `agentic-sdlc-records/source-review/<repo>-pr<N>/<run-id>/` | Source-review report, audit comments, editable publication draft and optional publication receipt |
+| `.agentic-sdlc/runtime/source-review/<run-id>/` | Source-review object store, workspace, agent answers and failure report; Git-ignored |
 | `agentic-sdlc-records/source-remediation/<review>-<run-id>/` | Source-remediation manifest, authorization, fix reviews, verification and Human Review Brief |
 | `.agentic-sdlc/runtime/source-remediation/<run-id>/` | Source-remediation logs and agent answers; Git-ignored |
 | `agentic-sdlc-local-inputs/` | Requirements fixtures and the source-review fixture generator |
@@ -209,7 +210,7 @@ Tooling, project data and detailed execution evidence have separate locations:
 
 Planning publishes a reviewed plan, review and execution manifest; human approval adds `plan-approval-record.json`. Delivery adds its manifest, local PR artifacts, review rounds and Human Review Brief; the human decision adds `pr-approval-record.json`. Earlier decisions on superseded delivery heads are archived under `approval-history/`.
 
-Source-review evidence stays entirely in its run directory: archive the whole directory when durable retention is needed. Legacy checkouts may still use `docs/`, `examples/`, `sdlc-records/` or `.agentic-sdlc/records/`; current code uses the paths above.
+Source review writes its results to the records folder and keeps the working evidence behind them in its runtime folder, found by the same run ID; the publisher and Source remediation take the results folder. Legacy checkouts may still use `docs/`, `examples/`, `sdlc-records/` or `.agentic-sdlc/records/`; current code uses the paths above.
 
 ## Enforcement and human authority
 

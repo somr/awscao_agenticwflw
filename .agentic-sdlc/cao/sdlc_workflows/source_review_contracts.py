@@ -52,6 +52,41 @@ def safe_path(value: Any) -> str:
             f"Unsafe source path: {value!r}")
     return value
 
+# A run's durable results (the files a person reads, edits and keeps) live in the
+# records tree; its working files (snapshot, agent answers, object store, locks)
+# stay in the git-ignored runtime tree under the same run ID.
+REVIEW_RECORDS = "agentic-sdlc-records/source-review"
+REVIEW_RUNTIME = ".agentic-sdlc/runtime/source-review"
+REPOSITORY_NAME_LIMIT = 30
+
+def review_records_name(snapshot: dict) -> str:
+    """<repo>-pr<N> for a GitHub PR, local-<head12> for a local fixture."""
+    if not snapshot.get("pr_url"):
+        return f"local-{sha(snapshot['head_sha'])[:12]}"
+    name = re.sub(r"[^a-z0-9]+", "-", snapshot["repository"].rsplit("/", 1)[-1].lower()).strip("-")
+    name = name[:REPOSITORY_NAME_LIMIT].rstrip("-") or "repo"
+    require(re.fullmatch(r"[1-9][0-9]*", str(snapshot["pr_number"])) is not None, "Invalid PR number")
+    return f"{name}-pr{snapshot['pr_number']}"
+
+def review_run_directories(directory: Path) -> tuple[Path, Path]:
+    """Return (results, working) for a review run given its records directory.
+
+    A run directory from before the split holds both, so it is returned twice.
+    """
+    directory = Path(directory).resolve()
+    parents = directory.parents
+    if len(parents) > 3 and parents[1].name == "source-review" and parents[2].name == "agentic-sdlc-records":
+        working = parents[3] / REVIEW_RUNTIME / directory.name
+        require(working.is_dir(), f"The run's working directory {working} is missing")
+        return directory, working
+    if (len(parents) > 3 and not (directory / "code-review.json").is_file()
+            and parents[3] / REVIEW_RUNTIME == directory.parent):
+        repo = parents[3]
+        found = sorted((repo / REVIEW_RECORDS).glob(f"*/{directory.name}"))
+        require(False, f"{directory} holds only the run's working files; use its results directory"
+                       + (f" {found[0]}" if len(found) == 1 else f" under {repo / REVIEW_RECORDS}"))
+    return directory, directory
+
 def mapping_contract(value: Any, snapshot: dict) -> dict:
     require(isinstance(value, dict), "Mapping must be an object")
     string(value.get("summary"), "summary")
