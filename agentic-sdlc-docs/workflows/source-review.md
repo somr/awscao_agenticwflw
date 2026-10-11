@@ -327,7 +327,7 @@ flowchart TD
 | GitHub rejected the review | `Not published: GitHub rejected the review, so nothing was posted …` | Read GitHub's reason, fix it (often an anchor), and rerun; nothing was half-posted. |
 | No access to the PR | `Not published: GitHub request failed …; check gh auth status …` | Log in with `gh auth login`. Publishing needs pull-request write permission. |
 | The PR is closed | `Not published: PR is closed` | Nothing can be published. |
-| A previous publication crashed | `publication.lock exists …` | Check the PR on GitHub for this run's review, then delete `publication.lock` and rerun. |
+| A previous publication crashed | `publication.lock exists …` | Check the PR on GitHub for this run's review, then delete `publication.lock` (in the run's working folder; the message gives its path) and rerun. |
 | A fixture run | `This run reviewed a local fixture …` | Fixture runs are for trying the workflow; they cannot be published. |
 | A run from before the draft existed | `This run has no review-draft.md …` | Start a new run with the current workflow. |
 
@@ -489,16 +489,18 @@ cannot be previewed or published, because there is no GitHub PR.
   a hostile repository.
 - Both snapshots are UTF-8 text exports; whatever cannot be exported becomes a coverage gap.
 - Incomplete agent execution never becomes an empty review. A JSON or contract defect gets one repair attempt;
-  an execution failure writes `failure.json` and fails the CAO run.
+  an execution failure writes `failure.json` to the working folder, creates no results folder and fails the CAO run.
 - Only this run's step terminals are cleaned up. The workflow never restarts the CAO server, cleans up shared
-  terminals or modifies a developer checkout.
+  terminals or modifies the reviewed repository. In `repository_root` it only adds this run's results and working
+  folders.
 
 ## Tests
 
 The suite covers routing overrides, contracts, validation accounting, deduplication, source export from real Git
 commits, preservation of a dirty checkout, write-guard symlink escapes, the five-stage pipeline, coverage
 propagation, placement in the diff, draft parsing and reviewer edits, the GitHub call allow-list, the per-finding
-check after the PR moves (with real Git commits), publication retries and failed-run evidence:
+check after the PR moves (with real Git commits), publication retries, the results and working folders (naming,
+publishing from the results folder, refusing the wrong folder or another run's report) and failed-run evidence:
 
 ```bash
 python3 -m unittest discover -s tests -v

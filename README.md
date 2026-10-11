@@ -134,6 +134,7 @@ Project-file, registry, skill and contract edits are read from the repository on
 | `agentic-sdlc-docs/` | Operating guides, references and dated verification records |
 | `agentic-sdlc-local-inputs/` | Local requirements and source-review fixtures; demonstration records |
 | `agentic-sdlc-records/<ticket>/` | Durable plans, approval records, delivery evidence and non-converged candidates |
+| `agentic-sdlc-records/source-review/`, `source-remediation/` | Source review results (report, comments, editable draft, publication receipt) and Source remediation records |
 | `.agentic-sdlc/runtime/` | Detailed per-run evidence, ignored by Git |
 | `app/` | Python payment-service example |
 | `tests/` | Workflow, integration, packaging and hook tests |

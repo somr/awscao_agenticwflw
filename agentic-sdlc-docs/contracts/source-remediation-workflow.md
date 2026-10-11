@@ -4,7 +4,8 @@
 It requires no ticket or approved Development Plan. Explicit invocation authorizes only the findings
 bound to the validated report, exact reviewed HEAD and optional human selection.
 
-The checkout must be clean and operator-configured, with the trusted write-scope hook, registry application
+The checkout must be clean, apart from the given review's untracked results folder (pinned by hash instead), and
+operator-configured, with the trusted write-scope hook, registry application
 verification suite and required profiles installed. Both GitHub tips must still match the original review.
 Only the configured `sdlc_remediator` roots may change. Python owns Git, verification, records and publication.
 This runs project code on the host; it is not an execution sandbox for hostile repositories.

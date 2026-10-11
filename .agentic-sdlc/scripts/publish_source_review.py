@@ -368,7 +368,7 @@ def publish(root: Path, *, include_context_changed: bool = False) -> dict:
         else:
             review = existing[0]
             receipt = {"review": review, "reused_existing": True, "request": None,
-                       "note": "Posted by an earlier publication without a receipt in this run directory; "
+                       "note": "Posted by an earlier publication without a receipt in this results folder; "
                                "the comments below are read back from GitHub."}
         # GitHub's create-review response omits the comments; read back what it stored. The PR-level
         # endpoint (unlike the per-review one) reports line and side.

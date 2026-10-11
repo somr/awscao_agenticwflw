@@ -247,7 +247,7 @@ Source remediation reads the same trusted files as Delivery; there is no separat
 
 `tests/test_source_remediation.py` uses real temporary Git repositories, commits, source exports and verification
 commands, with agent and GitHub responses simulated. It covers evidence and selection checks, out-of-root and dirty
-checkouts, the three-round limit and escalation, independent per-finding decisions, the publisher's remote checks,
+checkouts, review results left untracked in the checkout (excluded but pinned), the three-round limit and escalation, independent per-finding decisions, the publisher's remote checks,
 retries and tamper detection. The hook's read-only rule for `sdlc_source_` profiles is tested in
 `tests/test_restrict_write_scope.py`. See [build and install](../build-and-install.md#tests) for how to run them, and
 the [verification record](../verification/source-remediation.md) for the live checks and their limits.
