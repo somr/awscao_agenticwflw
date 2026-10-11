@@ -32,6 +32,9 @@ from .source_review_contracts import (
     review_contract,
     adjudication_contract,
     route_finding,
+    REVIEW_RECORDS,
+    REVIEW_RUNTIME,
+    review_records_name,
 )
 from .errors import (
     WorkflowContractError,
@@ -494,7 +497,7 @@ def main() -> None:
     run_id = os.environ.get("CAO_WORKFLOW_RUN_ID", "")
     require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}", run_id) is not None,
             "A unique CAO_WORKFLOW_RUN_ID is required")
-    root = repo / ".agentic-sdlc" / "runtime" / "source-review" / run_id
+    root = repo / REVIEW_RUNTIME / run_id
     # Exclusive creation prevents concurrent/replayed runs overwriting evidence.
     root.mkdir(parents=True, exist_ok=False)
     try:
@@ -510,12 +513,17 @@ def main() -> None:
         draft = render_draft(report)
         report["comments_sha256"] = hashlib.sha256(comments.encode()).hexdigest()
         report["draft_sha256"] = hashlib.sha256(draft.encode()).hexdigest()
-        _write_json(root / "code-review.json", report)
-        _write_text(root / "comments.md", comments)
-        _write_text(root / "review-draft.md", draft)
+        # Results are durable records; the working files stay in runtime. A failed run leaves no results folder.
+        results = repo / REVIEW_RECORDS / review_records_name(snapshot) / run_id
+        require(results.resolve() == results, "Records path must not traverse symlinks")
+        results.mkdir(parents=True, exist_ok=False)
+        _write_json(results / "code-review.json", report)
+        _write_text(results / "comments.md", comments)
+        _write_text(results / "review-draft.md", draft)
         emit_output({"status": report["status"], "coverage_status": report["coverage_status"],
-                     "review": str(root / "code-review.json"), "comments": str(root / "comments.md"),
-                     "draft": str(root / "review-draft.md"), "queues": report["queues"],
+                     "results": str(results), "working": str(root),
+                     "review": str(results / "code-review.json"), "comments": str(results / "comments.md"),
+                     "draft": str(results / "review-draft.md"), "queues": report["queues"],
                      "attention": {"human_required": len(report["queues"]["HUMAN_REQUIRED"]),
                                    "general_only": sum(f["placement"]["mode"] == "GENERAL" for f in report["findings"]),
                                    "coverage_gaps": len(report["coverage_gaps"])}})

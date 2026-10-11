@@ -66,10 +66,13 @@ class RemediationTests(unittest.TestCase):
         self.git('add', '.')
         self.git('commit', '-m', 'introduce defects')
         self.head = self.git('rev-parse', 'HEAD').strip()
-        self.review_dir = self.repo / '.agentic-sdlc/runtime/source-review/fixture'
+        # The review's results sit untracked in this checkout, as when both workflows use one repository.
+        self.review_work = self.repo / '.agentic-sdlc/runtime/source-review/review-1'
+        self.review_work.mkdir(parents=True)
+        self.review_dir = self.repo / f'agentic-sdlc-records/source-review/local-{self.head[:12]}/review-1'
         self.review_dir.mkdir(parents=True)
         self.snapshot = source.prepare_snapshot({'source_repository': str(self.repo), 'base_sha': self.base,
-                                                 'head_sha': self.head}, self.review_dir)
+                                                 'head_sha': self.head}, self.review_work)
         self.mapping = {'summary': 'Two source changes', 'files': [
             {'file': p, 'scope': 'SOURCE', 'reason': 'Code', 'related_files': [], 'sensitive_boundaries': []}
             for p in self.snapshot['changed_files']], 'coverage_gaps': []}
@@ -96,11 +99,11 @@ class RemediationTests(unittest.TestCase):
                        'coverage_gaps': self.snapshot['coverage_gaps'], 'findings': findings,
                        'queues': {r: [f['stable_id'] for f in findings if f['route'] == r] for r in ['AUTO_FIX','HUMAN_REQUIRED']}}
         _write_json(self.review_dir / 'code-review.json', self.report)
-        _write_json(self.review_dir / 'workspace/snapshot.json', self.snapshot)
-        _write_json(self.review_dir / 'workspace/mapping.json', self.mapping)
-        _write_json(self.review_dir / 'workspace/candidates.json', [self.candidate, self.human])
-        _write_json(self.review_dir / 'workspace/reported-gaps.json', [])
-        _write_json(self.review_dir / 'workspace/adjudication.json', {'decisions': [
+        _write_json(self.review_work / 'workspace/snapshot.json', self.snapshot)
+        _write_json(self.review_work / 'workspace/mapping.json', self.mapping)
+        _write_json(self.review_work / 'workspace/candidates.json', [self.candidate, self.human])
+        _write_json(self.review_work / 'workspace/reported-gaps.json', [])
+        _write_json(self.review_work / 'workspace/adjudication.json', {'decisions': [
             {'candidate_id': f['candidate_id'], 'disposition': 'ACCEPT', 'finding': f, 'reason': 'Source supported'}
             for f in [self.candidate, self.human]], 'coverage_gaps': [], 'snapshot_restatements': []})
         self.metadata = {'state': 'open', 'number': 42, 'base': {'sha': self.base, 'repo': {'full_name':'owner/repo'}},
@@ -119,6 +122,8 @@ class RemediationTests(unittest.TestCase):
         if kwargs['agent'] == 'sdlc_remediator':
             if self.mode == 'outside':
                 (self.repo / 'outside.txt').write_text('unrelated')
+            elif self.mode == 'review_tamper':
+                (self.review_dir / 'code-review.json').write_text('{}')
             elif self.mode != 'nochange':
                 if self.mode == 'unresolved':
                     with (self.repo / 'app/code.py').open('a') as stream:
@@ -244,6 +249,19 @@ class RemediationTests(unittest.TestCase):
         self.assertEqual(self.git('rev-parse','HEAD').strip(), self.head)
         self.assertIn('outside', result['reason'])
 
+    def test_untracked_review_results_are_excluded_but_pinned(self):
+        self.mode = 'review_tamper'
+        result = self.run_workflow()
+        self.assertEqual(result['state'], 'BLOCKED')
+        self.assertIn('Protected evidence/configuration changed: agentic-sdlc-records/source-review/', result['reason'])
+        self.assertEqual(self.git('rev-parse','HEAD').strip(), self.head)
+
+    def test_other_untracked_files_still_block_the_start(self):
+        (self.repo / 'stray.txt').write_text('unrelated')
+        result = self.run_workflow()
+        self.assertEqual(result['state'], 'BLOCKED')
+        self.assertIn('clean checkout', result['reason'])
+
     def test_no_source_change_escalates(self):
         self.mode = 'nochange'
         result = self.run_workflow()
@@ -282,7 +300,7 @@ class RemediationTests(unittest.TestCase):
         records = self.repo / 'agentic-sdlc-records/source-remediation/delete'
         records.mkdir(parents=True)
         shutil.rmtree(self.repo / 'app')
-        commit = mod.commit_remediation(self.repo, ['app'], records, 'delete source root')
+        commit = mod.commit_remediation(self.repo, ['app'], records, 'delete source root', review=self.review_dir)
         self.assertTrue(commit)
         self.assertEqual(self.git('ls-tree','--name-only',commit,'app').strip(), '')
 
@@ -426,7 +444,7 @@ class RemediationTests(unittest.TestCase):
         self.assertFalse(self.calls)
 
     def test_source_export_tampering_is_rejected(self):
-        (self.review_dir / 'workspace/source/head/app/code.py').write_text('def first(xs,n):\n    return []\n')
+        (self.review_work / 'workspace/source/head/app/code.py').write_text('def first(xs,n):\n    return []\n')
         result = self.run_workflow()
         self.assertEqual(result['state'], 'BLOCKED')
         self.assertFalse(self.calls)
@@ -439,7 +457,7 @@ class RemediationTests(unittest.TestCase):
         self.assertFalse(self.calls)
 
     def test_reviewed_diff_tampering_is_rejected(self):
-        (self.review_dir / 'workspace/diff.patch').write_text('A different diff\n')
+        (self.review_work / 'workspace/diff.patch').write_text('A different diff\n')
         result = self.run_workflow()
         self.assertEqual(result['state'], 'BLOCKED')
         self.assertFalse(self.calls)

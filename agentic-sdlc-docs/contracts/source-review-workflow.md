@@ -25,7 +25,9 @@ limitations separately, merging only gaps that describe the same limitation.
 
 ## Outputs and states
 
-`code-review.json`, `comments.md`, `review-draft.md`, candidate decisions and step evidence.
+`code-review.json`, `comments.md`, `review-draft.md` and, after publication, `publication.json`
+are the run's results, written once to `agentic-sdlc-records/source-review/<repo>-pr<N>/<run-id>/`;
+candidate decisions and step evidence stay in the Git-ignored runtime folder of the same run ID.
 Python places each finding beside the code only when its range lies within one changed
 section of the diff on its side; otherwise it goes in the general comment. The draft is
 the only human-editable artifact; the audit artifacts are never modified. Publication

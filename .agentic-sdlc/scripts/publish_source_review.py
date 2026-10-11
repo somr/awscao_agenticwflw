@@ -23,6 +23,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cao'))
 from sdlc_workflows.review_comments import finding_comment_marker
+from sdlc_workflows.source_review_contracts import review_run_directories
 
 MAX_BODY = 65536
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -180,9 +181,9 @@ def map_range(objects: Path, old: str, new: str, path: str, start: int, end: int
     return ("CURRENT", mapped) if old_lines == new_lines else ("CHANGED", None)
 
 
-def fetch_current(root: Path, snapshot: dict, head: str, base: str) -> str:
+def fetch_current(working: Path, snapshot: dict, head: str, base: str) -> str:
     """Fetch the PR's current tips into the run's own object store; return the merge base."""
-    objects = root / "objects.git"
+    objects = working / "objects.git"
     remote = f"https://github.com/{snapshot['repository']}.git"
     git(objects, "fetch", "--no-tags", remote, base)
     git(objects, "fetch", "--no-tags", remote, f"refs/pull/{snapshot['pr_number']}/head")
@@ -192,7 +193,8 @@ def fetch_current(root: Path, snapshot: dict, head: str, base: str) -> str:
 
 
 # --- Plan the review ---------------------------------------------------------------
-def load(root: Path) -> tuple[dict, str]:
+def load(root: Path, working: Path | None = None) -> tuple[dict, str]:
+    working = working or root
     report = json.loads((root / "code-review.json").read_text())
     # STALE only means the PR moved or closed before the run finished. A closed PR is refused
     # later, and a moved one gets the same per-finding check as a move after the run.
@@ -200,6 +202,8 @@ def load(root: Path) -> tuple[dict, str]:
         raise ValueError("Only REVIEWED or STALE review results can be published")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}", str(report.get("run_id", ""))):
         raise ValueError("code-review.json has no valid run_id")
+    if root != working and report["run_id"] != working.name:
+        raise ValueError(f"code-review.json belongs to run {report['run_id']}, not {working.name}")
     snapshot = report["snapshot"]
     repository, number = snapshot["repository"], snapshot["pr_number"]
     if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
@@ -231,7 +235,7 @@ def link(repository: str, commit: str, path: str, start: int, end: int) -> str:
             f"{quote(path, safe='/')}#L{start}-L{end})")
 
 
-def plan_review(root: Path, report: dict, draft_text: str, metadata: dict, files: list[dict],
+def plan_review(working: Path, report: dict, draft_text: str, metadata: dict, files: list[dict],
                 *, include_context_changed: bool = False) -> dict:
     """Decide, per finding, where it goes; build the single COMMENT review request."""
     snapshot = report["snapshot"]
@@ -240,9 +244,9 @@ def plan_review(root: Path, report: dict, draft_text: str, metadata: dict, files
         raise ValueError("PR is closed; nothing can be published")
     head, base = metadata["head"]["sha"], metadata["base"]["sha"]
     moved = (head, base) != (snapshot["head_sha"], snapshot["base_sha"])
-    merge_base = fetch_current(root, snapshot, head, base) if moved else snapshot["merge_base_sha"]
+    merge_base = fetch_current(working, snapshot, head, base) if moved else snapshot["merge_base_sha"]
     patches = {f["filename"]: f for f in files}
-    mapping_file = root / "workspace" / "mapping.json"
+    mapping_file = working / "workspace" / "mapping.json"
     related = {item["file"]: item.get("related_files", [])
                for item in json.loads(mapping_file.read_text())["files"]} if mapping_file.is_file() else {}
     by_id = {f["stable_id"]: f for f in report["findings"]}
@@ -262,10 +266,10 @@ def plan_review(root: Path, report: dict, draft_text: str, metadata: dict, files
         if moved:
             old_commit, new_commit = ((snapshot["head_sha"], head) if anchor["side"] == "RIGHT"
                                       else (snapshot["merge_base_sha"], merge_base))
-            status, mapped = map_range(root / "objects.git", old_commit, new_commit, anchor["path"],
+            status, mapped = map_range(working / "objects.git", old_commit, new_commit, anchor["path"],
                                        anchor["line_start"], anchor["line_end"])
             if status == "CURRENT" and related.get(finding["file"]):
-                changed = git(root / "objects.git", "diff", "--name-only", "--no-renames",
+                changed = git(working / "objects.git", "diff", "--name-only", "--no-renames",
                               snapshot["head_sha"], head, "--", *related[finding["file"]]).split()
                 if changed and not include_context_changed:
                     status = "CONTEXT_CHANGED"
@@ -324,20 +328,22 @@ def plan_review(root: Path, report: dict, draft_text: str, metadata: dict, files
 
 
 def prepare(root: Path, *, include_context_changed: bool = False) -> tuple[dict, dict, str]:
-    report, draft_text = load(root)
+    root, working = review_run_directories(root)
+    report, draft_text = load(root, working)
     snapshot = report["snapshot"]
     endpoint = f"repos/{snapshot['repository']}/pulls/{snapshot['pr_number']}"
     metadata = gh(endpoint)
     files = [f for page in gh(endpoint + "/files?per_page=100", paginate=True) for f in page]
-    plan = plan_review(root, report, draft_text, metadata, files, include_context_changed=include_context_changed)
+    plan = plan_review(working, report, draft_text, metadata, files, include_context_changed=include_context_changed)
     return report, plan, endpoint
 
 
 def publish(root: Path, *, include_context_changed: bool = False) -> dict:
     report, plan, endpoint = prepare(root, include_context_changed=include_context_changed)
+    root, working = review_run_directories(root)
     # Exclusive local lock avoids double publication from concurrent invocations.
     # A crash leaves it behind deliberately: inspect GitHub before removing it.
-    lock = root / "publication.lock"
+    lock = working / "publication.lock"
     with lock.open("x"):
         pass
     try:
@@ -397,7 +403,8 @@ def summary(plan: dict) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("run_directory", type=Path)
+    parser.add_argument("run_directory", type=Path,
+                        help="The run's results directory, agentic-sdlc-records/source-review/<repo>-pr<N>/<run-id>")
     parser.add_argument("--publish", action="store_true", help="Create the COMMENT review on GitHub")
     parser.add_argument("--include-context-changed", action="store_true",
                         help="Also place findings whose related files changed after the review")
@@ -420,7 +427,7 @@ def main() -> None:
     except DraftError as exc:
         raise SystemExit(f"review-draft.md: {exc}")
     except FileExistsError:
-        raise SystemExit(f"{root / 'publication.lock'} exists: another publication of this run is running or "
+        raise SystemExit(f"{review_run_directories(root)[1] / 'publication.lock'} exists: another publication of this run is running or "
                          "crashed. Check the PR on GitHub, then remove the lock and rerun.")
     except (ValueError, OSError) as exc:
         raise SystemExit(f"Not published: {exc}")

@@ -18,7 +18,7 @@ review, with a comment beside the code for each finding it can place.
 | Done by Python | Pinning the PR, exporting the source, the routing gate, placing findings in the diff, rendering the artifacts, publication |
 | Requires | A GitHub PR URL, or a local committed repository in fixture mode |
 | Human gate | A person edits `review-draft.md` and runs the publish command; a person decides the `HUMAN_REQUIRED` findings. Nothing approves, requests changes on or merges the PR. |
-| Results | `.agentic-sdlc/runtime/source-review/<run-id>/` |
+| Results | `agentic-sdlc-records/source-review/<repo>-pr<N>/<run-id>/`; working files in `.agentic-sdlc/runtime/source-review/<run-id>/` |
 | Write boundary | Each agent may write only the answer area of the run's isolated workspace, through a hook generated for that workspace |
 
 ## How it works
@@ -141,7 +141,9 @@ installed profile as `agent-context/<name>.md`. `cao profile remove` only manage
 4. [Check that CAO matches the repository](../build-and-install.md#check-that-cao-matches-the-repository).
 
 Runs made with an older version stay readable but may not be publishable: a run without `review-draft.md` needs a
-new run.
+new run. Runs from before the results moved to `agentic-sdlc-records/` keep everything in their
+`.agentic-sdlc/runtime/source-review/<run-id>/` folder; give that folder to the publish tool and to Source
+remediation as before.
 
 To roll back, remove the new files the same way and copy the saved ones back from `$ROLLBACK`. The paths are CAO's
 defaults; `CAO_WORKFLOW_DIR` moves the workflows.
@@ -150,7 +152,7 @@ defaults; `CAO_WORKFLOW_DIR` moves the workflows.
 
 | Input | Required | Meaning |
 |---|---|---|
-| `repository_root` | yes | An existing directory where the run's evidence is stored. Its working tree is not the review source. |
+| `repository_root` | yes | An existing directory where the run's results and working files are stored. Its working tree is not the review source. |
 | `pr_url` | GitHub mode | A GitHub.com pull request URL. |
 | `source_repository` | fixture mode | A local committed repository. |
 | `base_sha`, `head_sha` | fixture mode | Exact 40-character commit SHAs. |
@@ -187,16 +189,20 @@ ignored. When the run completes, the base tip and head are checked again.
 
 ## Results
 
-Artifacts are isolated by run ID and ignored by Git:
+Each run has two folders. The results are what a person reads, edits and keeps; the working files are the
+evidence behind them:
 
 ```text
-.agentic-sdlc/runtime/source-review/<run-id>/
+agentic-sdlc-records/source-review/<repo>-pr<N>/<run-id>/    results (not ignored by Git)
 ├── code-review.json       canonical, routed feedback
 ├── comments.md            full local review with commit-specific source links (audit copy)
 ├── review-draft.md        editable publication draft, ordered by what needs attention
-├── publication.json       GitHub review receipt, only after publishing
+└── publication.json       GitHub review receipt, only after publishing
+
+.agentic-sdlc/runtime/source-review/<run-id>/                working files (ignored by Git)
 ├── failure.json           only if orchestration failed
 ├── objects.git/           this run's private Git objects
+├── publication.lock       only while publishing
 └── workspace/
     ├── source/base/ and source/head/
     ├── diff.patch and snapshot.json
@@ -204,8 +210,15 @@ Artifacts are isolated by run ID and ignored by Git:
     └── .agentic-sdlc/runtime/<role>/    each agent's answer, raw output and stabilization log
 ```
 
-Archive the whole run directory if you need durable audit retention. There is no shared per-ticket record and no
-global "latest review".
+`<repo>` is the repository's name without its owner, lower-cased, with every run of other characters replaced by
+`-` and cut to 30 characters; for example `OWNER/Payments_Service` PR 42 gives `payments-service-pr42`. A fixture run
+uses `local-<first 12 characters of the head SHA>` instead. All runs on one PR share its folder, one subfolder per run.
+
+The results are the only copy: the draft is edited there, the publish tool and
+[Source remediation](source-remediation.md) are given that folder, and they find the working files by run ID. The
+workflow does not commit the results; commit them where you keep review records. Keep the working folder for as long
+as you may publish, move or remediate the run: publishing a moved PR needs its object store and mapping, and
+remediation re-checks every validated finding against it. There is no global "latest review".
 
 `code-review.json` contains:
 
@@ -259,8 +272,9 @@ flowchart TD
 1. **Run the review** with a fresh run ID (see [Run](#run)). The command follows the run until it finishes, which
    usually takes a few minutes. Ctrl-C stops following but does not cancel the run.
 2. **Check the outcome.** `cao workflow status <run-id>` shows each stage. CAO shows only the stage states, not the
-   review, so open the run folder `.agentic-sdlc/runtime/source-review/<run-id>/`. If it contains `failure.json`, the
-   run failed: read the error, keep the folder, and start a new run with a new ID
+   review, so open the results folder `agentic-sdlc-records/source-review/<repo>-pr<N>/<run-id>/`. If it is missing and
+   the working folder `.agentic-sdlc/runtime/source-review/<run-id>/` contains `failure.json`, the run failed: read the
+   error, keep the folder, and start a new run with a new ID
    (see [When a run stops early](#when-a-run-stops-early)).
 3. **Open `review-draft.md`.** It starts with:
    - **Needs your decision:** the `HUMAN_REQUIRED` findings;
@@ -351,7 +365,7 @@ You cannot add findings, and you should not delete a block: the tool refuses bot
 ### Publishing to GitHub
 
 ```bash
-RUN_DIR=.agentic-sdlc/runtime/source-review/source-review-pr42-1
+RUN_DIR=agentic-sdlc-records/source-review/repo-pr42/source-review-pr42-1
 
 # Check the draft and print the exact request; reads GitHub, writes nothing.
 python3 .agentic-sdlc/scripts/publish_source_review.py "$RUN_DIR"
@@ -381,13 +395,13 @@ Guarantees:
   resolves anything. An allow-list refuses any other GitHub call.
 - One review per run. The review carries a hidden marker with the run ID and the reviewed base and head. Running
   `--publish` again for the same run finds that review and reuses it; a new run posts its own.
-- A local exclusive lock stops concurrent publication of the same run.
+- A local exclusive lock in the run's working folder stops concurrent publication of the same run.
 - `publication.json` records the review and the exact request sent (`request`): the general comment and every comment
   beside the code, including the notes the tool adds. It records the commit it was posted at, what happened to each
   finding (beside the code, general comment, held or omitted, with the reason), and whether the draft was edited.
   It also lists the comments as GitHub stored them (`comments`: ID, path, side, lines, commit and link), read back
   after posting. A rerun keeps the original record and sets `unpublished_draft_edits` when the draft changed after
-  posting. If the review was posted without a receipt in this run folder, `request` is `null` and only the
+  posting. If the review was posted without a receipt in this results folder, `request` is `null` and only the
   read-back comments are recorded.
 
 Publishing needs pull-request write permission for the `gh` account, and the review is posted as that account. If

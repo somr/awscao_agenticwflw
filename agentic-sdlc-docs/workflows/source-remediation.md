@@ -90,7 +90,7 @@ flowchart TD
 | Input | Required | Meaning |
 |---|---|---|
 | `repository_root` | yes | The Git root of the repository to fix, checked out at the reviewed head. |
-| `review_directory` | yes | The Source review run directory, for example `.agentic-sdlc/runtime/source-review/<run-id>`. |
+| `review_directory` | yes | The Source review run's results folder, for example `agentic-sdlc-records/source-review/<repo>-pr<N>/<run-id>`. Its working files are found by run ID in `.agentic-sdlc/runtime/source-review/<run-id>/`. A run from before the results moved is given as its runtime folder. |
 | `selection_file` | no | A JSON file that narrows the findings to attempt (format below). Without it, every eligible finding is selected. |
 
 The selection file lists finding IDs from the report:
@@ -111,12 +111,14 @@ Use a fresh run ID every time:
 ```bash
 cao workflow run source_remediate --wait --json --run-id fix-001 \
   --input repository_root="$PWD" \
-  --input review_directory="$PWD/.agentic-sdlc/runtime/source-review/review-pr42-1"
+  --input review_directory="$PWD/agentic-sdlc-records/source-review/repo-pr42/review-pr42-1"
 ```
 
 **The working tree is left on `sdlc/source-remediate/<run-id>`**, so return to your branch before other work.
 Commit or move earlier untracked records before starting another run; never delete evidence just to make the
-checkout clean.
+checkout clean. The one exception is the given review's own results folder: it may stay untracked in this checkout,
+is left out of the clean-checkout and commit checks, and its files are pinned by hash so a change during the run
+blocks it.
 
 ## Results
 

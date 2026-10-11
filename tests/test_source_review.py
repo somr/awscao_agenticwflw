@@ -440,6 +440,43 @@ class PublicationTests(unittest.TestCase):
                         publisher.main()
                 self.assertIn(expected, str(raised.exception.code))
 
+    def split_run(self):
+        """Lay the run out as the workflow does: results in records, working files in runtime."""
+        repo = self.root / 'host'
+        results = repo / 'agentic-sdlc-records/source-review/repo-pr7/review-run-1'
+        working = repo / '.agentic-sdlc/runtime/source-review/review-run-1'
+        results.mkdir(parents=True)
+        (working / 'workspace').mkdir(parents=True)
+        for name in ('code-review.json', 'comments.md', 'review-draft.md'):
+            (self.root / name).rename(results / name)
+        return results, working
+
+    def test_records_run_publishes_receipt_beside_results_and_locks_in_runtime(self):
+        results, working = self.split_run()
+        self.assertEqual(publisher.review_run_directories(results), (results, working))
+        fake, locked = self.fake_github([], []), []
+        def github(endpoint, payload=None, paginate=False):
+            locked.append((working / 'publication.lock').exists())
+            return fake(endpoint, payload=payload, paginate=paginate)
+        with patch.object(publisher, 'gh', side_effect=github):
+            receipt = publisher.publish(results)
+        self.assertIn(True, locked)
+        self.assertEqual(json.loads((results / 'publication.json').read_text())['review']['id'], receipt['review']['id'])
+        self.assertEqual(sorted(p.name for p in working.iterdir()), ['workspace'])
+
+    def test_records_run_refuses_working_directory_and_foreign_report(self):
+        results, working = self.split_run()
+        with self.assertRaisesRegex(ValueError, f'use its results directory {results}'):
+            publisher.prepare(working)
+        report = json.loads((results / 'code-review.json').read_text())
+        (results / 'code-review.json').write_text(json.dumps({**report, 'run_id': 'other-run'}))
+        with self.assertRaisesRegex(ValueError, 'belongs to run other-run'):
+            publisher.load(*publisher.review_run_directories(results))
+        (working / 'workspace').rename(working.parent / 'gone')
+        working.rmdir()
+        with self.assertRaisesRegex(ValueError, 'working directory .* is missing'):
+            publisher.prepare(results)
+
     def test_reused_review_without_receipt_never_claims_todays_plan(self):
         existing = [{'id': 21, 'body': 'earlier ' + publisher.marker(self.report)}]
         with patch.object(publisher, 'gh', side_effect=self.fake_github(existing, calls := [])):
@@ -608,7 +645,12 @@ class SnapshotTests(unittest.TestCase):
                     'queues': {'AUTO_FIX': [], 'HUMAN_REQUIRED': []}}
         with patch.dict(os.environ, {'CAO_WORKFLOW_RUN_ID': 'success'}), patch.object(mod, 'get_inputs', return_value=self.inputs), patch.object(mod, 'run_agents', side_effect=review), patch.object(mod, 'emit_output') as emit:
             mod.main()
-        run = self.root / '.agentic-sdlc/runtime/source-review/success'
+        run = self.root / f'agentic-sdlc-records/source-review/local-{self.head[:12]}/success'
+        working = self.root / '.agentic-sdlc/runtime/source-review/success'
+        self.assertEqual(sorted(p.name for p in run.iterdir()), ['code-review.json', 'comments.md', 'review-draft.md'])
+        self.assertEqual(sorted(p.name for p in working.iterdir()), ['objects.git', 'workspace'])
+        self.assertEqual((emit.call_args.args[0]['results'], emit.call_args.args[0]['draft']),
+                         (str(run), str(run / 'review-draft.md')))
         report = json.loads((run / 'code-review.json').read_text())
         self.assertEqual(report['status'], 'REVIEWED')
         self.assertEqual(report['comments_sha256'], mod.hashlib.sha256((run / 'comments.md').read_bytes()).hexdigest())
@@ -622,7 +664,19 @@ class SnapshotTests(unittest.TestCase):
                 mod.main()
         run = self.root / '.agentic-sdlc/runtime/source-review/test-failure'
         self.assertFalse((run / 'code-review.json').exists())
+        self.assertFalse((self.root / 'agentic-sdlc-records').exists())
         self.assertEqual(json.loads((run / 'failure.json').read_text())['coverage_status'], 'INCOMPLETE')
+
+    def test_records_folder_names_repository_and_pr(self):
+        name = mod.review_records_name
+        self.assertEqual(name({'pr_url': 'u', 'repository': 'Owner/My_Payments.Service', 'pr_number': '42'}),
+                         'my-payments-service-pr42')
+        self.assertEqual(name({'pr_url': 'u', 'repository': 'o/' + 'a' * 29 + '_b' * 5, 'pr_number': '3'}),
+                         'a' * 29 + '-pr3')
+        self.assertEqual(name({'pr_url': 'u', 'repository': 'o/___', 'pr_number': '1'}), 'repo-pr1')
+        self.assertEqual(name({'pr_url': None, 'head_sha': 'c' * 40}), 'local-' + 'c' * 12)
+        with self.assertRaises(mod.WorkflowContractError):
+            name({'pr_url': 'u', 'repository': 'o/r', 'pr_number': '../1'})
 
     def test_reusing_run_id_never_overwrites_evidence(self):
         run = self.root / '.agentic-sdlc/runtime/source-review/existing'

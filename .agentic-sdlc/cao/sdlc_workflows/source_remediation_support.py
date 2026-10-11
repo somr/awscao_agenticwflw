@@ -10,7 +10,7 @@ from pathlib import Path
 from .artifacts import _read_json, _sha256_file
 from .source_review_contracts import (
     POLICY_VERSION, CONFIDENCE_THRESHOLD, ELIGIBILITY, require, string, strings, sha, safe_path, mapping_contract,
-    validate_finding, adjudication_contract, route_finding,
+    validate_finding, adjudication_contract, route_finding, review_run_directories,
 )
 
 
@@ -63,19 +63,23 @@ def remediation_remote_matches(snapshot: dict, metadata: dict, head: str) -> Non
     require(metadata['head']['sha'] == head, 'PR HEAD moved; run a fresh review')
 
 
-def load_remediation_review(directory: Path, repo: Path) -> tuple[dict, dict, dict]:
+def load_remediation_review(results: Path, repo: Path) -> tuple[dict, dict, dict]:
+    # The report is in the run's results directory; the evidence behind it is in its working directory.
+    results, directory = review_run_directories(results)
     files = ['code-review.json', 'workspace/snapshot.json', 'workspace/mapping.json',
              'workspace/candidates.json', 'workspace/adjudication.json', 'workspace/reported-gaps.json', 'workspace/diff.patch']
     for name in files:
-        path = directory / name
-        require(path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(directory.resolve()),
+        base = results if name == files[0] else directory
+        path = base / name
+        require(path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(base.resolve()),
                 f'Missing or unsafe review evidence: {name}')
-    digests = {name: _sha256_file(directory / name) for name in files}
-    report = _read_json(directory / files[0])
+    digests = {name: _sha256_file((results if name == files[0] else directory) / name) for name in files}
+    report = _read_json(results / files[0])
     require(report.get('schema_version') == 1 and report.get('policy_version') == POLICY_VERSION,
             'Unsupported Source review schema/policy')
     require(report.get('status') == 'REVIEWED', 'Only a REVIEWED report may authorize remediation')
     string(report.get('run_id'), 'source review run ID')
+    require(results == directory or report['run_id'] == directory.name, 'Review report belongs to another run')
     strings(report.get('coverage_gaps'), 'coverage_gaps')
     require(report.get('coverage_status') in {'COMPLETE', 'INCOMPLETE'}, 'Invalid coverage status')
     require((report['coverage_status'] == 'INCOMPLETE') == bool(report['coverage_gaps']), 'Coverage status disagrees with gaps')
