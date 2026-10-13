@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -21,6 +22,8 @@ from .errors import WorkflowContractError, IncompleteAgentExecutionError
 from .artifacts import _write_json, _write_text, _sha256_bytes
 
 PROVIDER = "claude_code"
+# Upper bound for read-only agent steps run at the same time (reviewers); shares CAO server capacity.
+MAX_PARALLEL_REVIEWS = 4
 STEP_TIMEOUT_SECONDS = 1800
 CAO_HTTP_TIMEOUT_SECONDS = 30.0
 COMPLETION_INITIAL_SETTLE_SECONDS = 5.0
@@ -410,3 +413,23 @@ Rules for this repair:
     raise WorkflowContractError(
         f"{label} failed its JSON contract after {max_repairs + 1} attempts: {last_error}"
     ) from last_error
+
+
+def run_parallel_steps(calls: list[Callable[[], Any]], max_parallel: int) -> list[Any]:
+    """Run independent read-only agent steps, at most max_parallel at a time, and return results in call order.
+
+    Each call must use its own fixed step_id and evidence folder, so CAO replay and the evidence stay
+    deterministic whatever order the steps finish in. max_parallel 1 runs them one by one, as before.
+    Every step is awaited; if any failed, the first failure (in call order) is raised.
+    """
+    if not 1 <= max_parallel <= MAX_PARALLEL_REVIEWS:
+        raise WorkflowContractError(f"max_parallel must be 1..{MAX_PARALLEL_REVIEWS}")
+    if max_parallel == 1 or len(calls) < 2:
+        return [call() for call in calls]
+    with ThreadPoolExecutor(max_workers=min(max_parallel, len(calls))) as pool:
+        futures = [pool.submit(call) for call in calls]
+    errors = [future.exception() for future in futures]
+    for error in errors:
+        if error is not None:
+            raise error
+    return [future.result() for future in futures]

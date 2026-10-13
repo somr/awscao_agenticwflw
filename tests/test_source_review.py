@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import patch
@@ -136,6 +137,64 @@ class ReviewTests(unittest.TestCase):
         self.assertIn('AUTO_FIX', comments)
         self.assertIn('/blob/' + 'b'*40, comments)
         self.assertIn('Suggested verification:', comments)
+
+    def test_correctness_and_security_run_at_the_same_time_and_merge_in_fixed_order(self):
+        both_running = threading.Barrier(2, timeout=10)
+        security_done = threading.Event()
+        def fake(**kwargs):
+            role = kwargs['agent'].removeprefix('sdlc_source_')
+            if role in ('correctness', 'security'):
+                both_running.wait()  # BrokenBarrierError unless the two run concurrently
+                if role == 'correctness':
+                    self.assertTrue(security_done.wait(10))  # finishes last, still merged first
+                    value = {'findings': [copy.deepcopy(self.finding)], 'coverage_gaps': ['c gap']}
+                else:
+                    value = {'findings': [{**copy.deepcopy(self.finding), 'candidate_id': 'S1'}], 'coverage_gaps': ['s gap']}
+                result = kwargs['validator'](value)
+                if role == 'security':
+                    security_done.set()
+                return result
+            if role == 'validator':
+                self.assertEqual([c['candidate_id'] for c in json.loads((self.work / 'candidates.json').read_text())],
+                                 ['correctness:C1', 'security:S1'])
+                self.assertEqual([g['source'] for g in json.loads((self.work / 'reported-gaps.json').read_text())],
+                                 ['correctness', 'security'])
+                return kwargs['validator']({'decisions': [
+                    {'candidate_id': 'correctness:C1', 'disposition': 'ACCEPT', 'reason': 'Confirmed',
+                     'finding': {**self.finding, 'candidate_id': 'correctness:C1'}},
+                    {'candidate_id': 'security:S1', 'disposition': 'DUPLICATE', 'reason': 'Same', 'duplicate_of': 'correctness:C1'}],
+                    'coverage_gaps': [{'gap': 'merged', 'covers': ['G1', 'G2']}]})
+            return self.fake_agent(**kwargs)
+        with patch.object(mod, '_run_json_contract_step', side_effect=fake):
+            report = mod.run_agents(self.work, self.snapshot, 4)
+        self.assertEqual(report['review_max_parallel'], 4)
+        self.assertEqual(len(report['findings']), 1)
+
+    def test_review_max_parallel_one_keeps_the_original_order(self):
+        order = []
+        def fake(**kwargs):
+            order.append((kwargs['step_id'], threading.current_thread() is threading.main_thread()))
+            return self.fake_agent(**kwargs)
+        with patch.object(mod, '_run_json_contract_step', side_effect=fake):
+            report = mod.run_agents(self.work, self.snapshot, 1)
+        self.assertEqual(order, [(s, True) for s in ('source-mapper', 'source-correctness', 'source-security',
+                                                     'source-validator', 'source-feedback')])
+        self.assertEqual(report['review_max_parallel'], 1)
+
+    def test_a_failed_reviewer_fails_the_review_after_the_other_finishes(self):
+        finished = []
+        def fake(**kwargs):
+            role = kwargs['agent'].removeprefix('sdlc_source_')
+            if role == 'security':
+                raise mod.WorkflowContractError('security answer broke the contract')
+            result = self.fake_agent(**kwargs)
+            finished.append(role)
+            return result
+        with patch.object(mod, '_run_json_contract_step', side_effect=fake):
+            with self.assertRaisesRegex(mod.WorkflowContractError, 'security answer'):
+                mod.run_agents(self.work, self.snapshot, 4)
+        self.assertEqual(finished, ['mapper', 'correctness'])
+        self.assertFalse((self.work / 'candidates.json').exists())
 
     def test_gap_survives_empty_findings(self):
         def fake(**kwargs):
@@ -639,7 +698,8 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn('base-only.py', snapshot['changed_files'])
 
     def test_success_persists_exact_comment_hash_and_run_output(self):
-        def review(work, snapshot):
+        def review(work, snapshot, max_parallel):
+            self.assertEqual(max_parallel, 4)
             return {'snapshot': snapshot, 'summary': 'No confirmed defects', 'findings': [],
                     'coverage_gaps': ['Missing context\n'], 'coverage_status': 'INCOMPLETE',
                     'queues': {'AUTO_FIX': [], 'HUMAN_REQUIRED': []}}
@@ -657,6 +717,16 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(emit.call_args.args[0]['coverage_status'], 'INCOMPLETE')
         self.assertEqual(report['draft_sha256'], mod.hashlib.sha256((run / 'review-draft.md').read_bytes()).hexdigest())
         self.assertEqual(emit.call_args.args[0]['attention'], {'human_required': 0, 'general_only': 0, 'coverage_gaps': 1})
+
+    def test_an_invalid_review_max_parallel_stops_before_any_work(self):
+        for value in (0, 5, True, '2', 1.5):
+            with self.subTest(value=value), patch.dict(os.environ, {'CAO_WORKFLOW_RUN_ID': f'bad-{value}'}), \
+                    patch.object(mod, 'get_inputs', return_value={**self.inputs, 'review_max_parallel': value}), \
+                    patch.object(mod, 'run_agents') as run:
+                with self.assertRaisesRegex(mod.WorkflowContractError, 'review_max_parallel'):
+                    mod.main()
+                run.assert_not_called()
+        self.assertFalse((self.root / '.agentic-sdlc/runtime/source-review').exists())
 
     def test_failed_agent_records_failure_not_clean_review(self):
         with patch.dict(os.environ, {'CAO_WORKFLOW_RUN_ID': 'test-failure'}), patch.object(mod, 'get_inputs', return_value=self.inputs), patch.object(mod, 'run_agents', side_effect=execution_error('missing answer')):
@@ -686,6 +756,50 @@ class SnapshotTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 mod.main()
         self.assertEqual((run / 'marker').read_text(), 'keep')
+
+
+
+class ParallelStepsTest(unittest.TestCase):
+    """runtime.run_parallel_steps, as bundled into Source review."""
+
+    def test_results_come_back_in_call_order_and_the_cap_is_respected(self):
+        lock, running, peak = threading.Lock(), [0], [0]
+        release = threading.Event()
+        def call(value, delay):
+            def run():
+                with lock:
+                    running[0] += 1
+                    peak[0] = max(peak[0], running[0])
+                release.wait(delay)
+                with lock:
+                    running[0] -= 1
+                return value
+            return run
+        threading.Timer(0.3, release.set).start()
+        results = mod.run_parallel_steps([call(index, 0.05 * (6 - index)) for index in range(6)], 2)
+        self.assertEqual(results, list(range(6)))
+        self.assertEqual(peak[0], 2)
+
+    def test_one_means_sequential_on_the_calling_thread(self):
+        threads = mod.run_parallel_steps([lambda: threading.current_thread()] * 3, 1)
+        self.assertEqual(set(threads), {threading.current_thread()})
+
+    def test_every_call_finishes_and_the_first_failure_in_call_order_is_raised(self):
+        done = []
+        def fail(message, delay):
+            def run():
+                threading.Event().wait(delay)
+                done.append(message)
+                raise mod.WorkflowContractError(message)
+            return run
+        with self.assertRaisesRegex(mod.WorkflowContractError, 'first'):
+            mod.run_parallel_steps([fail('first', 0.2), fail('second', 0), lambda: done.append('ok')], 4)
+        self.assertEqual(sorted(done), ['first', 'ok', 'second'])
+
+    def test_the_cap_is_validated(self):
+        for value in (0, 5):
+            with self.subTest(value=value), self.assertRaises(mod.WorkflowContractError):
+                mod.run_parallel_steps([lambda: 1], value)
 
 
 if __name__ == '__main__':

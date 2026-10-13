@@ -45,6 +45,8 @@ from .artifacts import (
 )
 from .runtime import (
     _run_json_contract_step,
+    run_parallel_steps,
+    MAX_PARALLEL_REVIEWS,
 )
 
 INPUTS = {
@@ -53,6 +55,8 @@ INPUTS = {
     "source_repository": {"type": "path", "required": False},
     "base_sha": {"type": "string", "required": False, "default": ""},
     "head_sha": {"type": "string", "required": False, "default": ""},
+    # CAO reads INPUTS statically, so the default must be a literal (equal to MAX_PARALLEL_REVIEWS; a test checks it).
+    "review_max_parallel": {"type": "int", "required": False, "default": 4},
 }
 
 
@@ -233,7 +237,7 @@ FINDING_SHAPE = {
 }
 
 
-def run_agents(work: Path, snapshot: dict) -> dict:
+def run_agents(work: Path, snapshot: dict, max_parallel: int = MAX_PARALLEL_REVIEWS) -> dict:
     evidence = work / ".agentic-sdlc" / "runtime"
     common = f"""Review the immutable PR source snapshot in {work}.
 Read snapshot.json and diff.patch, then source/base and source/head as necessary.
@@ -276,16 +280,21 @@ Identify sensitive boundaries conservatively, including affected callers.''',
     _write_json(work / "mapping.json", mapping)
     candidates = []
     reported = [("mapper", gap) for gap in mapping["coverage_gaps"]]
-    # Independent contexts, serial execution to keep CAO replay ordering stable
-    # and avoid claiming shared server capacity needed by other active agents.
-    for role, focus in [("correctness", "logic, edge cases, compatibility and regression test source"),
-                        ("security", "security, authorization, concurrency, transactions and resource lifetime")]:
-        reviewed = call(role, f"""Read mapping.json. Independently review {focus}.
+    # Independent contexts, run together (at most max_parallel at a time). Fixed step ids keep
+    # CAO replay stable; results are merged in this order whatever order they finish in.
+    reviewers = [("correctness", "logic, edge cases, compatibility and regression test source"),
+                 ("security", "security, authorization, concurrency, transactions and resource lifetime")]
+
+    def reviewer(role: str, focus: str):
+        return lambda: call(role, f"""Read mapping.json. Independently review {focus}.
 Do not consult the other reviewer's answers. Use candidate IDs prefixed with {role}-.
 Return {{"findings":[{json.dumps(FINDING_SHAPE)}], "coverage_gaps":[]}}.
 The example is a schema, not a finding. Use an empty array when no defect is substantiated.
 Do not claim runtime verification. Human judgment required on sensitive boundaries.
 """, lambda value: review_contract(value, work, snapshot, mapping))
+
+    results = run_parallel_steps([reviewer(role, focus) for role, focus in reviewers], max_parallel)
+    for (role, _), reviewed in zip(reviewers, results):
         for finding in reviewed["findings"]:
             finding["candidate_id"] = role + ":" + finding["candidate_id"]
         candidates.extend(reviewed["findings"])
@@ -341,6 +350,7 @@ Mention coverage limitations in the summary when present.''', feedback_contract)
     for finding in findings:
         finding["comment"] = explanations[finding["stable_id"]]
     return {"schema_version": 1, "policy_version": POLICY_VERSION, "snapshot": snapshot,
+            "review_max_parallel": max_parallel,
             "summary": feedback["summary"], "findings": findings, "coverage_gaps": gaps,
             "coverage_status": "INCOMPLETE" if gaps else "COMPLETE",
             "queues": {route: [f["stable_id"] for f in findings if f["route"] == route]
@@ -494,6 +504,9 @@ def main() -> None:
     inputs = get_inputs()
     repo = Path(inputs["repository_root"]).resolve()
     require(repo.is_dir(), "repository_root must exist")
+    max_parallel = inputs.get("review_max_parallel", MAX_PARALLEL_REVIEWS)
+    require(not isinstance(max_parallel, bool) and isinstance(max_parallel, int) and 1 <= max_parallel <= MAX_PARALLEL_REVIEWS,
+            f"review_max_parallel must be an integer from 1 to {MAX_PARALLEL_REVIEWS}")
     run_id = os.environ.get("CAO_WORKFLOW_RUN_ID", "")
     require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}", run_id) is not None,
             "A unique CAO_WORKFLOW_RUN_ID is required")
@@ -503,7 +516,7 @@ def main() -> None:
     try:
         snapshot = prepare_snapshot(inputs, root)
         configure_workspace(root / "workspace")
-        report = run_agents(root / "workspace", snapshot)
+        report = run_agents(root / "workspace", snapshot, max_parallel)
         report["run_id"] = run_id
         report["status"] = "REVIEWED" if current_pr_matches(snapshot) else "STALE"
         hunks = diff_hunks((root / "workspace" / "diff.patch").read_text(encoding="utf-8", errors="replace"))

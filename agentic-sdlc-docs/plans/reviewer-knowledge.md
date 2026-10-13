@@ -1,6 +1,6 @@
 # Plan: project knowledge for the reviewers (coding standards)
 
-Status: **in progress: step 1 done 2026-10-13**. Decisions in section 3 are all agreed (2026-10-13). Progress notes are at the end.
+Status: **in progress: steps 1-2 done 2026-10-13**. Decisions in section 3 are all agreed (2026-10-13). Progress notes are at the end.
 
 ## 1. Why
 
@@ -198,3 +198,20 @@ Each step: unit tests green, reinstall the affected workflows and profiles, live
   project file with `review_knowledge`; the new ones accept it with or without the key) and checked that each loads the
   real project file. `source_review` was not reinstalled: it does not read the project file yet, and its installer
   requires the upgrade procedure (step 3).
+- **Step 2 done (2026-10-13).** `runtime.run_parallel_steps` (results in call order, cap `MAX_PARALLEL_REVIEWS = 4`,
+  every step awaited, the first failure in call order raised; 1 = sequential on the calling thread) and the Source
+  review input `review_max_parallel` (default 4, validated before any work, recorded in `code-review.json`);
+  correctness and security run through it. Tests: overlap proven with a barrier, fixed merge order when security
+  finishes first, sequential order with 1, a failing reviewer fails the review after the other finishes, invalid
+  inputs, the literal default; bundle and source modes; full suite 348 OK.
+  Reinstalled all four workflows (runtime.py is shared; `source_review` by its upgrade procedure, rollback copy kept
+  outside the repo); the match check shows every workflow and profile equal to the branch.
+  Live, versioned fixture (`create_fixture.py`), scratch `repository_root`, real CAO and Claude Code:
+
+  | Run | `review_max_parallel` | Total | correctness | security | Findings |
+  |---|---|---|---|---|---|
+  | `source-review-parallel-20261013-p1` | 1 | 219 s | 22:36:02-22:36:46 | 22:36:46-22:37:30 | 2 (HIGH `AUTHN_AUTHZ` human, MEDIUM `CORRECTNESS` auto-fix) |
+  | `source-review-parallel-20261013-p4` | 4 | 169 s | 22:39:43-22:40:27 | 22:39:43-22:40:26 | the same 2, same routes |
+
+  The reviewer stage went from 88 s to 44 s; the rest is unchanged. Both runs `REVIEWED`, coverage `INCOMPLETE`
+  (fixture context), every step on its first attempt, no CAO sessions left open.
