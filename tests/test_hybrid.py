@@ -316,7 +316,7 @@ class ProjectFileTest(unittest.TestCase):
 
     def test_this_repository_keeps_per_project_settings_out_of_the_common_registry(self):
         registry = json.loads((ROOT / '.agentic-sdlc/cao/specialists.json').read_text())
-        self.assertFalse({'source_roots', 'write_profiles', 'verification'} & set(registry))
+        self.assertFalse({'source_roots', 'write_profiles', 'verification', 'review_knowledge'} & set(registry))
 
     def test_the_project_file_supplies_roots_profiles_and_verification(self):
         for mod in modules():

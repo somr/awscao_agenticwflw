@@ -80,6 +80,7 @@ DENY_ALWAYS_ROOTS = [
     ".agentic-sdlc/templates",
     ".agentic-sdlc/schemas",
     "agentic-sdlc-records",  # durable workflow records; outside the embeddable .agentic-sdlc/
+    "agentic-sdlc-pr-review-kb",  # project rules the reviewers enforce
     "agentic-sdlc-project.json",  # per-project source roots, write profiles and verification
 ]
 
@@ -94,7 +95,7 @@ DENY_ALWAYS_ROOTS = [
 # test). Any rule added there must be added here, and the other way round.
 REGISTRY_RELATIVE_PATH = ".agentic-sdlc/cao/specialists.json"
 PROJECT_RELATIVE_PATH = "agentic-sdlc-project.json"
-PROJECT_KEYS = ("source_roots", "write_profiles", "verification")
+PROJECT_KEYS = ("source_roots", "write_profiles", "verification", "review_knowledge")
 PROJECT_FILE_VERSION = 1
 DEFAULT_SOURCE_ROOTS = ["app"]
 DEFAULT_WRITE_PROFILES = {"sdlc_implementer": None, "sdlc_remediator": None}
@@ -106,11 +107,13 @@ FORBIDDEN_ROOTS = (
     "agentic-sdlc-records",
     "agentic-sdlc-docs",
     "agentic-sdlc-local-inputs",
+    "agentic-sdlc-pr-review-kb",
     PROJECT_RELATIVE_PATH,
 )
 READ_ONLY_PROFILES = frozenset({
     "sdlc_code_supervisor",
     "sdlc_pr_reviewer",
+    "sdlc_standards_reviewer",
     "sdlc_context_normalizer",
     "sdlc_planning_analyst",
     "sdlc_plan_author",

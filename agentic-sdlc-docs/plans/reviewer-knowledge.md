@@ -1,6 +1,6 @@
 # Plan: project knowledge for the reviewers (coding standards)
 
-Status: **planned 2026-10-13, not started**. Decisions in section 3 are all agreed (2026-10-13). Progress notes are at the end.
+Status: **in progress: step 1 done 2026-10-13**. Decisions in section 3 are all agreed (2026-10-13). Progress notes are at the end.
 
 ## 1. Why
 
@@ -62,11 +62,12 @@ noticeably slower.
 
 ### 4.1 Configuration (D2-D4, D13)
 
-- `source_config.py`: `PROJECT_KEYS` gains `review_knowledge`; `validate_review_knowledge()` checks the object's keys
-  and the D3 ranges, and that each path in `files` is a normalized relative path inside `agentic-sdlc-pr-review-kb/`
-  resolving inside the repo (no symlink escape) and that the file exists. `FORBIDDEN_ROOTS` gains `agentic-sdlc-pr-review-kb`; `READ_ONLY_PROFILES` gains
+- `source_config.py`: `PROJECT_KEYS` gains `review_knowledge`. The object itself (keys, D3 ranges, each path in
+  `files` a normalized `.md` path inside `agentic-sdlc-pr-review-kb/` that exists and does not resolve out of it) is
+  checked by `review_knowledge.validate_knowledge_settings()`, since the hook never needs it. `FORBIDDEN_ROOTS` gains `agentic-sdlc-pr-review-kb`; `READ_ONLY_PROFILES` gains
   `sdlc_standards_reviewer`.
-- `.claude/hooks/restrict-write-scope.py`: same key, forbidden root and read-only profile in its standalone copy; the
+- `.claude/hooks/restrict-write-scope.py`: same key, forbidden root and read-only profile in its standalone copy, and
+  the folder in `DENY_ALWAYS_ROOTS` (like the records); the
   parity test in `tests/test_source_config.py` covers both. The hook does not inspect the entries.
 
 ### 4.2 Keeping the context small (D1, D7, D8)
@@ -183,4 +184,17 @@ Each step: unit tests green, reinstall the affected workflows and profiles, live
 
 ## 7. Progress notes
 
-(none yet)
+- **Step 1 done (2026-10-13).** `review_knowledge.py` (settings, rule parsing, selection with `PurePosixPath.full_match`
+  globs, balanced batching, staging), the key/folder/profile in `source_config.py` and the hook, the sample file
+  declared in `agentic-sdlc-project.json`. Tests: `tests/test_review_knowledge.py` (new), parity cases in
+  `test_source_config.py`, hook cases in `test_restrict_write_scope.py`; two helpers that list the project keys
+  (`test_workflow_integration.edit_config`, `test_hybrid`) updated. Full suite 340 OK. A mutation check (rules folder
+  and profile removed from the hook copy only) fails the parity test, as it should.
+  Live: a real `sdlc_implementer` terminal created through CAO's API, hook run against its id with the real project
+  file: `app/payment_service/payment_service.py`, `app/tests/test_new.py` and the answer path allowed;
+  `agentic-sdlc-pr-review-kb/code-readability.md`, `agentic-sdlc-pr-review-kb/new-rules.md` and
+  `agentic-sdlc-project.json` denied. Terminal deleted.
+  Reinstalled `sdlc_dev_plan`, `sdlc_deliver` and `source_remediate` from this branch (the old bundles would refuse a
+  project file with `review_knowledge`; the new ones accept it with or without the key) and checked that each loads the
+  real project file. `source_review` was not reinstalled: it does not read the project file yet, and its installer
+  requires the upgrade procedure (step 3).

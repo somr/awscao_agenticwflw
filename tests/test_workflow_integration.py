@@ -155,7 +155,7 @@ class DeliveryHarness:
         registry_path, project_path = repo / '.agentic-sdlc/cao/specialists.json', repo / 'agentic-sdlc-project.json'
         config = {**json.loads(registry_path.read_text()), **json.loads(project_path.read_text())}
         change(config)
-        keys = ('source_roots', 'write_profiles', 'verification')
+        keys = ('source_roots', 'write_profiles', 'verification', 'review_knowledge')
         project_path.write_text(json.dumps({'version': 1, **{k: config[k] for k in keys if k in config}}))
         registry_path.write_text(json.dumps({k: v for k, v in config.items() if k not in keys}))
 
