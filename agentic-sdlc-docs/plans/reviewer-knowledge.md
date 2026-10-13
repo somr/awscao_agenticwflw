@@ -1,6 +1,6 @@
 # Plan: project knowledge for the reviewers (coding standards)
 
-Status: **in progress: steps 1-2 done 2026-10-13**. Decisions in section 3 are all agreed (2026-10-13). Progress notes are at the end.
+Status: **in progress: steps 1-3 done 2026-10-13**. Decisions in section 3 are all agreed (2026-10-13). Progress notes are at the end.
 
 ## 1. Why
 
@@ -215,3 +215,42 @@ Each step: unit tests green, reinstall the affected workflows and profiles, live
 
   The reviewer stage went from 88 s to 44 s; the rest is unchanged. Both runs `REVIEWED`, coverage `INCOMPLETE`
   (fixture context), every step on its first attempt, no CAO sessions left open.
+- **Step 3 done (2026-10-13).** New profile `sdlc_source_standards` (installer role list now six), validator profile
+  told how to judge a cited rule. Contracts: `MAINTAINABILITY` (only with `standard_ref`), `standards_contract`
+  (every rule of the batch exactly one verdict, `VIOLATED` lists exactly the findings citing the rule, the cited rule
+  must cover the finding's file, head side), the validator may not change a `standard_ref`, `route_finding` takes the
+  rule levels. `main` loads the rules from `repository_root` before any work; `prepare_standards` selects them against
+  the head files and stages them in `workspace/knowledge/`; the batches run in parallel with correctness and security,
+  each prompt ending with its batch index. Report: `standards` (files and digests, settings, applicable, skipped,
+  batches, verdicts), `suggestions`, a `SUGGESTION` queue; comments and draft show the rule; the run output counts
+  suggestions. Without `review_knowledge` prompts, steps and report are as before (tested).
+  Design details settled while building:
+  - D9 is enforced by Python: a rule finding's severity is capped by its level (`MANDATORY` MEDIUM, `NICE-TO-HAVE`
+    LOW) without the "unless a reachable failure is shown" exception; a reachable failure is the correctness and
+    security reviewers' job and keeps its own severity there.
+  - D11: a validated `NICE-TO-HAVE` finding gets route `SUGGESTION` (in `findings`, never selected by remediation).
+    D14: a rule finding outside the added lines goes to `report["suggestions"]` (not validated, `LOW`,
+    `outside_changed_lines`), so Source remediation's exact re-check of `findings` is unchanged; the draft lists
+    suggestions in the general comment.
+  - A rule finding's stable id also includes `standard_ref` and its title: one rule broken several times in one symbol
+    must not collapse into one id (which fails the run as an unresolved duplicate). Ids of other findings unchanged.
+  - Source remediation recomputes routes with the levels from the staged `workspace/knowledge/index.json` and accepts
+    the `SUGGESTION` queue (older reviews without it still load).
+  Tests: 358 OK (bundle) and the Source review/remediation suites in source mode.
+  Reinstalled `source_review` (upgrade procedure, rollback copy outside the repo) and `source_remediate`; every
+  workflow and profile matches the branch.
+  Live, real CAO and Claude Code, `review_max_parallel` 4, fixture with a correct `calc_fee(amt, cur)` using `r` and
+  `0.01`, a `# Rule removed on 20-Jan` comment, an untouched abbreviated `fmt_amt(a)` in the base, and a PR edit that
+  turns its own copy of NAMING-1 into NICE-TO-HAVE:
+
+  | Run | Rules | Batches | Total | Rule findings | Verdicts |
+  |---|---|---|---|---|---|
+  | `source-review-rules-20261013-sample` | 2 | 1 | 209 s | COMMENTS-1 (line 16), NAMING-1 (17 `calc_fee, amt, cur`; 19 `r`) | both VIOLATED |
+  | `source-review-rules-20261013-fifty` | 50 (8 apply, 42 skipped) | 3 (3, 3, 2) | 272 s | the same three, PY-3 (`0.01`), PY-2 type hints as `SUGGESTION` | PY-1, PY-4, PY-5, PY-6 NOT_VIOLATED |
+
+  `fmt_amt` was not reported. The staged rules equal the trusted root's file (sha256 `65c35baa…`), and NAMING-1 stayed
+  MANDATORY, so the PR's edit had no effect. Batches overlapped with correctness and security (batch 3 started when
+  the first call finished: cap 4); batch 3 needed one contract repair (a line range outside the file). Every
+  `MANDATORY` finding went to `HUMAN_REQUIRED` because the mapper marked `app/fees.py` as `BUSINESS_RULES` and
+  `PUBLIC_API`: existing routing, a protected boundary forces a human for every finding in that file. No CAO sessions
+  left open.

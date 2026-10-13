@@ -18,7 +18,16 @@ PROTECTED = {
     "INFRA_TOPOLOGY", "DEPENDENCY",
 }
 
-CATEGORIES = PROTECTED | {"CORRECTNESS", "TESTING", "RESOURCE_HANDLING", "SECURITY", "OTHER"}
+CATEGORIES = PROTECTED | {"CORRECTNESS", "TESTING", "RESOURCE_HANDLING", "SECURITY", "OTHER", "MAINTAINABILITY"}
+# A finding that cites a project rule (standard_ref). MAINTAINABILITY is allowed only on such findings.
+STANDARD_REF = re.compile(r"[A-Z][A-Z0-9]*-[0-9]+")
+RULE_VERDICTS = ("VIOLATED", "NOT_VIOLATED", "NOT_ASSESSED")
+# Highest severity a rule finding may carry, by rule level; NICE-TO-HAVE findings are suggestions only.
+RULE_SEVERITY_CAP = {"MANDATORY": "MEDIUM", "NICE-TO-HAVE": "LOW"}
+SEVERITY_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+ROUTES = ("AUTO_FIX", "HUMAN_REQUIRED", "SUGGESTION")
+# The staged rules of a run: written by the workflow into the review workspace, never by an agent.
+KNOWLEDGE_INDEX = "knowledge/index.json"
 
 ELIGIBILITY = (
     "evidence_sufficient", "intended_behavior_clear", "localized_and_bounded",
@@ -127,7 +136,55 @@ def validate_finding(finding: Any, work: Path, snapshot: dict, mapping: dict) ->
     for flag in (*ELIGIBILITY, "protected_boundary", "introduced_by_pr"):
         require(type(finding.get(flag)) is bool, f"{flag} must be a boolean")
     require(finding["introduced_by_pr"], "Pre-existing issues are out of scope")
+    ref = finding.get("standard_ref")
+    require(ref is None or (isinstance(ref, str) and STANDARD_REF.fullmatch(ref) is not None),
+            "standard_ref must be a rule id or null")
+    require(finding["category"] != "MAINTAINABILITY" or ref is not None, "MAINTAINABILITY requires a standard_ref")
     return finding
+
+
+def rule_levels(work: Path) -> dict[str, str]:
+    """Rule id -> level for the rules staged in a review workspace; empty without project rules."""
+    index = work / KNOWLEDGE_INDEX
+    if not index.is_file():
+        return {}
+    return {rule["id"]: rule["level"] for rule in json.loads(index.read_text(encoding="utf-8"))["applicable"]}
+
+
+def standards_contract(value: Any, work: Path, snapshot: dict, mapping: dict, batch: list[dict]) -> dict:
+    """One standards batch: every rule of the batch gets one verdict, every finding cites a rule of the batch
+    that applies to its file, and a VIOLATED verdict lists exactly the findings citing that rule."""
+    require(isinstance(value, dict), "Standards review must be an object")
+    require(isinstance(value.get("findings"), list), "findings array required")
+    covers = {rule["id"]: set(rule["covers"]) for rule in batch}
+    citing: dict[str, list[str]] = {rule_id: [] for rule_id in covers}
+    ids = []
+    for finding in value["findings"]:
+        validate_finding(finding, work, snapshot, mapping)
+        ref = finding.get("standard_ref")
+        require(ref in covers, f"standard_ref must name a rule of this batch: {ref!r}")
+        require(finding["file"] in covers[ref], f"Rule {ref} does not apply to {finding['file']}")
+        require(finding["side"] == "head", "Rule findings anchor to the head side")
+        ids.append(finding["candidate_id"])
+        citing[ref].append(finding["candidate_id"])
+    require(len(ids) == len(set(ids)), "Duplicate candidate IDs")
+    require(isinstance(value.get("rules"), list), "rules array required")
+    seen = []
+    for verdict in value["rules"]:
+        require(isinstance(verdict, dict), "Rule verdict must be an object")
+        rule_id = verdict.get("id")
+        require(rule_id in covers, f"Verdict for a rule outside this batch: {rule_id!r}")
+        seen.append(rule_id)
+        require(verdict.get("status") in RULE_VERDICTS, "Invalid rule verdict")
+        listed = strings(verdict.get("finding_ids"), "finding_ids")
+        if verdict["status"] == "VIOLATED":
+            require(listed and sorted(listed) == sorted(citing[rule_id]),
+                    f"VIOLATED {rule_id} must list exactly the findings that cite it")
+        else:
+            require(not listed and not citing[rule_id], f"{rule_id} has findings but is not VIOLATED")
+    require(sorted(seen) == sorted(covers), "Give every rule of the batch exactly one verdict")
+    strings(value.get("coverage_gaps"), "coverage_gaps")
+    return value
 
 def review_contract(value: Any, work: Path, snapshot: dict, mapping: dict) -> dict:
     require(isinstance(value, dict), "Review must be an object")
@@ -144,6 +201,7 @@ def adjudication_contract(value: Any, candidates: list[dict], work: Path, snapsh
                           reported_gaps: list[dict] = ()) -> dict:
     require(isinstance(value, dict) and isinstance(value.get("decisions"), list), "decisions array required")
     available = {f["candidate_id"] for f in candidates}
+    cited = {f["candidate_id"]: f.get("standard_ref") for f in candidates}
     seen = set()
     accepted = set()
     duplicates = []
@@ -158,6 +216,7 @@ def adjudication_contract(value: Any, candidates: list[dict], work: Path, snapsh
         if outcome == "ACCEPT":
             finding = validate_finding(decision.get("finding"), work, snapshot, mapping)
             require(finding["candidate_id"] == cid, "Decision/finding ID mismatch")
+            require(finding.get("standard_ref") == cited[cid], "The validator may not change a finding's standard_ref")
             require(finding["evidence_sufficient"], "Unsubstantiated findings cannot be accepted")
             accepted.add(cid)
         elif outcome == "DUPLICATE":
@@ -178,7 +237,15 @@ def adjudication_contract(value: Any, candidates: list[dict], work: Path, snapsh
             "Validator must account for every reported coverage gap exactly once")
     return value
 
-def route_finding(finding: dict, snapshot: dict, mapping: dict) -> dict:
+def route_finding(finding: dict, snapshot: dict, mapping: dict, levels: dict[str, str] | None = None) -> dict:
+    ref = finding.get("standard_ref")
+    level = None
+    if ref is not None:
+        level = (levels or {}).get(ref)
+        require(level is not None, f"Unknown project rule {ref}")
+        cap = RULE_SEVERITY_CAP[level]
+        if SEVERITY_RANK[finding["severity"]] > SEVERITY_RANK[cap]:
+            finding = {**finding, "severity": cap}
     reasons = []
     if finding["severity"] == "HIGH":
         reasons.append("High impact")
@@ -190,12 +257,26 @@ def route_finding(finding: dict, snapshot: dict, mapping: dict) -> dict:
     for flag in ELIGIBILITY:
         if not finding[flag]:
             reasons.append(f"Eligibility condition not met: {flag}")
+    fid = finding_identity(finding, snapshot)
+    if level == "NICE-TO-HAVE":
+        route, reasons = "SUGGESTION", [f"NICE-TO-HAVE rule {ref}: suggestion only"]
+    else:
+        route = "HUMAN_REQUIRED" if reasons else "AUTO_FIX"
+    routed = {**finding, "stable_id": fid, "reviewed_head_sha": snapshot["head_sha"], "route": route,
+              "routing_reasons": reasons or ["All automatic-fix eligibility conditions satisfied"],
+              "policy_version": POLICY_VERSION}
+    if level is not None:
+        routed["rule_level"] = level
+    return routed
+
+
+def finding_identity(finding: dict, snapshot: dict) -> str:
     # Semantic identity deliberately excludes line numbers and HEAD so normal
     # line movement does not change IDs. Wording/symbol changes may still do so.
     identity = [snapshot["repository"], snapshot["pr_number"], finding["file"],
                 finding["symbol"], finding["category"], finding["failure_scenario"]]
-    fid = "SR-" + hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
-    return {**finding, "stable_id": fid, "reviewed_head_sha": snapshot["head_sha"],
-            "route": "HUMAN_REQUIRED" if reasons else "AUTO_FIX",
-            "routing_reasons": reasons or ["All automatic-fix eligibility conditions satisfied"],
-            "policy_version": POLICY_VERSION}
+    if finding.get("standard_ref") is not None:
+        # One rule is often broken several times in one symbol (several abbreviated names), so the title
+        # (which names the occurrence) is part of a rule finding's identity.
+        identity += [finding["standard_ref"], finding["title"]]
+    return "SR-" + hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]

@@ -32,6 +32,10 @@ from .source_review_contracts import (
     review_contract,
     adjudication_contract,
     route_finding,
+    finding_identity,
+    rule_levels,
+    standards_contract,
+    ROUTES,
     REVIEW_RECORDS,
     REVIEW_RUNTIME,
     review_records_name,
@@ -42,6 +46,12 @@ from .errors import (
 from .artifacts import (
     _write_json,
     _write_text,
+)
+from .review_knowledge import (
+    load_review_knowledge,
+    select_rules,
+    build_batches,
+    stage_rules,
 )
 from .runtime import (
     _run_json_contract_step,
@@ -237,7 +247,39 @@ FINDING_SHAPE = {
 }
 
 
-def run_agents(work: Path, snapshot: dict, max_parallel: int = MAX_PARALLEL_REVIEWS) -> dict:
+STANDARDS_FINDING_SHAPE = {**FINDING_SHAPE, "category": "MAINTAINABILITY", "standard_ref": "RULE-ID",
+                           "failure_scenario": "the rule the added code violates and how",
+                           "consequence": "why the rule matters here"}
+
+
+def prepare_standards(work: Path, snapshot: dict, knowledge: dict | None) -> dict | None:
+    """Select the project rules that apply to the reviewed head files and stage them in the workspace."""
+    if knowledge is None:
+        return None
+    head = work / "source" / "head"
+    changed = [path for path in snapshot["changed_files"] if (head / path).is_file()]
+    selection = select_rules(knowledge, changed)
+    batches = build_batches(selection["applicable"], knowledge["settings"])
+    indexes = stage_rules(batches, selection, knowledge, work / "knowledge")
+    return {"knowledge": knowledge, "selection": selection, "batches": batches,
+            "indexes": [path.read_text(encoding="utf-8") for path in indexes]}
+
+
+def overlaps_added_lines(finding: dict, added: dict[str, set[int]]) -> bool:
+    lines = added.get(finding["file"], set())
+    return any(line in lines for line in range(finding["line_start"], finding["line_end"] + 1))
+
+
+def outside_suggestion(finding: dict, snapshot: dict, level: str) -> dict:
+    """A rule finding on lines the PR does not add: kept as an unvalidated, non-blocking suggestion."""
+    return {**finding, "severity": "LOW", "stable_id": finding_identity(finding, snapshot),
+            "reviewed_head_sha": snapshot["head_sha"], "route": "SUGGESTION", "rule_level": level,
+            "routing_reasons": ["Outside the lines this pull request adds: suggestion only, not validated"],
+            "outside_changed_lines": True, "policy_version": POLICY_VERSION}
+
+
+def run_agents(work: Path, snapshot: dict, max_parallel: int = MAX_PARALLEL_REVIEWS,
+               standards: dict | None = None) -> dict:
     evidence = work / ".agentic-sdlc" / "runtime"
     common = f"""Review the immutable PR source snapshot in {work}.
 Read snapshot.json and diff.patch, then source/base and source/head as necessary.
@@ -264,11 +306,16 @@ assess test execution/coverage metrics. A directly callable function with explic
 inputs can substantiate a failure without an application entrypoint in the fixture.
 All agents write JSON only to their instructed answer path.
 """
+    if standards is not None:
+        common += """knowledge/ holds the project's own rules, supplied by the workflow from the trusted
+repository (not part of the PR). MAINTAINABILITY and standard_ref are only for findings that
+cite one of those rules; only the standards reviewers report such findings.
+"""
 
-    def call(role: str, prompt: str, validator):
+    def call(role: str, prompt: str, validator, agent: str | None = None):
         folder = evidence / role
         folder.mkdir(parents=True, exist_ok=True)
-        return _run_json_contract_step(agent=f"sdlc_source_{role}", prompt=common + prompt,
+        return _run_json_contract_step(agent=f"sdlc_source_{agent or role}", prompt=common + prompt,
             label=role, step_id=f"source-{role}", repo=work, evidence_dir=folder, validator=validator)
 
     mapping = call("mapper", '''Map every changed file, including excluded files, exactly once.
@@ -293,16 +340,62 @@ The example is a schema, not a finding. Use an empty array when no defect is sub
 Do not claim runtime verification. Human judgment required on sensitive boundaries.
 """, lambda value: review_contract(value, work, snapshot, mapping))
 
-    results = run_parallel_steps([reviewer(role, focus) for role, focus in reviewers], max_parallel)
+    batches = standards["batches"] if standards else []
+
+    def standards_reviewer(number: int, batch: list[dict], index: str):
+        role = f"standards-b{number}"
+        # The batch index comes last, so parallel calls share the longest common prompt start.
+        return lambda: call(role, f"""Read mapping.json. You are the standards reviewer for batch {number}.
+Check only the project rules in the index below, and only lines this PR adds or changes on the
+head side. For you the common scope differs: a violation of a listed rule is in scope even
+without a reachable failure; describe the violated rule and the offending code in
+failure_scenario and source_evidence. Code the PR does not add or change is out of scope.
+Read knowledge/rules/<RULE-ID>.md whenever the title is not enough: exceptions and examples
+are there. Give every rule in the index exactly one verdict: VIOLATED (finding_ids lists every
+finding citing it), NOT_VIOLATED, or NOT_ASSESSED (only if you could not check it; say why in
+coverage_gaps). Every finding sets standard_ref to its rule id, side "head", one finding per
+rule and location. Use MAINTAINABILITY unless another allowed category fits better. Severity:
+LOW or MEDIUM for MANDATORY rules, LOW for NICE-TO-HAVE rules. Use candidate IDs prefixed with {role}-.
+Return {{"rules":[{{"id":"RULE-ID", "status":"VIOLATED|NOT_VIOLATED|NOT_ASSESSED", "finding_ids":[]}}],
+"findings":[{json.dumps(STANDARDS_FINDING_SHAPE)}], "coverage_gaps":[]}}.
+The example is a schema, not a finding.
+
+{index}""", lambda value: standards_contract(value, work, snapshot, mapping, batch), agent="standards")
+
+    calls = [reviewer(role, focus) for role, focus in reviewers]
+    calls += [standards_reviewer(number, batch, standards["indexes"][number - 1])
+              for number, batch in enumerate(batches, start=1)]
+    results = run_parallel_steps(calls, max_parallel)
     for (role, _), reviewed in zip(reviewers, results):
         for finding in reviewed["findings"]:
             finding["candidate_id"] = role + ":" + finding["candidate_id"]
         candidates.extend(reviewed["findings"])
         reported += [(role, gap) for gap in reviewed["coverage_gaps"]]
+    levels = rule_levels(work)
+    added = added_lines((work / "diff.patch").read_text(encoding="utf-8", errors="replace")) if batches else {}
+    verdicts: dict[str, str] = {}
+    suggestions: list[dict] = []
+    for number, reviewed in enumerate(results[len(reviewers):], start=1):
+        role = f"standards-b{number}"
+        for verdict in reviewed["rules"]:
+            verdicts[verdict["id"]] = verdict["status"]
+            if verdict["status"] == "NOT_ASSESSED":
+                reported.append((role, f"Project rule {verdict['id']} was not assessed"))
+        for finding in reviewed["findings"]:
+            finding["candidate_id"] = role + ":" + finding["candidate_id"]
+            if overlaps_added_lines(finding, added):
+                candidates.append(finding)
+            else:
+                suggestions.append(outside_suggestion(finding, snapshot, levels[finding["standard_ref"]]))
+        reported += [(role, gap) for gap in reviewed["coverage_gaps"]]
     _write_json(work / "candidates.json", candidates)
     reported_gaps = [{"id": f"G{index}", "source": role, "gap": gap}
                      for index, (role, gap) in enumerate(reported, start=1)]
     _write_json(work / "reported-gaps.json", reported_gaps)
+    rules_note = """Candidates with a standard_ref cite a project rule (knowledge/rules/<RULE-ID>.md).
+Accept one when the rule applies to the file and the code the PR adds violates it, even
+without a reachable failure; reject it when the code complies. Keep standard_ref unchanged.
+""" if any(c.get("standard_ref") for c in candidates) else ""
     adjudicated = call("validator", f"""Read mapping.json, candidates.json and reported-gaps.json.
 Independently challenge every candidate against actual source, reachability,
 existing guards, and base/head behavior. Reject speculation; deduplicate shared root causes.
@@ -317,13 +410,23 @@ Consolidate reported-gaps.json: merge gaps that describe the same limitation int
 entry whose covers lists all their ids, keeping every distinct limitation. Put ids that
 only restate a snapshot.json coverage gap in snapshot_restatements. Every reported id
 must appear exactly once across covers and snapshot_restatements.
-""", lambda value: adjudication_contract(value, candidates, work, snapshot, mapping, reported_gaps))
+{rules_note}""", lambda value: adjudication_contract(value, candidates, work, snapshot, mapping, reported_gaps))
     _write_json(work / "adjudication.json", adjudicated)
-    findings = [route_finding(d["finding"], snapshot, mapping)
+    findings = [route_finding(d["finding"], snapshot, mapping, levels)
                 for d in adjudicated["decisions"] if d["disposition"] == "ACCEPT"]
     require(len({f["stable_id"] for f in findings}) == len(findings), "Unresolved duplicate findings")
+    # The same rule reported twice outside the changed lines is one suggestion.
+    known = {f["stable_id"] for f in findings}
+    unique: list[dict] = []
+    for suggestion in suggestions:
+        if suggestion["stable_id"] not in known:
+            known.add(suggestion["stable_id"])
+            unique.append(suggestion)
+    suggestions = unique
     gaps = sorted(set(snapshot["coverage_gaps"] + [entry["gap"] for entry in adjudicated["coverage_gaps"]]))
     draft = {"findings": findings, "coverage_gaps": gaps}
+    if standards is not None:
+        draft["suggestions"] = suggestions
     _write_json(work / "routed-findings.json", draft)
 
     def feedback_contract(value):
@@ -335,26 +438,48 @@ must appear exactly once across covers and snapshot_restatements.
             require(isinstance(item, dict), "Comment must be an object")
             ids.append(item.get("stable_id"))
             string(item.get("explanation"), "explanation")
-        require(len(ids) == len(set(ids)) and set(ids) == {f["stable_id"] for f in findings},
-                "Feedback must account for exactly the routed findings")
+        require(len(ids) == len(set(ids)) and set(ids) == {f["stable_id"] for f in findings + suggestions},
+                "Feedback must account for exactly the routed findings and suggestions")
         return value
 
+    suggestions_note = """Also write one explanation per entry in suggestions: optional improvements the project's
+own rules ask for, outside the lines this PR changes.
+""" if suggestions else ""
     feedback = call("feedback", '''Read routed-findings.json. Write a concise source review summary
 and one plain-language explanation per finding. Preserve meaning; never invent fixes,
 change routing or claim approval/verification. Address the PR author: each explanation
 may be posted beside the code on GitHub, so do not mention internal routing terms
 (AUTO_FIX, HUMAN_REQUIRED, routing, finding IDs) in it. Output {"summary":"...", "comments":[
 {"stable_id":"exact id", "explanation":"trigger, consequence and fix direction"}]}.
-Mention coverage limitations in the summary when present.''', feedback_contract)
+Mention coverage limitations in the summary when present.
+''' + suggestions_note, feedback_contract)
     explanations = {c["stable_id"]: c["explanation"] for c in feedback["comments"]}
-    for finding in findings:
+    for finding in findings + suggestions:
         finding["comment"] = explanations[finding["stable_id"]]
-    return {"schema_version": 1, "policy_version": POLICY_VERSION, "snapshot": snapshot,
-            "review_max_parallel": max_parallel,
-            "summary": feedback["summary"], "findings": findings, "coverage_gaps": gaps,
-            "coverage_status": "INCOMPLETE" if gaps else "COMPLETE",
-            "queues": {route: [f["stable_id"] for f in findings if f["route"] == route]
-                       for route in ("AUTO_FIX", "HUMAN_REQUIRED")}}
+    routes = ROUTES if standards is not None else ROUTES[:2]
+    report = {"schema_version": 1, "policy_version": POLICY_VERSION, "snapshot": snapshot,
+              "review_max_parallel": max_parallel,
+              "summary": feedback["summary"], "findings": findings, "coverage_gaps": gaps,
+              "coverage_status": "INCOMPLETE" if gaps else "COMPLETE",
+              "queues": {route: [f["stable_id"] for f in findings if f["route"] == route] for route in routes}}
+    if standards is not None:
+        knowledge, selection = standards["knowledge"], standards["selection"]
+        report["suggestions"] = suggestions
+        report["standards"] = {
+            "files": knowledge["files"],
+            "settings": {key: value for key, value in knowledge["settings"].items() if key != "files"},
+            "applicable": [rule["id"] for rule in selection["applicable"]],
+            "skipped": selection["skipped"],
+            "batches": [[rule["id"] for rule in batch] for batch in batches],
+            "verdicts": verdicts,
+        }
+    return report
+
+
+def rule_lines(finding: dict) -> list[str]:
+    if finding.get("standard_ref") is None:
+        return []
+    return [f"Project rule: {finding['standard_ref']} ({finding['rule_level']})"]
 
 
 def render_comments(report: dict) -> str:
@@ -371,7 +496,12 @@ def render_comments(report: dict) -> str:
                       f"Consequence: {finding['consequence']}",
                       f"Fix direction: {finding['remediation_direction']}",
                       f"Suggested verification: {finding['verification_method']}",
+                      *rule_lines(finding),
                       "Routing: " + "; ".join(finding["routing_reasons"])])
+    if report.get("suggestions"):
+        lines.extend(["", "## Suggestions outside the changed lines (not validated, non-blocking)", ""])
+        lines += [f"- {finding_link(s, snapshot)} — {s['standard_ref']}: **{s['title']}** — {s['comment']}"
+                  for s in report["suggestions"]]
     if report["coverage_gaps"]:
         lines.extend(["", "## Coverage gaps", ""] + [f"- {g}" for g in report["coverage_gaps"]])
     return "\n".join(lines) + "\n"
@@ -397,6 +527,30 @@ def hunk_ranges(patch: str) -> dict[str, list[tuple[int, int]]]:
                 if size:
                     ranges[side].append((int(start), int(start) + size - 1))
     return ranges
+
+
+def added_lines(diff: str) -> dict[str, set[int]]:
+    """Head-side line numbers that a git diff adds, per file; context and removed lines are excluded.
+
+    Quoted (unusual) paths and deleted files are skipped, like diff_hunks.
+    """
+    files: dict[str, set[int]] = {}
+    path, in_body, line_no = None, False, 0
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            path, in_body = None, False
+        elif not in_body and line.startswith("+++ "):
+            new = line[4:]
+            path = None if new == "/dev/null" or new.startswith('"') else new.removeprefix("b/")
+        elif match := HUNK_HEADER.match(line):
+            in_body, line_no = True, int(match[3])
+        elif path is not None and in_body:
+            if line.startswith("+"):
+                files.setdefault(path, set()).add(line_no)
+                line_no += 1
+            elif line.startswith(" "):
+                line_no += 1
+    return files
 
 
 def diff_hunks(diff: str) -> dict[str, dict[str, list[tuple[int, int]]]]:
@@ -455,6 +609,8 @@ def draft_comment(finding: dict) -> str:
                f"- Evidence: {finding['source_evidence']}",
                f"- Consequence: {finding['consequence']}",
                f"- Route: {finding['route']} ({'; '.join(finding['routing_reasons'])})"]
+    if finding.get("standard_ref") is not None:
+        details.append(f"- Project rule: {finding['standard_ref']} ({finding['rule_level']})")
     return "\n".join([f"**{finding['title']}** ({finding['severity']})", "", finding["comment"], "",
                       f"**Fix direction:** {finding['remediation_direction']}", "",
                       f"**Suggested verification:** {finding['verification_method']}", "",
@@ -482,8 +638,12 @@ def render_draft(report: dict) -> str:
     lines += ["", f"## Placed in the general comment, not beside the code ({len(general)})", ""]
     lines += [f"- `{f['stable_id']}`: {f['placement']['reason']}" for f in general] or ["- None"]
     lines += ["", f"Coverage: {report['coverage_status']}, {len(report['coverage_gaps'])} gap(s), listed in the general comment.",
-              "", "<!-- general -->", report["summary"], "",
-              "This review does not approve the PR or execute tests.", "<!-- end general -->"]
+              "", "<!-- general -->", report["summary"], ""]
+    if report.get("suggestions"):
+        lines += ["Suggestions from the project's rules, outside the lines this PR changes (optional):", ""]
+        lines += [f"- {finding_link(s, snapshot)} ({s['standard_ref']}): {s['comment']}" for s in report["suggestions"]]
+        lines += [""]
+    lines += ["This review does not approve the PR or execute tests.", "<!-- end general -->"]
     for finding in ordered:
         placement = finding["placement"]
         anchor = ("general" if placement["mode"] == "GENERAL" else
@@ -504,6 +664,8 @@ def main() -> None:
     inputs = get_inputs()
     repo = Path(inputs["repository_root"]).resolve()
     require(repo.is_dir(), "repository_root must exist")
+    # Invalid project rules stop the run before any work; they come from the trusted checkout, never the PR.
+    knowledge = load_review_knowledge(repo)
     max_parallel = inputs.get("review_max_parallel", MAX_PARALLEL_REVIEWS)
     require(not isinstance(max_parallel, bool) and isinstance(max_parallel, int) and 1 <= max_parallel <= MAX_PARALLEL_REVIEWS,
             f"review_max_parallel must be an integer from 1 to {MAX_PARALLEL_REVIEWS}")
@@ -516,7 +678,8 @@ def main() -> None:
     try:
         snapshot = prepare_snapshot(inputs, root)
         configure_workspace(root / "workspace")
-        report = run_agents(root / "workspace", snapshot, max_parallel)
+        standards = prepare_standards(root / "workspace", snapshot, knowledge)
+        report = run_agents(root / "workspace", snapshot, max_parallel, standards)
         report["run_id"] = run_id
         report["status"] = "REVIEWED" if current_pr_matches(snapshot) else "STALE"
         hunks = diff_hunks((root / "workspace" / "diff.patch").read_text(encoding="utf-8", errors="replace"))
@@ -539,7 +702,9 @@ def main() -> None:
                      "draft": str(results / "review-draft.md"), "queues": report["queues"],
                      "attention": {"human_required": len(report["queues"]["HUMAN_REQUIRED"]),
                                    "general_only": sum(f["placement"]["mode"] == "GENERAL" for f in report["findings"]),
-                                   "coverage_gaps": len(report["coverage_gaps"])}})
+                                   "coverage_gaps": len(report["coverage_gaps"]),
+                                   **({"suggestions": len(report["queues"]["SUGGESTION"]) + len(report["suggestions"])}
+                                      if "suggestions" in report else {})}})
     except Exception as exc:
         _write_json(root / "failure.json", {"status": "FAILED", "coverage_status": "INCOMPLETE",
                                            "error": str(exc), "run_id": run_id})

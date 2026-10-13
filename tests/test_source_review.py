@@ -698,8 +698,8 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn('base-only.py', snapshot['changed_files'])
 
     def test_success_persists_exact_comment_hash_and_run_output(self):
-        def review(work, snapshot, max_parallel):
-            self.assertEqual(max_parallel, 4)
+        def review(work, snapshot, max_parallel, standards):
+            self.assertEqual((max_parallel, standards), (4, None))
             return {'snapshot': snapshot, 'summary': 'No confirmed defects', 'findings': [],
                     'coverage_gaps': ['Missing context\n'], 'coverage_status': 'INCOMPLETE',
                     'queues': {'AUTO_FIX': [], 'HUMAN_REQUIRED': []}}
@@ -757,6 +757,205 @@ class SnapshotTests(unittest.TestCase):
                 mod.main()
         self.assertEqual((run / 'marker').read_text(), 'keep')
 
+
+
+RULE_TEXT = """# Rules
+
+## {id} - [{level}] Readability. Rule {id}
+
+### Applicable files
+
+- `{glob}`
+
+### Rule description
+
+Text.
+
+### Why we have the rule
+
+Text.
+
+### Examples: bad
+
+Text.
+
+### Examples: good
+
+Text.
+"""
+
+
+class StandardsTests(unittest.TestCase):
+    """Project rules in Source review: diff lines, the standards contract, routing by level and the pipeline."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.work = Path(self.temp.name) / 'work'
+        (self.work / 'source/base').mkdir(parents=True)
+        (self.work / 'source/head').mkdir(parents=True)
+        (self.work / 'source/base/code.py').write_text('def count(x):\n    return x\n')
+        (self.work / 'source/head/code.py').write_text('def count(x):\n    return x + 1\n')
+        (self.work / 'diff.patch').write_text('diff --git a/code.py b/code.py\n--- a/code.py\n+++ b/code.py\n'
+                                              '@@ -1,2 +1,2 @@\n def count(x):\n-    return x\n+    return x + 1\n')
+        self.snapshot = {'repository': None, 'pr_number': None, 'pr_url': None, 'base_sha': 'a' * 40,
+                         'head_sha': 'b' * 40, 'merge_base_sha': 'a' * 40, 'changed_files': ['code.py'],
+                         'coverage_gaps': []}
+        self.mapping = {'summary': 'One changed function', 'files': [{'file': 'code.py', 'scope': 'SOURCE',
+                        'reason': 'Python code', 'related_files': [], 'sensitive_boundaries': []}], 'coverage_gaps': []}
+        rules = []
+        for rule_id, level in (('A-1', 'MANDATORY'), ('A-2', 'MANDATORY'), ('B-1', 'NICE-TO-HAVE'), ('Z-1', 'MANDATORY')):
+            glob = 'other/*.py' if rule_id == 'Z-1' else '*.py'
+            rules += importlib.import_module('sdlc_workflows.review_knowledge').parse_rules(RULE_TEXT.format(id=rule_id, level=level, glob=glob), 'kb/rules.md', 8192)
+        self.knowledge = {'files': [{'path': 'agentic-sdlc-pr-review-kb/rules.md', 'sha256': 'f' * 64}],
+                          'rules': rules, 'settings': {'files': ['agentic-sdlc-pr-review-kb/rules.md'],
+                          'batch_max_rules': 15, 'batch_max_kb': 32, 'max_files': 32, 'max_rules': 200, 'max_rule_kb': 8}}
+        self.rule_finding = {**mod.STANDARDS_FINDING_SHAPE, 'candidate_id': 'N1', 'file': 'code.py',
+                             'line_start': 2, 'line_end': 2, 'symbol': 'count', 'standard_ref': 'A-1',
+                             'title': 'Abbreviated name'}
+
+    def batch(self):
+        return [{**rule, 'covers': ['code.py']} for rule in self.knowledge['rules'] if rule['id'] != 'Z-1']
+
+    def test_added_lines_count_only_lines_the_diff_adds(self):
+        diff = ('diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,4 +1,5 @@\n keep\n-old\n+new\n keep\n+added\n keep\n'
+                '@@ -10,2 +11,2 @@\n ctx\n+late\n'
+                'diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n'
+                'diff --git a/new.py b/new.py\n--- /dev/null\n+++ b/new.py\n@@ -0,0 +1,2 @@\n+--- looks like a header\n+b\n')
+        self.assertEqual(mod.added_lines(diff), {'a.py': {2, 4, 12}, 'new.py': {1, 2}})
+
+    def test_standards_contract_accepts_a_complete_answer(self):
+        value = {'rules': [{'id': 'A-1', 'status': 'VIOLATED', 'finding_ids': ['N1']},
+                           {'id': 'A-2', 'status': 'NOT_VIOLATED', 'finding_ids': []},
+                           {'id': 'B-1', 'status': 'NOT_ASSESSED', 'finding_ids': []}],
+                 'findings': [self.rule_finding], 'coverage_gaps': ['B-1 needs the caller']}
+        self.assertIs(mod.standards_contract(value, self.work, self.snapshot, self.mapping, self.batch()), value)
+
+    def test_standards_contract_rejects_incomplete_or_inconsistent_answers(self):
+        ok = [{'id': 'A-2', 'status': 'NOT_VIOLATED', 'finding_ids': []}, {'id': 'B-1', 'status': 'NOT_VIOLATED', 'finding_ids': []}]
+        violated = {'id': 'A-1', 'status': 'VIOLATED', 'finding_ids': ['N1']}
+        cases = {
+            'a rule without verdict': ([violated, ok[0]], [self.rule_finding]),
+            'a rule twice': ([violated, violated] + ok, [self.rule_finding]),
+            'a rule outside the batch': ([violated, *ok, {'id': 'Z-1', 'status': 'NOT_VIOLATED', 'finding_ids': []}], [self.rule_finding]),
+            'violated without findings': ([{**violated, 'finding_ids': []}] + ok, []),
+            'findings but not violated': ([{**violated, 'status': 'NOT_VIOLATED', 'finding_ids': []}] + ok, [self.rule_finding]),
+            'finding ids do not match': ([{**violated, 'finding_ids': ['N9']}] + ok, [self.rule_finding]),
+            'unknown status': ([{**violated, 'status': 'MAYBE'}] + ok, [self.rule_finding]),
+            'no standard_ref': ([violated] + ok, [{**self.rule_finding, 'standard_ref': None}]),
+            'ref outside the batch': ([violated] + ok, [{**self.rule_finding, 'standard_ref': 'Z-1'}]),
+            'base side': ([violated] + ok, [{**self.rule_finding, 'side': 'base'}]),
+            'malformed ref': ([violated] + ok, [{**self.rule_finding, 'standard_ref': 'a-1'}]),
+        }
+        for name, (rules, findings) in cases.items():
+            with self.subTest(case=name), self.assertRaises(mod.WorkflowContractError):
+                mod.standards_contract({'rules': rules, 'findings': findings, 'coverage_gaps': []},
+                                       self.work, self.snapshot, self.mapping, self.batch())
+        batch = [{**rule, 'covers': []} if rule['id'] == 'A-1' else rule for rule in self.batch()]
+        with self.assertRaisesRegex(mod.WorkflowContractError, 'does not apply'):
+            mod.standards_contract({'rules': [violated] + ok, 'findings': [self.rule_finding], 'coverage_gaps': []},
+                                   self.work, self.snapshot, self.mapping, batch)
+
+    def test_maintainability_needs_a_rule(self):
+        with self.assertRaisesRegex(mod.WorkflowContractError, 'MAINTAINABILITY requires'):
+            mod.validate_finding({**self.rule_finding, 'standard_ref': None}, self.work, self.snapshot, self.mapping)
+
+    def test_routing_caps_severity_by_level_and_makes_nice_to_have_a_suggestion(self):
+        levels = {'A-1': 'MANDATORY', 'B-1': 'NICE-TO-HAVE'}
+        mandatory = mod.route_finding({**self.rule_finding, 'severity': 'HIGH'}, self.snapshot, self.mapping, levels)
+        self.assertEqual((mandatory['severity'], mandatory['route'], mandatory['rule_level']), ('MEDIUM', 'AUTO_FIX', 'MANDATORY'))
+        nice = mod.route_finding({**self.rule_finding, 'standard_ref': 'B-1', 'severity': 'MEDIUM'}, self.snapshot, self.mapping, levels)
+        self.assertEqual((nice['severity'], nice['route']), ('LOW', 'SUGGESTION'))
+        with self.assertRaisesRegex(mod.WorkflowContractError, 'Unknown project rule'):
+            mod.route_finding(self.rule_finding, self.snapshot, self.mapping, {})
+        plain = {**self.rule_finding, 'category': 'CORRECTNESS', 'standard_ref': None}
+        self.assertNotEqual(mod.route_finding(plain, self.snapshot, self.mapping)['stable_id'], mandatory['stable_id'])
+        self.assertNotIn('rule_level', mod.route_finding(plain, self.snapshot, self.mapping))
+
+    def test_the_validator_may_not_change_the_cited_rule(self):
+        candidate = {**self.rule_finding, 'candidate_id': 'standards-b1:N1'}
+        decision = {'candidate_id': 'standards-b1:N1', 'disposition': 'ACCEPT', 'reason': 'Confirmed',
+                    'finding': {**candidate, 'standard_ref': 'A-2'}}
+        with self.assertRaisesRegex(mod.WorkflowContractError, 'standard_ref'):
+            mod.adjudication_contract({'decisions': [decision], 'coverage_gaps': []}, [candidate], self.work, self.snapshot, self.mapping)
+
+    def test_pipeline_with_rules(self):
+        standards = mod.prepare_standards(self.work, self.snapshot, self.knowledge)
+        self.assertEqual(standards['selection']['skipped'], ['Z-1'])
+        self.assertEqual([[r['id'] for r in b] for b in standards['batches']], [['A-1', 'A-2', 'B-1']])
+        self.assertTrue((self.work / 'knowledge/rules/A-1.md').is_file())
+        prompts = {}
+        outside = {**self.rule_finding, 'candidate_id': 'N2', 'line_start': 1, 'line_end': 1, 'title': 'Header name'}
+        nice = {**self.rule_finding, 'candidate_id': 'N3', 'standard_ref': 'B-1', 'title': 'Could be clearer'}
+        def fake(**kwargs):
+            role = kwargs['step_id'].removeprefix('source-')
+            prompts[role] = kwargs['prompt']
+            if role == 'mapper':
+                value = copy.deepcopy(self.mapping)
+            elif role in ('correctness', 'security'):
+                value = {'findings': [], 'coverage_gaps': []}
+            elif role == 'standards-b1':
+                self.assertEqual(kwargs['agent'], 'sdlc_source_standards')
+                value = {'rules': [{'id': 'A-1', 'status': 'VIOLATED', 'finding_ids': ['N1', 'N2']},
+                                   {'id': 'A-2', 'status': 'NOT_ASSESSED', 'finding_ids': []},
+                                   {'id': 'B-1', 'status': 'VIOLATED', 'finding_ids': ['N3']}],
+                         'findings': [copy.deepcopy(self.rule_finding), outside, nice], 'coverage_gaps': []}
+            elif role == 'validator':
+                candidates = json.loads((self.work / 'candidates.json').read_text())
+                self.assertEqual([c['candidate_id'] for c in candidates], ['standards-b1:N1', 'standards-b1:N3'])
+                gaps = json.loads((self.work / 'reported-gaps.json').read_text())
+                self.assertEqual([g['gap'] for g in gaps], ['Project rule A-2 was not assessed'])
+                value = {'decisions': [{'candidate_id': c['candidate_id'], 'disposition': 'ACCEPT', 'reason': 'Confirmed',
+                                        'finding': {**c, 'severity': 'HIGH'}} for c in candidates],
+                         'coverage_gaps': [{'gap': 'Rule A-2 was not assessed', 'covers': ['G1']}]}
+            else:
+                routed = json.loads((self.work / 'routed-findings.json').read_text())
+                value = {'summary': 'Rules', 'comments': [{'stable_id': f['stable_id'], 'explanation': 'Rename it.'}
+                                                          for f in routed['findings'] + routed['suggestions']]}
+            return kwargs['validator'](value)
+        with patch.object(mod, '_run_json_contract_step', side_effect=fake):
+            report = mod.run_agents(self.work, self.snapshot, 4, standards)
+        self.assertIn('knowledge/ holds the project', prompts['mapper'])
+        self.assertTrue(prompts['standards-b1'].rstrip().endswith(standards['indexes'][0].rstrip()))
+        self.assertIn('Candidates with a standard_ref', prompts['validator'])
+        by_ref = {f['standard_ref']: f for f in report['findings']}
+        self.assertEqual((by_ref['A-1']['severity'], by_ref['A-1']['route']), ('MEDIUM', 'AUTO_FIX'))
+        self.assertEqual((by_ref['B-1']['severity'], by_ref['B-1']['route']), ('LOW', 'SUGGESTION'))
+        self.assertEqual(report['queues']['SUGGESTION'], [by_ref['B-1']['stable_id']])
+        self.assertEqual([(s['standard_ref'], s['severity'], s['outside_changed_lines']) for s in report['suggestions']],
+                         [('A-1', 'LOW', True)])
+        self.assertEqual(report['standards']['verdicts'], {'A-1': 'VIOLATED', 'A-2': 'NOT_ASSESSED', 'B-1': 'VIOLATED'})
+        self.assertEqual((report['standards']['applicable'], report['standards']['skipped']), (['A-1', 'A-2', 'B-1'], ['Z-1']))
+        self.assertEqual(report['coverage_status'], 'INCOMPLETE')
+        report['status'] = 'REVIEWED'
+        for finding in report['findings']:
+            finding['placement'] = mod.place_finding(finding, mod.diff_hunks((self.work / 'diff.patch').read_text()))
+        comments = mod.render_comments(report)
+        self.assertIn('Project rule: A-1 (MANDATORY)', comments)
+        self.assertIn('## Suggestions outside the changed lines', comments)
+        draft = mod.render_draft(report)
+        general = draft.split('<!-- general -->')[1].split('<!-- end general -->')[0]
+        self.assertIn('code.py:1-1 (A-1): Rename it.', general)
+
+    def test_without_rules_no_standards_step_runs_and_the_report_is_unchanged(self):
+        steps = []
+        def fake(**kwargs):
+            steps.append(kwargs['step_id'])
+            role = kwargs['step_id'].removeprefix('source-')
+            value = {'mapper': copy.deepcopy(self.mapping), 'validator': {'decisions': [], 'coverage_gaps': []},
+                     'feedback': {'summary': 'None', 'comments': []}}.get(role, {'findings': [], 'coverage_gaps': []})
+            return kwargs['validator'](value)
+        with patch.object(mod, '_run_json_contract_step', side_effect=fake):
+            report = mod.run_agents(self.work, self.snapshot, 4)
+        self.assertEqual(steps, ['source-mapper', 'source-correctness', 'source-security', 'source-validator', 'source-feedback'])
+        self.assertEqual(set(report['queues']), {'AUTO_FIX', 'HUMAN_REQUIRED'})
+        self.assertNotIn('standards', report)
+        self.assertNotIn('suggestions', report)
+
+    def test_rules_that_match_no_changed_file_cost_no_agent_call(self):
+        knowledge = {**self.knowledge, 'rules': [r for r in self.knowledge['rules'] if r['id'] == 'Z-1']}
+        standards = mod.prepare_standards(self.work, self.snapshot, knowledge)
+        self.assertEqual((standards['batches'], standards['selection']['skipped']), ([], ['Z-1']))
 
 
 class ParallelStepsTest(unittest.TestCase):

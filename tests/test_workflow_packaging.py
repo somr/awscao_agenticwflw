@@ -191,7 +191,7 @@ class InstallerTest(unittest.TestCase):
                 self.assertEqual(target.read_text(), builder.build_source(name))
         self.assertFalse(list(self.destination.glob('*candidate*')))
         self.assertFalse(list(self.destination.glob('.*.lock')))
-        self.assertEqual(len([c for c in self.calls if c[0] == 'install']), 5)
+        self.assertEqual(len([c for c in self.calls if c[0] == 'install']), 6)
 
     def test_validation_failure_preserves_installed_bytes_and_cleans_candidate(self):
         target = self.destination / 'sdlc_dev_plan.py'
