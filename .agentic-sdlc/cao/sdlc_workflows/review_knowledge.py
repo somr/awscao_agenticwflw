@@ -33,6 +33,7 @@ RULE_HEADING = re.compile(
     r"^## (?P<id>[A-Z][A-Z0-9]*-[0-9]+) - \[(?P<level>[A-Z-]+)\] (?P<domain>[^.]+?)\. (?P<title>\S.*?)\.?$"
 )
 APPLICABLE_FILE = re.compile(r"^- `(?P<glob>[^`]+)`$")
+DIFF_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 def validate_knowledge_settings(raw: Any) -> dict[str, Any]:
@@ -247,3 +248,27 @@ def stage_rules(batches: list[list[dict[str, Any]]], selection: dict[str, Any], 
         "batches": [[rule["id"] for rule in batch] for batch in batches],
     })
     return indexes
+
+
+def added_lines(diff: str) -> dict[str, set[int]]:
+    """Head-side line numbers that a git diff adds, per file; context and removed lines are excluded.
+
+    Quoted (unusual) paths and deleted files are skipped. Used to keep rule findings to the lines a change adds.
+    """
+    files: dict[str, set[int]] = {}
+    path, in_body, line_no = None, False, 0
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            path, in_body = None, False
+        elif not in_body and line.startswith("+++ "):
+            new = line[4:]
+            path = None if new == "/dev/null" or new.startswith('"') else new.removeprefix("b/")
+        elif match := DIFF_HUNK_HEADER.match(line):
+            in_body, line_no = True, int(match[3])
+        elif path is not None and in_body:
+            if line.startswith("+"):
+                files.setdefault(path, set()).add(line_no)
+                line_no += 1
+            elif line.startswith(" "):
+                line_no += 1
+    return files

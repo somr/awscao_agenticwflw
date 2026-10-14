@@ -18,6 +18,7 @@ import sys
 import tempfile
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,84 @@ def _init_repo(repo: Path) -> str:
     _run(["add", "README.md"], repo)
     _run(["commit", "-q", "-m", "initial"], repo)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True).stdout.strip()
+
+
+class StandardsReviewTest(unittest.TestCase):
+    """Delivery's project-rule review: answer contract, impact cap, suggestions and later-round planning."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name)
+        (self.repo / "app").mkdir()
+        (self.repo / "app/a.py").write_text("def f(x):\n    y = x\n    return y\n")
+        self.batch = [{"id": "R-1", "level": "MANDATORY", "covers": ["app/a.py"]},
+                      {"id": "R-2", "level": "NICE-TO-HAVE", "covers": ["app/a.py"]}]
+
+    def finding(self, fid="N1", ref="R-1", line=2, impact="LOW"):
+        return {"id": fid, "standard_ref": ref, "file": "app/a.py", "line_start": line, "line_end": line,
+                "location": "f", "category": "STYLE", "impact": impact, "confidence": 0.9,
+                "failure_scenario": "rule", "consequence": "c", "related_acceptance_criterion": None,
+                "remediation_direction": "rename", "localized_and_bounded": True,
+                "deterministically_verifiable": True, "automation_eligibility": "AUTO_FIX", "reason": "rename"}
+
+    def answer(self, findings, verdicts):
+        return {"rules": [{"id": rule, "status": status, "finding_ids": ids} for rule, (status, ids) in verdicts.items()],
+                "findings": findings, "coverage_gaps": []}
+
+    def test_a_complete_answer_is_prefixed_and_capped(self):
+        checked = mod.check_standards_answer(
+            self.answer([self.finding(impact="HIGH"), self.finding("N2", "R-2", impact="MEDIUM")],
+                        {"R-1": ("VIOLATED", ["N1"]), "R-2": ("VIOLATED", ["N2"])}), self.batch, self.repo, "STD-r1-b1")
+        self.assertEqual([(f["id"], f["impact"], f["rule_level"]) for f in checked["findings"]],
+                         [("STD-r1-b1:N1", "MEDIUM", "MANDATORY"), ("STD-r1-b1:N2", "LOW", "NICE-TO-HAVE")])
+        self.assertEqual(checked["verdicts"], {"R-1": "VIOLATED", "R-2": "VIOLATED"})
+
+    def test_inconsistent_answers_are_rejected(self):
+        ok = {"R-2": ("NOT_VIOLATED", [])}
+        cases = {
+            "missing verdict": ([self.finding()], {"R-1": ("VIOLATED", ["N1"])}),
+            "violated without findings": ([], {"R-1": ("VIOLATED", []), **ok}),
+            "findings not violated": ([self.finding()], {"R-1": ("NOT_VIOLATED", []), **ok}),
+            "unknown status": ([], {"R-1": ("MAYBE", []), **ok}),
+            "rule outside batch": ([{**self.finding(), "standard_ref": "R-9"}], {"R-1": ("NOT_VIOLATED", []), **ok}),
+            "file not covered": ([{**self.finding(), "file": "app/b.py"}], {"R-1": ("VIOLATED", ["N1"]), **ok}),
+            "line outside file": ([self.finding(line=9)], {"R-1": ("VIOLATED", ["N1"]), **ok}),
+            "duplicate ids": ([self.finding(), self.finding()], {"R-1": ("VIOLATED", ["N1", "N1"]), **ok}),
+        }
+        for name, (findings, verdicts) in cases.items():
+            with self.subTest(case=name), self.assertRaises(mod.WorkflowContractError):
+                mod.check_standards_answer(self.answer(findings, verdicts), self.batch, self.repo, "STD-r1-b1")
+
+    def test_nice_to_have_and_outside_lines_become_suggestions(self):
+        findings = [{**self.finding(fid, ref, line), "rule_level": level, "id": fid}
+                    for fid, ref, line, level in (("A", "R-1", 2, "MANDATORY"), ("B", "R-1", 1, "MANDATORY"),
+                                                  ("C", "R-2", 2, "NICE-TO-HAVE"))]
+        routed, suggestions = mod.split_suggestions(findings, {"app/a.py": {2, 3}})
+        self.assertEqual([f["id"] for f in routed], ["A"])
+        self.assertEqual([(s["id"], s["automation_eligibility"], s["impact"]) for s in suggestions],
+                         [("B", "SUGGESTION", "LOW"), ("C", "SUGGESTION", "LOW")])
+
+    def test_later_rounds_review_only_rules_whose_files_changed(self):
+        rules = [{"id": "R-1", "domain": "D", "text": "x", "globs": ["app/a.py"]},
+                 {"id": "R-2", "domain": "D", "text": "x", "globs": ["app/b.py"]},
+                 {"id": "R-3", "domain": "D", "text": "x", "globs": ["app/c.py"]}]
+        knowledge = {"rules": rules, "settings": {"batch_max_rules": 15, "batch_max_kb": 32}}
+        added = {"app/a.py": {1}, "app/b.py": {1}, "app/c.py": {1}}
+        first = mod.plan_standards_round(knowledge, added, None, None)
+        self.assertEqual([r["id"] for r in first["reviewed"]], ["R-1", "R-2", "R-3"])
+        previous = {"rules": {"R-1": "VIOLATED", "R-2": "NOT_VIOLATED"}, "findings": [], "suggestions": []}
+        later = mod.plan_standards_round(knowledge, added, {"app/a.py"}, previous)
+        # R-3 had no verdict before (a new rule for this run), so it is reviewed even though its file is unchanged.
+        self.assertEqual(([r["id"] for r in later["reviewed"]], [r["id"] for r in later["carried"]]),
+                         (["R-1", "R-3"], ["R-2"]))
+
+    def test_review_max_parallel_is_validated_before_any_work(self):
+        for value in (0, 5, True, "2"):
+            with self.subTest(value=value), unittest.mock.patch.object(
+                    mod, "get_inputs", return_value={"ticket_id": "T-1", "repository_root": str(self.repo), "review_max_parallel": value}):
+                with self.assertRaisesRegex(mod.WorkflowContractError, "review_max_parallel"):
+                    mod.main()
 
 
 class ImplementerCompletionValidatorTest(unittest.TestCase):

@@ -50,6 +50,7 @@ class BundleTest(unittest.TestCase):
             with self.subTest(workflow=name):
                 ast.literal_eval(node.value)
         self.assertEqual(delivery.INPUTS['hybrid_max_parallel']['default'], delivery.MAX_PARALLEL_WORKERS)
+        self.assertEqual(delivery.INPUTS['review_max_parallel']['default'], delivery.MAX_PARALLEL_REVIEWS)
         self.assertEqual(source_review.INPUTS['review_max_parallel']['default'], source_review.MAX_PARALLEL_REVIEWS)
 
     def test_builds_are_deterministic_and_capture_all_module_digests(self):

@@ -1,6 +1,6 @@
 # Plan: project knowledge for the reviewers (coding standards)
 
-Status: **in progress: steps 1-3 done 2026-10-13**. Decisions in section 3 are all agreed (2026-10-13). Progress notes are at the end.
+Status: **in progress: steps 1-4 done (4 on 2026-10-14)**. Decisions in section 3 are all agreed (2026-10-13). Progress notes are at the end.
 
 ## 1. Why
 
@@ -254,3 +254,34 @@ Each step: unit tests green, reinstall the affected workflows and profiles, live
   `MANDATORY` finding went to `HUMAN_REQUIRED` because the mapper marked `app/fees.py` as `BUSINESS_RULES` and
   `PUBLIC_API`: existing routing, a protected boundary forces a human for every finding in that file. No CAO sessions
   left open.
+- **Step 4 done (2026-10-14).** New module `delivery_standards.py` and read-only profile `sdlc_standards_reviewer`
+  (`profiles/standards-reviewer.md`, installed with `cao install`). Each review round of Delivery (both modes) selects
+  the rules whose applicable files the round's diff adds lines to, stages them under
+  `runtime/<ticket>/<run>/knowledge/r<n>/`, and runs the batches beside the PR reviewer through `run_parallel_steps`
+  (new input `review_max_parallel`, default 4). The standards answer is validated (one verdict per rule, `VIOLATED`
+  lists exactly the citing findings, the rule covers the file, the line range exists at the PR HEAD) and classified by
+  `classify_pr_review` inside the contract step, so a bad category or impact gets the repair turn. Finding ids are
+  `STD-r<n>-b<k>:<id>`; impact is capped by level before routing (D9). `NICE-TO-HAVE` findings and findings outside
+  the added lines go to `suggestions` (`automation_eligibility: SUGGESTION`, LOW, never remediated, never blocking:
+  D11, D14). From round 2 a rule is reviewed again only if one of its covered files changed since the previous round's
+  reviewed commit, or it had no verdict before; the others keep their verdict, findings and suggestions with
+  `carried_from_round` (D15). Each `pr-review-r<n>.json` carries `standards` and `suggestions`; the manifest records
+  files and digests, settings and every round; the brief gets a "Project rules" section (verdict counts, not-assessed
+  rules with the reviewer's notes, suggestions). Without `review_knowledge` prompts, steps, records and the brief are
+  unchanged. `added_lines` moved to `review_knowledge.py` (shared with Source review). The integration fixture strips
+  `review_knowledge` from the copied project file; a new integration test covers rules end to end, including
+  carry-forward. Tests: 364 OK, Delivery suites also in source mode.
+  Reinstalled `sdlc_deliver` and, by its upgrade procedure, `source_review` (its bundle changed with the move); every
+  workflow and profile matches the branch.
+  Live: throwaway clone in the session scratchpad with `main` = this branch plus a commit declaring the sample file and
+  six Python rules (PY-1 docstrings, PY-2 type hints NICE-TO-HAVE, PY-3 magic numbers, PY-4 bare except, PY-5
+  f-strings NICE-TO-HAVE, PY-6 print). Run `deliver-rules-20261014-1`, hybrid mode, the approved PAY-DEMO-001 plan, the
+  implementer not steered: `AWAITING_HUMAN_REVIEW` in 724 s, 2 review rounds, 1 remediation.
+  - Round 1 (one batch of 8 rules, beside the PR reviewer: both started after verification at 21:50:53Z and finished
+    at 21:53:00Z): 12 rule findings, all `AUTO_FIX` (PY-1 missing docstrings, 1 capped from MEDIUM; NAMING-1 `exc`,
+    `conn`, `_tmpdir`), 2 PY-2 suggestions; the PR reviewer's 5 findings unchanged in kind.
+  - The remediator fixed all 12 and PR-004 in one commit (e.g. `exc` -> `integrity_error`, docstrings added).
+  - Round 2 (both reviewers again from 21:54:34Z, finished 21:55:41Z and 21:56:08Z): all 8 rules reviewed again
+    (every rule covers `app/**/*.py` and the remediation changed five Python files, so nothing could carry), 7 not
+    violated, PY-2 two suggestions; no rule finding left. The brief lists them under "Project rules". No CAO sessions
+    left open. Carry-forward is covered by the integration test, not by this run.

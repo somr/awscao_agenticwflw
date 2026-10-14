@@ -40,7 +40,19 @@ from .validation import (
 )
 from .runtime import (
     _run_json_contract_step,
+    run_parallel_steps,
+    MAX_PARALLEL_REVIEWS,
     PROVIDER,
+)
+from .review_knowledge import load_review_knowledge, added_lines
+from .delivery_standards import (
+    STANDARDS_REVIEWER,
+    plan_standards_round,
+    build_standards_reviewer_prompt,
+    check_standards_answer,
+    split_suggestions,
+    carry_forward,
+    stage_round,
 )
 from .hybrid import (
     run_hybrid, load_specialists, validate_dispatch, verification_plan, hybrid_skill_context, MAX_PARALLEL_WORKERS,
@@ -56,6 +68,8 @@ INPUTS = {
     "implementation_mode": {"type": "string", "required": False, "default": "hybrid"},
     # CAO reads INPUTS statically, so the default must be a literal (equal to MAX_PARALLEL_WORKERS; a test checks it).
     "hybrid_max_parallel": {"type": "int", "required": False, "default": 4},
+    # Review calls run at the same time (PR reviewer and project-rule batches); literal default equal to MAX_PARALLEL_REVIEWS.
+    "review_max_parallel": {"type": "int", "required": False, "default": 4},
     # Continue a BLOCKED delivery from its manifest instead of starting again (see delivery.md).
     "resume": {"type": "bool", "required": False, "default": False},
     # On a resume from implementation whose saved tasks the current registry rejects: let the
@@ -610,6 +624,29 @@ def escalate_unremediated_findings(
 
 
 
+def render_standards_section(review: dict[str, Any]) -> str:
+    """The brief's project-rules section; empty when the project has no rules."""
+    standards = review.get("standards")
+    if not standards:
+        return ""
+    counts = {status: sum(1 for value in standards["verdicts"].values() if value == status)
+              for status in ("VIOLATED", "NOT_VIOLATED", "NOT_ASSESSED")}
+    lines = ["", "## Project rules", "",
+             f"- Applicable rules: {len(standards['applicable'])} (skipped, no matching changed file: {len(standards['skipped'])})",
+             f"- Verdicts: {counts['VIOLATED']} violated, {counts['NOT_VIOLATED']} not violated, "
+             f"{counts['NOT_ASSESSED']} not assessed",
+             "- Rule findings that need attention are listed above with the other findings."]
+    if standards["not_assessed"]:
+        lines += ["", "### Not assessed (check these yourself)", ""]
+        lines += [f"- {rule}" for rule in standards["not_assessed"]]
+        lines += [f"- Reviewer note: {gap}" for gap in standards["coverage_gaps"]]
+    suggestions = review.get("suggestions", [])
+    lines += ["", f"### Suggestions (optional, never fixed automatically): {len(suggestions)}", ""]
+    lines += [f"- {s['standard_ref']} `{s['file']}:{s['line_start']}-{s['line_end']}`: {s['location']} — "
+              f"{s['remediation_direction']} ({s['suggestion_reason']})" for s in suggestions] or ["- (none)"]
+    return "\n".join(lines) + "\n"
+
+
 def render_human_review_brief(
     *,
     ticket_id: str,
@@ -698,6 +735,7 @@ def render_human_review_brief(
     residual_text = "\n".join(f"- {r}" for r in residual) or "- (none disclosed)"
 
     pr_display = pr_reference or "(local, not yet created)"
+    rules_section = render_standards_section(review)
 
     return f"""# Human Review Brief — {ticket_id} / PR {pr_display}
 
@@ -746,7 +784,7 @@ def render_human_review_brief(
 ## Residual risks / known limitations
 
 {residual_text}
-
+{rules_section}
 ## Reviewer decision
 
 Final PR approval must be performed by a human in the source-control system.
@@ -764,6 +802,9 @@ def main() -> None:
     max_parallel = inputs.get("hybrid_max_parallel", MAX_PARALLEL_WORKERS)
     if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= MAX_PARALLEL_WORKERS:
         raise WorkflowContractError(f"hybrid_max_parallel must be an integer from 1 to {MAX_PARALLEL_WORKERS}")
+    review_max_parallel = inputs.get("review_max_parallel", MAX_PARALLEL_REVIEWS)
+    if isinstance(review_max_parallel, bool) or not isinstance(review_max_parallel, int) or not 1 <= review_max_parallel <= MAX_PARALLEL_REVIEWS:
+        raise WorkflowContractError(f"review_max_parallel must be an integer from 1 to {MAX_PARALLEL_REVIEWS}")
     resume = inputs.get("resume", False)
     redispatch = inputs.get("resume_redispatch", False)
     if not isinstance(resume, bool) or not isinstance(redispatch, bool):
@@ -796,6 +837,8 @@ def main() -> None:
     # Both modes: validate the source roots and the registry before any agent runs.
     source_roots = _source_roots(repo)
     registry = load_specialists(repo)
+    # The project's rules for the standards reviewer; read from this checkout, which agents cannot change.
+    knowledge = load_review_knowledge(repo)
     application_commands = registry["verification"].get("application")
     if implementation_mode == "single" and not application_commands:
         raise WorkflowContractError("single mode needs the registry's 'application' verification suite")
@@ -1007,27 +1050,88 @@ def main() -> None:
     reviews_written = [0]  # reviews of this run with a record, for the numbering of a later resume
     reviewing_dir = runtime_dir / "review"
 
+    # The previous round's standards outcome, for rules a later round does not review again (D15).
+    standards_state: dict[str, Any] = {}
+    standards_rounds: list[dict[str, Any]] = []
+
     def _review(round_no: int, sha: str, diff: str, verif: dict[str, Any]) -> dict[str, Any]:
-        result = _run_json_contract_step(
-            preserve_source=False,
-            agent=PR_REVIEWER,
-            prompt=build_pr_reviewer_prompt(
+        def pr_review() -> dict[str, Any]:
+            return _run_json_contract_step(
+                preserve_source=False,
+                agent=PR_REVIEWER,
+                prompt=build_pr_reviewer_prompt(
+                    repo=repo,
+                    plan_path=plan_path,
+                    contract=delivery_contract,
+                    governance=governance,
+                    pr_review_policy=pr_review_policy,
+                    diff_text=diff,
+                    verification=verif,
+                    pr_head_sha=sha,
+                    resume_notes=resume_notes,
+                ),
+                label="PR Reviewer",
+                step_id=f"pr-review-r{round_no}",
                 repo=repo,
-                plan_path=plan_path,
-                contract=delivery_contract,
-                governance=governance,
-                pr_review_policy=pr_review_policy,
-                diff_text=diff,
-                verification=verif,
-                pr_head_sha=sha,
-                resume_notes=resume_notes,
-            ),
-            label="PR Reviewer",
-            step_id=f"pr-review-r{round_no}",
-            repo=repo,
-            evidence_dir=reviewing_dir / "agent-output",
-            validator=lambda value, sha=sha: classify_pr_review(value, pr_head_sha=sha),
-        )
+                evidence_dir=reviewing_dir / "agent-output",
+                validator=lambda value, sha=sha: classify_pr_review(value, pr_head_sha=sha),
+            )
+
+        def standards_review(number: int, batch: list[dict[str, Any]], index: str, knowledge_dir: Path):
+            def validate(value: Any) -> dict[str, Any]:
+                checked = check_standards_answer(value, batch, repo, f"STD-r{round_no}-b{number}")
+                checked["findings"] = classify_pr_review({"findings": checked["findings"]}, pr_head_sha=sha)["findings"]
+                return checked
+            return lambda: _run_json_contract_step(
+                preserve_source=False,
+                agent=STANDARDS_REVIEWER,
+                prompt=build_standards_reviewer_prompt(repo=repo, number=number, diff_text=diff, pr_head_sha=sha,
+                                                       knowledge_dir=knowledge_dir, index=index),
+                label=f"Standards reviewer (batch {number})",
+                step_id=f"standards-review-r{round_no}-b{number}",
+                repo=repo,
+                evidence_dir=reviewing_dir / "agent-output",
+                validator=validate,
+            )
+
+        calls = [pr_review]
+        plan = None
+        if knowledge is not None:
+            added = added_lines(diff)
+            changed_since = (set(_git(["diff", "--name-only", standards_state["sha"], sha], cwd=repo).split())
+                             if standards_state else None)
+            plan = plan_standards_round(knowledge, added, changed_since, standards_state or None)
+            knowledge_dir = runtime_dir / "knowledge" / f"r{round_no}"
+            indexes = stage_round(plan, knowledge, knowledge_dir)
+            calls += [standards_review(number, batch, index, knowledge_dir)
+                      for number, (batch, index) in enumerate(zip(plan["batches"], indexes), start=1)]
+        results = run_parallel_steps(calls, review_max_parallel)
+        result = results[0]
+        if plan is not None:
+            routed, suggestions = split_suggestions([f for answer in results[1:] for f in answer["findings"]], added)
+            verdicts = {rule: status for answer in results[1:] for rule, status in answer["verdicts"].items()}
+            if plan["carried"]:
+                carried = carry_forward(standards_state, plan["carried"], round_no)
+                routed += carried["findings"]
+                suggestions += carried["suggestions"]
+                verdicts.update(carried["verdicts"])
+            standards = {
+                "round": review_offset + round_no,
+                "applicable": [rule["id"] for rule in plan["selection"]["applicable"]],
+                "skipped": plan["selection"]["skipped"],
+                "reviewed": [rule["id"] for rule in plan["reviewed"]],
+                "carried": [rule["id"] for rule in plan["carried"]],
+                "batches": [[rule["id"] for rule in batch] for batch in plan["batches"]],
+                "verdicts": dict(sorted(verdicts.items())),
+                "not_assessed": sorted(rule for rule, status in verdicts.items() if status == "NOT_ASSESSED"),
+                "coverage_gaps": [gap for answer in results[1:] for gap in answer["coverage_gaps"]],
+            }
+            findings = result["findings"] + routed
+            result = {**result, "findings": findings, "suggestions": suggestions, "standards": standards,
+                      "has_developer_required": any(f["automation_eligibility"] == "DEVELOPER_REQUIRED" for f in findings),
+                      "has_auto_fix": any(f["automation_eligibility"] == "AUTO_FIX" for f in findings)}
+            standards_state.update(sha=sha, rules=verdicts, findings=routed, suggestions=suggestions)
+            standards_rounds.append(standards)
         _write_json(records_dir / f"pr-review-r{review_offset + round_no}.json", result)
         reviews_written[0] = round_no
         return result
@@ -1129,6 +1233,13 @@ def main() -> None:
         finding_id for h in remediation_history for finding_id in h.get("escalated_findings", [])
     ]
     delivery_manifest["convergence_limit_reached"] = convergence_limit_reached
+    if knowledge is not None:
+        delivery_manifest["review_max_parallel"] = review_max_parallel
+        delivery_manifest["standards"] = {
+            "files": knowledge["files"],
+            "settings": {key: value for key, value in knowledge["settings"].items() if key != "files"},
+            "rounds": standards_rounds,
+        }
 
     delivery_manifest["totals"]["remediation_rounds"] += len(remediation_history)
 

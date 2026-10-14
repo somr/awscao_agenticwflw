@@ -48,6 +48,7 @@ from .artifacts import (
     _write_text,
 )
 from .review_knowledge import (
+    added_lines,
     load_review_knowledge,
     select_rules,
     build_batches,
@@ -527,30 +528,6 @@ def hunk_ranges(patch: str) -> dict[str, list[tuple[int, int]]]:
                 if size:
                     ranges[side].append((int(start), int(start) + size - 1))
     return ranges
-
-
-def added_lines(diff: str) -> dict[str, set[int]]:
-    """Head-side line numbers that a git diff adds, per file; context and removed lines are excluded.
-
-    Quoted (unusual) paths and deleted files are skipped, like diff_hunks.
-    """
-    files: dict[str, set[int]] = {}
-    path, in_body, line_no = None, False, 0
-    for line in diff.splitlines():
-        if line.startswith("diff --git "):
-            path, in_body = None, False
-        elif not in_body and line.startswith("+++ "):
-            new = line[4:]
-            path = None if new == "/dev/null" or new.startswith('"') else new.removeprefix("b/")
-        elif match := HUNK_HEADER.match(line):
-            in_body, line_no = True, int(match[3])
-        elif path is not None and in_body:
-            if line.startswith("+"):
-                files.setdefault(path, set()).add(line_no)
-                line_no += 1
-            elif line.startswith(" "):
-                line_no += 1
-    return files
 
 
 def diff_hunks(diff: str) -> dict[str, dict[str, list[tuple[int, int]]]]:
