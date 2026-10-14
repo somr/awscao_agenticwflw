@@ -441,6 +441,13 @@ Text.
                 manifest = json.loads((records / 'delivery-manifest.json').read_text())
                 self.assertEqual([r['round'] for r in manifest['standards']['rounds']], [1, 2])
                 self.assertEqual(manifest['standards']['rounds'][0]['skipped'], ['R-3'])
+                # Step 5: the authors get the rules that can apply to what they write.
+                self.assertIn('- R-1 [MANDATORY]', prompts['implement-v1'])
+                self.assertIn('- R-2 [NICE-TO-HAVE]', prompts['implement-v1'])
+                self.assertIn('knowledge/authors/rules/<RULE-ID>.md', prompts['implement-v1'])
+                self.assertIn('- R-1 [MANDATORY]', prompts['remediate-r1'])
+                self.assertNotIn('- R-2 [', prompts['remediate-r1'])
+                self.assertNotIn('- R-3 [', prompts['remediate-r1'])
                 brief = (records / 'human-review-brief.md').read_text()
                 self.assertIn('## Project rules', brief)
                 self.assertIn('Suggestions (optional, never fixed automatically): 1', brief)

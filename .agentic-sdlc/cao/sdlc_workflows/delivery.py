@@ -44,7 +44,7 @@ from .runtime import (
     MAX_PARALLEL_REVIEWS,
     PROVIDER,
 )
-from .review_knowledge import load_review_knowledge, added_lines
+from .review_knowledge import load_review_knowledge, added_lines, stage_author_rules, author_rules_guidance
 from .delivery_standards import (
     STANDARDS_REVIEWER,
     plan_standards_round,
@@ -275,6 +275,7 @@ def _implement_and_commit(
 def _hybrid_and_commit(
     *, repo: Path, prompt: str, evidence_dir: Path, ticket_id: str, run_id: str, max_parallel: int,
     progress: dict[str, Any] | None = None, resume_from: dict[str, Any] | None = None, redispatch: bool = False,
+    rules_for: Any = None,
 ) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
     """Run hybrid implementation; it commits once per task and once for integration."""
     if _git(["diff", "--cached", "--name-only"], cwd=repo).strip():
@@ -286,7 +287,7 @@ def _hybrid_and_commit(
         repo=repo, prompt=prompt, evidence_dir=evidence_dir,
         completion_validator=_implementer_completion_validator,
         ticket_id=ticket_id, run_id=run_id, max_parallel=max_parallel, progress=progress, resume_from=resume_from,
-        redispatch=redispatch,
+        redispatch=redispatch, rules_for=rules_for,
     )
     if not commits:
         raise WorkflowContractError(f"Hybrid implementation left no changes under the source roots ({', '.join(roots)})")
@@ -912,6 +913,13 @@ def main() -> None:
                      "base_drift_overlap: " + ", ".join(carried["base_drift"]["overlapping_paths"]), previous["resume_point"])
         return
 
+    # The project rules for the agents that write code: each gets the index of the rules that can apply to the
+    # paths it writes (D1, step 5), staged once per run from this checkout.
+    author_rules_dir = stage_author_rules(knowledge, runtime_dir / "knowledge" / "authors") if knowledge is not None else None
+
+    def rules_for(paths: list[str], cited: list[str] = ()) -> str:
+        return author_rules_guidance(knowledge, paths, author_rules_dir, cited) if author_rules_dir else ""
+
     # 2. IMPLEMENTING (a resume from verification keeps the earlier run's implementation)
     implementation_commits: list[dict[str, Any]] = []
     progress: dict[str, Any] = {}
@@ -928,7 +936,7 @@ def main() -> None:
                 repo=repo, prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
                 evidence_dir=implementing_dir / "agent-output", ticket_id=ticket_id,
                 run_id=run_id, max_parallel=max_parallel, progress=progress, resume_from=resume_from,
-                redispatch=redispatch,
+                redispatch=redispatch, rules_for=rules_for,
             )
         except (WorkflowContractError, OSError) as exc:
             _record_delivery_commits(delivery_manifest_path, _task_commits(progress))
@@ -939,7 +947,7 @@ def main() -> None:
     else:
         try:
             completion = _implement_and_commit(
-                prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance),
+                prompt=build_implementer_prompt(repo, plan_path, delivery_contract, governance) + rules_for(source_roots),
                 step_id="implement-v1",
                 repo=repo,
                 evidence_dir=implementing_dir / "agent-output",
@@ -974,7 +982,8 @@ def main() -> None:
     if not verification["passed"]:
         try:
             repair_completion = _implement_and_commit(
-                prompt=build_implementer_repair_prompt(repo, plan_path, delivery_contract, governance, verification) + "\n" + skill_context,
+                prompt=build_implementer_repair_prompt(repo, plan_path, delivery_contract, governance, verification) + "\n" + skill_context
+                + rules_for(source_roots),
                 step_id="implement-v1-repair-1",
                 repo=repo,
                 evidence_dir=implementing_dir / "agent-output",
@@ -1156,7 +1165,9 @@ def main() -> None:
             remediation_completion = _run_json_contract_step(
                 preserve_source=False,
                 agent=REMEDIATOR,
-                prompt=build_remediator_prompt(repo, plan_path, delivery_contract, pr_review_policy, governance, auto_fix_findings) + "\n" + skill_context,
+                prompt=build_remediator_prompt(repo, plan_path, delivery_contract, pr_review_policy, governance, auto_fix_findings) + "\n" + skill_context
+                + rules_for(sorted({f["file"] for f in auto_fix_findings}),
+                            sorted({f["standard_ref"] for f in auto_fix_findings if f.get("standard_ref")})),
                 label="Remediator",
                 step_id=remediation_step_id,
                 repo=repo,

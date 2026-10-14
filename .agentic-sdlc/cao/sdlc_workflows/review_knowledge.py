@@ -272,3 +272,62 @@ def added_lines(diff: str) -> dict[str, set[int]]:
             elif line.startswith(" "):
                 line_no += 1
     return files
+
+
+def _literal_prefix(glob: str) -> list[str]:
+    parts = []
+    for part in glob.split("/"):
+        if any(char in part for char in "*?["):
+            break
+        parts.append(part)
+    return parts
+
+
+def rule_may_apply(rule: dict[str, Any], paths: list[str]) -> bool:
+    """Whether a rule can apply to a file under any of these paths (files or folders).
+
+    A path whose last part has an extension is a file and must match a glob. A folder is matched
+    generously: when it and the start of a glob before its first wildcard lie on one path, so a rule
+    is never withheld from an author who may need it.
+    """
+    for path in paths:
+        parts = path.split("/")
+        is_file = "." in parts[-1].lstrip(".")
+        for glob in rule["globs"]:
+            if PurePosixPath(path).full_match(glob):
+                return True
+            if is_file:
+                continue
+            prefix = _literal_prefix(glob)
+            shorter = min(len(prefix), len(parts))
+            if prefix[:shorter] == parts[:shorter]:
+                return True
+    return False
+
+
+def stage_author_rules(knowledge: dict[str, Any], destination: Path) -> Path:
+    """Write every rule to destination/rules/<ID>.md for the agents that write code; return that folder."""
+    folder = destination / "rules"
+    for rule in knowledge["rules"]:
+        _write_text(folder / f"{rule['id']}.md", rule["text"])
+    return folder
+
+
+def author_rules_guidance(knowledge: dict[str, Any] | None, paths: list[str], rules_dir: Path,
+                          cited: list[str] = ()) -> str:
+    """The rules index for an agent that writes code under paths; empty without rules or when none applies.
+
+    Rules named in cited (by findings the agent must fix) are always listed.
+    """
+    if knowledge is None:
+        return ""
+    rules = [rule for rule in knowledge["rules"] if rule["id"] in cited or rule_may_apply(rule, paths)]
+    if not rules:
+        return ""
+    lines = ["", "Project rules (trusted; the reviewers check every change against them):",
+             "Follow each rule below whose applicable files match a file you add or change: MANDATORY rules always,",
+             "NICE-TO-HAVE rules where reasonable. They apply to code you add or change; do not rewrite untouched code.",
+             f"Read the full rule, with its exceptions and examples, in {rules_dir}/<RULE-ID>.md before writing code it covers."]
+    lines += [f"- {rule['id']} [{rule['level']}] {rule['domain']}. {rule['title']} (applies to {', '.join(rule['globs'])})"
+              for rule in rules]
+    return "\n".join(lines) + "\n"

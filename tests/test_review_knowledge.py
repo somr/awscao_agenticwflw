@@ -277,5 +277,42 @@ class StageTest(RepoCase):
         self.assertNotIn('files', audit['settings'])
 
 
+
+class AuthorRulesTest(unittest.TestCase):
+    RULES = [
+        {'id': 'PY-1', 'level': 'MANDATORY', 'domain': 'Docs', 'title': 'Docstrings', 'globs': ['app/**/*.py'], 'text': '## PY-1\n'},
+        {'id': 'UI-1', 'level': 'NICE-TO-HAVE', 'domain': 'UI', 'title': 'Components', 'globs': ['app/ui/**/*.js'], 'text': '## UI-1\n'},
+        {'id': 'ANY-1', 'level': 'MANDATORY', 'domain': 'All', 'title': 'Everywhere', 'globs': ['**/*.py'], 'text': '## ANY-1\n'},
+        {'id': 'ONE-1', 'level': 'MANDATORY', 'domain': 'One', 'title': 'One file', 'globs': ['app/pay/service.py'], 'text': '## ONE-1\n'},
+    ]
+
+    def ids(self, paths):
+        return [r['id'] for r in self.RULES if rk.rule_may_apply(r, paths)]
+
+    def test_rules_that_may_apply_under_files_and_folders(self):
+        self.assertEqual(self.ids(['app']), ['PY-1', 'UI-1', 'ANY-1', 'ONE-1'])
+        self.assertEqual(self.ids(['app/pay']), ['PY-1', 'ANY-1', 'ONE-1'])
+        self.assertEqual(self.ids(['app/pay/service.py']), ['PY-1', 'ANY-1', 'ONE-1'])
+        self.assertEqual(self.ids(['app/pay/other.py']), ['PY-1', 'ANY-1'])
+        self.assertEqual(self.ids(['app/ui/button.js']), ['UI-1'])
+        self.assertEqual(self.ids(['docs']), ['ANY-1'])
+        self.assertEqual(self.ids([]), [])
+
+    def test_guidance_lists_the_rules_that_may_apply_and_every_cited_rule(self):
+        knowledge = {'rules': self.RULES}
+        text = rk.author_rules_guidance(knowledge, ['app/ui/button.js'], Path('/staged/rules'), ['ONE-1'])
+        self.assertIn('/staged/rules/<RULE-ID>.md', text)
+        self.assertIn('- UI-1 [NICE-TO-HAVE] UI. Components (applies to app/ui/**/*.js)', text)
+        self.assertIn('- ONE-1 [MANDATORY]', text)
+        self.assertNotIn('PY-1', text)
+        self.assertEqual(rk.author_rules_guidance(None, ['app'], Path('/x')), '')
+        self.assertEqual(rk.author_rules_guidance({'rules': [self.RULES[3]]}, ['app/ui'], Path('/x')), '')
+
+    def test_every_rule_is_staged_for_the_authors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = rk.stage_author_rules({'rules': self.RULES}, Path(temp))
+            self.assertEqual(sorted(p.name for p in folder.iterdir()), ['ANY-1.md', 'ONE-1.md', 'PY-1.md', 'UI-1.md'])
+
+
 if __name__ == '__main__':
     unittest.main()

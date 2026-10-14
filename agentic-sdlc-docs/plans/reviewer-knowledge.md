@@ -1,6 +1,6 @@
 # Plan: project knowledge for the reviewers (coding standards)
 
-Status: **in progress: steps 1-4 done (4 on 2026-10-14)**. Decisions in section 3 are all agreed (2026-10-13). Progress notes are at the end.
+Status: **in progress: steps 1-5 done (4 and 5 on 2026-10-14); step 6 (docs) left**. Decisions in section 3 are all agreed (2026-10-13). Progress notes are at the end.
 
 ## 1. Why
 
@@ -301,3 +301,20 @@ Each step: unit tests green, reinstall the affected workflows and profiles, live
   doubles that round 1 had not reported, round 3 only PY-2 suggestions. No finding was rated HIGH. No PR finding had a
   protected category, so the sensitive-file rule did not trigger live (unit-tested). Observation: one batch of 8 rules
   did not report every PY-1 occurrence in round 1, which cost an extra remediation round.
+- **Step 5 done (2026-10-14).** `review_knowledge.py`: `rule_may_apply` (a file path must match a rule's glob; a
+  folder matches generously when it and the glob's literal start lie on one path), `stage_author_rules` (every rule
+  once per run under `runtime/<ticket>/<run>/knowledge/authors/rules/`) and `author_rules_guidance` (a short index of
+  the rules that can apply, plus every cited rule; empty without rules). Delivery: the single-mode implementer and
+  its repair turn get the rules for the source roots; `run_hybrid(rules_for=...)` gives the supervisor (dispatch) and
+  the integration the rules for the roots and each worker the rules for its `owns`; the remediator gets the rules for
+  the files of its findings plus every cited rule. Source remediation: the remediator and the fix reviewer are pointed
+  at the rules the review staged (`<review working dir>/workspace/knowledge/`), naming the cited ones; nothing is added
+  for reviews without rules. Tests: helpers, hybrid prompts, Delivery prompts in the rules integration test, Source
+  remediation with and without staged rules; 371 OK, source mode too. Reinstalled `sdlc_deliver`,
+  `source_remediate` and `source_review` (upgrade procedure); everything matches the branch.
+  Live: `deliver-rules-20261014-3`, fresh clone, same eight rules, hybrid, 951 s, `AWAITING_HUMAN_REVIEW`, 3 rounds, 2
+  remediations. Round 1 rule findings fell from 12 and 14 (runs 1 and 2, authors without rules) to 7: no `exc`,
+  `conn` or `_tmpdir` any more; what remained were six PY-1 docstrings on test helpers' `__init__`/`setUp` and one
+  NAMING-1 (`db_path`). Round 3 only PY-2 suggestions. The rules index reached the agents' prompts (17 terminal logs
+  contain it). The supervisor's first dispatch needed one contract repair (task T7 with an empty `owns`); the earlier
+  runs did not, and the rules text cannot be excluded as a cause.
