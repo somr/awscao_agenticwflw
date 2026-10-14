@@ -273,7 +273,7 @@ def overlaps_added_lines(finding: dict, added: dict[str, set[int]]) -> bool:
 
 def outside_suggestion(finding: dict, snapshot: dict, level: str) -> dict:
     """A rule finding on lines the PR does not add: kept as an unvalidated, non-blocking suggestion."""
-    return {**finding, "severity": "LOW", "stable_id": finding_identity(finding, snapshot),
+    return {**finding, "stable_id": finding_identity(finding, snapshot),
             "reviewed_head_sha": snapshot["head_sha"], "route": "SUGGESTION", "rule_level": level,
             "routing_reasons": ["Outside the lines this pull request adds: suggestion only, not validated"],
             "outside_changed_lines": True, "policy_version": POLICY_VERSION}
@@ -355,8 +355,10 @@ Read knowledge/rules/<RULE-ID>.md whenever the title is not enough: exceptions a
 are there. Give every rule in the index exactly one verdict: VIOLATED (finding_ids lists every
 finding citing it), NOT_VIOLATED, or NOT_ASSESSED (only if you could not check it; say why in
 coverage_gaps). Every finding sets standard_ref to its rule id, side "head", one finding per
-rule and location. Use MAINTAINABILITY unless another allowed category fits better. Severity:
-LOW or MEDIUM for MANDATORY rules, LOW for NICE-TO-HAVE rules. Use candidate IDs prefixed with {role}-.
+rule and location. Use MAINTAINABILITY unless another allowed category fits better. Severity is
+normally LOW or MEDIUM for MANDATORY rules and LOW for NICE-TO-HAVE rules; rate it higher only when
+the violation also causes a concrete problem (a reachable failure, a security exposure), and say
+so in consequence. Use candidate IDs prefixed with {role}-.
 Return {{"rules":[{{"id":"RULE-ID", "status":"VIOLATED|NOT_VIOLATED|NOT_ASSESSED", "finding_ids":[]}}],
 "findings":[{json.dumps(STANDARDS_FINDING_SHAPE)}], "coverage_gaps":[]}}.
 The example is a schema, not a finding.

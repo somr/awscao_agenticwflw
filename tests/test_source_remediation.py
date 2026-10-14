@@ -232,7 +232,7 @@ class RemediationTests(unittest.TestCase):
         _write_json(self.review_work / 'workspace/knowledge/index.json', {'applicable': [
             {'id': rule_id, 'level': level, 'covers': ['app/code.py']} for rule_id, level in levels.items()]})
         rule = {**self.candidate, 'candidate_id': 'standards-b1:N1', 'category': 'MAINTAINABILITY',
-                'standard_ref': 'NAMING-1', 'title': 'Abbreviated name', 'severity': 'HIGH'}
+                'standard_ref': 'NAMING-1', 'title': 'Abbreviated name', 'severity': 'MEDIUM'}
         nice = {**rule, 'candidate_id': 'standards-b1:N2', 'standard_ref': 'STYLE-1', 'title': 'Could be clearer'}
         candidates = [self.candidate, self.human, rule, nice]
         findings = [source.route_finding(f, self.snapshot, self.mapping, levels) for f in candidates]
@@ -246,7 +246,7 @@ class RemediationTests(unittest.TestCase):
         report, _, _ = mod.load_remediation_review(self.review_dir, self.repo)
         routes = {f['standard_ref'] if f.get('standard_ref') else f['candidate_id']: (f['route'], f['severity']) for f in report['findings']}
         self.assertEqual(routes['NAMING-1'], ('AUTO_FIX', 'MEDIUM'))
-        self.assertEqual(routes['STYLE-1'], ('SUGGESTION', 'LOW'))
+        self.assertEqual(routes['STYLE-1'], ('SUGGESTION', 'MEDIUM'))
         selected, excluded = mod.select_remediation_findings(report, None)
         self.assertNotIn('SUGGESTION', {f['route'] for f in selected})
         self.assertIn('Suggestion only, never fixed automatically', {e['reason'] for e in excluded})

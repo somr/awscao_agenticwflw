@@ -2,9 +2,11 @@
 
 The rules come from review_knowledge.py. Each round selects the rules whose applicable files the
 diff adds lines to; from the second round on, only rules with a covered file that changed since the
-previous round are reviewed again and the others keep their verdict and findings (D15). A rule
-finding's impact is capped by the rule level; NICE-TO-HAVE findings and findings outside the lines
-the diff adds become suggestions, which are never remediated and never block (D9, D11, D14).
+previous round are reviewed again and the others keep their verdict and findings (D15). The
+reviewer's impact stands (D9). NICE-TO-HAVE findings (unless rated HIGH) and findings outside the
+lines the diff adds become suggestions, which are never remediated and never block (D11, D14); rule
+findings in a file the PR reviewer flags with a protected category go to the developer (see
+route_sensitive_files).
 """
 from __future__ import annotations
 
@@ -19,8 +21,6 @@ from .review_knowledge import select_rules, build_batches, stage_rules
 STANDARDS_REVIEWER = "sdlc_standards_reviewer"
 RULE_ID = re.compile(r"[A-Z][A-Z0-9]*-[0-9]+")
 RULE_VERDICT_VALUES = ("VIOLATED", "NOT_VIOLATED", "NOT_ASSESSED")
-IMPACT_CAP = {"MANDATORY": "MEDIUM", "NICE-TO-HAVE": "LOW"}
-IMPACT_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
 STANDARDS_FINDING_EXAMPLE = {
     "id": "N1", "standard_ref": "RULE-ID", "file": "<source-root>/path/to/changed_file",
     "line_start": 1, "line_end": 1, "location": "short description of where in the file",
@@ -59,7 +59,7 @@ def build_standards_reviewer_prompt(*, repo: Path, number: int, diff_text: str, 
 Check only the rules in the index at the end, and only lines the diff adds. A violation of a listed rule is a finding even without a failure scenario: describe the violated rule and the offending code in failure_scenario. Code the diff does not add is out of scope.
 The full text of each rule, with its exceptions and examples, is in {knowledge_dir}/rules/<RULE-ID>.md; read it whenever the title is not enough.
 Give every rule in the index exactly one verdict: VIOLATED (finding_ids lists every finding citing it), NOT_VIOLATED, or NOT_ASSESSED (only if you could not check it; say why in coverage_gaps).
-Every finding sets standard_ref to its rule id and line_start/line_end to lines of the file at the PR HEAD, one finding per rule and location. Use STYLE or DOCUMENTATION unless another category fits better. Impact: LOW or MEDIUM for MANDATORY rules, LOW for NICE-TO-HAVE rules. Mark a finding AUTO_FIX only when an edit to the file can resolve it.
+Every finding sets standard_ref to its rule id and line_start/line_end to lines of the file at the PR HEAD, one finding per rule and location. Use STYLE or DOCUMENTATION unless another category fits better. Impact is normally LOW or MEDIUM for MANDATORY rules and LOW for NICE-TO-HAVE rules; rate it higher only when the violation also causes a concrete problem (a failure, a security exposure), and say so in consequence. Mark a finding AUTO_FIX only when an edit to the file can resolve it.
 PR HEAD SHA under review: {pr_head_sha}
 
 Return {{"rules":[{{"id":"RULE-ID", "status":"VIOLATED|NOT_VIOLATED|NOT_ASSESSED", "finding_ids":[]}}], "findings":[{json.dumps(STANDARDS_FINDING_EXAMPLE)}], "coverage_gaps":[]}}.
@@ -75,7 +75,7 @@ Batch {number}:
 
 
 def check_standards_answer(value: Any, batch: list[dict[str, Any]], repo: Path, prefix: str) -> dict[str, Any]:
-    """Validate one batch's answer; return its findings (ids prefixed, impact capped by level), verdicts and gaps.
+    """Validate one batch's answer; return its findings (ids prefixed, rule level added), verdicts and gaps.
 
     Routing (automation eligibility) is left to the PR review classifier; see split_suggestions.
     """
@@ -98,12 +98,8 @@ def check_standards_answer(value: Any, batch: list[dict[str, Any]], repo: Path, 
         if not (type(start) is int and type(end) is int and path.is_file()
                 and 1 <= start <= end <= len(path.read_text(encoding="utf-8", errors="replace").splitlines())):
             raise WorkflowContractError(f"{label} line range is outside {raw['file']}")
-        level = rules[ref]["level"]
-        impact = raw.get("impact")
-        if impact in IMPACT_RANK and IMPACT_RANK[impact] > IMPACT_RANK[IMPACT_CAP[level]]:
-            impact = IMPACT_CAP[level]
         citing[ref].append(raw["id"])
-        findings.append({**raw, "id": f"{prefix}:{raw['id']}", "impact": impact, "rule_level": level})
+        findings.append({**raw, "id": f"{prefix}:{raw['id']}", "rule_level": rules[ref]["level"]})
     if len({f["id"] for f in findings}) != len(findings):
         raise WorkflowContractError("Duplicate finding ids")
     verdicts: dict[str, str] = {}
@@ -136,13 +132,33 @@ def split_suggestions(findings: list[dict[str, Any]], added: dict[str, set[int]]
         lines = added.get(finding["file"], set())
         if not any(line in lines for line in range(finding["line_start"], finding["line_end"] + 1)):
             reason = "Outside the lines this diff adds: suggestion only"
-        elif finding["rule_level"] == "NICE-TO-HAVE":
+        elif finding["rule_level"] == "NICE-TO-HAVE" and finding["impact"] != "HIGH":
             reason = f"NICE-TO-HAVE rule {finding['standard_ref']}: suggestion only"
         else:
             routed.append(finding)
             continue
-        suggestions.append({**finding, "impact": "LOW", "automation_eligibility": "SUGGESTION", "suggestion_reason": reason})
+        suggestions.append({**finding, "automation_eligibility": "SUGGESTION", "suggestion_reason": reason})
     return routed, suggestions
+
+
+def route_sensitive_files(findings: list[dict[str, Any]], pr_findings: list[dict[str, Any]],
+                          protected: set[str]) -> list[dict[str, Any]]:
+    """Rule findings in a file the PR reviewer flags with a protected category go to the developer.
+
+    Delivery has no file-level sensitivity map like Source review's mapper; the PR reviewer's protected
+    findings in the same review are the signal that the file is business-sensitive.
+    """
+    flagged: dict[str, list[str]] = {}
+    for finding in pr_findings:
+        if finding["category"] in protected:
+            flagged.setdefault(finding["file"], []).append(f"{finding['id']} {finding['category']}")
+    routed = []
+    for finding in findings:
+        if finding["file"] in flagged and finding["automation_eligibility"] == "AUTO_FIX":
+            finding = {**finding, "automation_eligibility": "DEVELOPER_REQUIRED", "policy_overrode_agent_classification": True,
+                       "reason": f"{finding['reason']} Business-sensitive file (PR review: {', '.join(flagged[finding['file']])}): a human fixes it."}
+        routed.append(finding)
+    return routed
 
 
 def carry_forward(previous: dict[str, Any], carried: list[dict[str, Any]], round_no: int) -> dict[str, Any]:

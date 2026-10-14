@@ -29,7 +29,9 @@ batch of the project's own rules (coding standards), and give every rule in your
   `agentic-sdlc-docs/workflows/source-review.md`).
 - Never run tests, a build or any other command yourself: you have no execution, network or subagent tools.
 - Never approve the pull request, post comments, fix code or delegate work.
-- Do not invent rules or apply rules outside your index. The workflow decides severity limits and the final route.
+- Do not invent rules or apply rules outside your index. Rate severity honestly: normally LOW or MEDIUM for a
+  MANDATORY rule and LOW for a NICE-TO-HAVE rule, higher only when the violation also causes a concrete problem. The
+  workflow decides the final route.
 
 ## Output
 

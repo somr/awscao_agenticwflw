@@ -860,12 +860,18 @@ class StandardsTests(unittest.TestCase):
         with self.assertRaisesRegex(mod.WorkflowContractError, 'MAINTAINABILITY requires'):
             mod.validate_finding({**self.rule_finding, 'standard_ref': None}, self.work, self.snapshot, self.mapping)
 
-    def test_routing_caps_severity_by_level_and_makes_nice_to_have_a_suggestion(self):
+    def test_severity_stands_and_nice_to_have_is_a_suggestion_unless_rated_high(self):
         levels = {'A-1': 'MANDATORY', 'B-1': 'NICE-TO-HAVE'}
-        mandatory = mod.route_finding({**self.rule_finding, 'severity': 'HIGH'}, self.snapshot, self.mapping, levels)
+        mandatory = mod.route_finding(self.rule_finding, self.snapshot, self.mapping, levels)
         self.assertEqual((mandatory['severity'], mandatory['route'], mandatory['rule_level']), ('MEDIUM', 'AUTO_FIX', 'MANDATORY'))
+        high = mod.route_finding({**self.rule_finding, 'severity': 'HIGH'}, self.snapshot, self.mapping, levels)
+        self.assertEqual((high['severity'], high['route']), ('HIGH', 'HUMAN_REQUIRED'))
         nice = mod.route_finding({**self.rule_finding, 'standard_ref': 'B-1', 'severity': 'MEDIUM'}, self.snapshot, self.mapping, levels)
-        self.assertEqual((nice['severity'], nice['route']), ('LOW', 'SUGGESTION'))
+        self.assertEqual((nice['severity'], nice['route']), ('MEDIUM', 'SUGGESTION'))
+        exception = mod.route_finding({**self.rule_finding, 'standard_ref': 'B-1', 'severity': 'HIGH'}, self.snapshot, self.mapping, levels)
+        self.assertEqual((exception['severity'], exception['route']), ('HIGH', 'HUMAN_REQUIRED'))
+        sensitive = {**self.mapping, 'files': [{**self.mapping['files'][0], 'sensitive_boundaries': ['BUSINESS_RULES']}]}
+        self.assertEqual(mod.route_finding(self.rule_finding, self.snapshot, sensitive, levels)['route'], 'HUMAN_REQUIRED')
         with self.assertRaisesRegex(mod.WorkflowContractError, 'Unknown project rule'):
             mod.route_finding(self.rule_finding, self.snapshot, self.mapping, {})
         plain = {**self.rule_finding, 'category': 'CORRECTNESS', 'standard_ref': None}
@@ -906,7 +912,7 @@ class StandardsTests(unittest.TestCase):
                 gaps = json.loads((self.work / 'reported-gaps.json').read_text())
                 self.assertEqual([g['gap'] for g in gaps], ['Project rule A-2 was not assessed'])
                 value = {'decisions': [{'candidate_id': c['candidate_id'], 'disposition': 'ACCEPT', 'reason': 'Confirmed',
-                                        'finding': {**c, 'severity': 'HIGH'}} for c in candidates],
+                                        'finding': c} for c in candidates],
                          'coverage_gaps': [{'gap': 'Rule A-2 was not assessed', 'covers': ['G1']}]}
             else:
                 routed = json.loads((self.work / 'routed-findings.json').read_text())
@@ -920,10 +926,10 @@ class StandardsTests(unittest.TestCase):
         self.assertIn('Candidates with a standard_ref', prompts['validator'])
         by_ref = {f['standard_ref']: f for f in report['findings']}
         self.assertEqual((by_ref['A-1']['severity'], by_ref['A-1']['route']), ('MEDIUM', 'AUTO_FIX'))
-        self.assertEqual((by_ref['B-1']['severity'], by_ref['B-1']['route']), ('LOW', 'SUGGESTION'))
+        self.assertEqual((by_ref['B-1']['severity'], by_ref['B-1']['route']), ('MEDIUM', 'SUGGESTION'))
         self.assertEqual(report['queues']['SUGGESTION'], [by_ref['B-1']['stable_id']])
         self.assertEqual([(s['standard_ref'], s['severity'], s['outside_changed_lines']) for s in report['suggestions']],
-                         [('A-1', 'LOW', True)])
+                         [('A-1', 'MEDIUM', True)])
         self.assertEqual(report['standards']['verdicts'], {'A-1': 'VIOLATED', 'A-2': 'NOT_ASSESSED', 'B-1': 'VIOLATED'})
         self.assertEqual((report['standards']['applicable'], report['standards']['skipped']), (['A-1', 'A-2', 'B-1'], ['Z-1']))
         self.assertEqual(report['coverage_status'], 'INCOMPLETE')

@@ -409,7 +409,7 @@ Text.
                     if step_id == 'standards-review-r1-b1':
                         return {'rules': [{'id': 'R-1', 'status': 'VIOLATED', 'finding_ids': ['N1', 'N3']},
                                           {'id': 'R-2', 'status': 'VIOLATED', 'finding_ids': ['N2']}],
-                                'findings': [finding('N1', 'R-1', 'app/value.py', 2, 'HIGH', 'AUTO_FIX'),
+                                'findings': [finding('N1', 'R-1', 'app/value.py', 2, 'LOW', 'AUTO_FIX'),
                                              finding('N2', 'R-2', 'app/other.py', 1, 'MEDIUM', 'AUTO_FIX'),
                                              finding('N3', 'R-1', 'app/value.py', 1, 'LOW', 'AUTO_FIX')],
                                 'coverage_gaps': []}
@@ -429,7 +429,7 @@ Text.
                 self.assertNotIn('R-2 [', prompts['standards-review-r2-b1'].rsplit('```', 1)[1])
                 first = json.loads((records / 'pr-review-r1.json').read_text())
                 n1 = next(f for f in first['findings'] if f['id'] == 'STD-r1-b1:N1')
-                self.assertEqual((n1['impact'], n1['automation_eligibility']), ('MEDIUM', 'AUTO_FIX'))
+                self.assertEqual((n1['impact'], n1['automation_eligibility']), ('LOW', 'AUTO_FIX'))
                 self.assertEqual(sorted((s['standard_ref'], s['suggestion_reason'].split(':')[0]) for s in first['suggestions']),
                                  [('R-1', 'Outside the lines this diff adds'), ('R-2', 'NICE-TO-HAVE rule R-2')])
                 last = json.loads((records / 'pr-review-r2.json').read_text())

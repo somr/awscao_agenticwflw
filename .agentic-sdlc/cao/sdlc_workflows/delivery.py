@@ -51,6 +51,7 @@ from .delivery_standards import (
     build_standards_reviewer_prompt,
     check_standards_answer,
     split_suggestions,
+    route_sensitive_files,
     carry_forward,
     stage_round,
 )
@@ -1126,7 +1127,7 @@ def main() -> None:
                 "not_assessed": sorted(rule for rule, status in verdicts.items() if status == "NOT_ASSESSED"),
                 "coverage_gaps": [gap for answer in results[1:] for gap in answer["coverage_gaps"]],
             }
-            findings = result["findings"] + routed
+            findings = result["findings"] + route_sensitive_files(routed, result["findings"], PROTECTED_PR_REVIEW_CATEGORIES)
             result = {**result, "findings": findings, "suggestions": suggestions, "standards": standards,
                       "has_developer_required": any(f["automation_eligibility"] == "DEVELOPER_REQUIRED" for f in findings),
                       "has_auto_fix": any(f["automation_eligibility"] == "AUTO_FIX" for f in findings)}

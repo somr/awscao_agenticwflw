@@ -22,9 +22,8 @@ CATEGORIES = PROTECTED | {"CORRECTNESS", "TESTING", "RESOURCE_HANDLING", "SECURI
 # A finding that cites a project rule (standard_ref). MAINTAINABILITY is allowed only on such findings.
 STANDARD_REF = re.compile(r"[A-Z][A-Z0-9]*-[0-9]+")
 RULE_VERDICTS = ("VIOLATED", "NOT_VIOLATED", "NOT_ASSESSED")
-# Highest severity a rule finding may carry, by rule level; NICE-TO-HAVE findings are suggestions only.
-RULE_SEVERITY_CAP = {"MANDATORY": "MEDIUM", "NICE-TO-HAVE": "LOW"}
-SEVERITY_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+# A NICE-TO-HAVE rule finding is a suggestion, unless the reviewer rated it HIGH because the violation also
+# causes a concrete problem: that exception is routed like any other finding (so to a human).
 ROUTES = ("AUTO_FIX", "HUMAN_REQUIRED", "SUGGESTION")
 # The staged rules of a run: written by the workflow into the review workspace, never by an agent.
 KNOWLEDGE_INDEX = "knowledge/index.json"
@@ -243,9 +242,6 @@ def route_finding(finding: dict, snapshot: dict, mapping: dict, levels: dict[str
     if ref is not None:
         level = (levels or {}).get(ref)
         require(level is not None, f"Unknown project rule {ref}")
-        cap = RULE_SEVERITY_CAP[level]
-        if SEVERITY_RANK[finding["severity"]] > SEVERITY_RANK[cap]:
-            finding = {**finding, "severity": cap}
     reasons = []
     if finding["severity"] == "HIGH":
         reasons.append("High impact")
@@ -258,7 +254,7 @@ def route_finding(finding: dict, snapshot: dict, mapping: dict, levels: dict[str
         if not finding[flag]:
             reasons.append(f"Eligibility condition not met: {flag}")
     fid = finding_identity(finding, snapshot)
-    if level == "NICE-TO-HAVE":
+    if level == "NICE-TO-HAVE" and finding["severity"] != "HIGH":
         route, reasons = "SUGGESTION", [f"NICE-TO-HAVE rule {ref}: suggestion only"]
     else:
         route = "HUMAN_REQUIRED" if reasons else "AUTO_FIX"

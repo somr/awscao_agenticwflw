@@ -81,12 +81,12 @@ class StandardsReviewTest(unittest.TestCase):
         return {"rules": [{"id": rule, "status": status, "finding_ids": ids} for rule, (status, ids) in verdicts.items()],
                 "findings": findings, "coverage_gaps": []}
 
-    def test_a_complete_answer_is_prefixed_and_capped(self):
+    def test_a_complete_answer_is_prefixed_and_keeps_the_reviewers_impact(self):
         checked = mod.check_standards_answer(
             self.answer([self.finding(impact="HIGH"), self.finding("N2", "R-2", impact="MEDIUM")],
                         {"R-1": ("VIOLATED", ["N1"]), "R-2": ("VIOLATED", ["N2"])}), self.batch, self.repo, "STD-r1-b1")
         self.assertEqual([(f["id"], f["impact"], f["rule_level"]) for f in checked["findings"]],
-                         [("STD-r1-b1:N1", "MEDIUM", "MANDATORY"), ("STD-r1-b1:N2", "LOW", "NICE-TO-HAVE")])
+                         [("STD-r1-b1:N1", "HIGH", "MANDATORY"), ("STD-r1-b1:N2", "MEDIUM", "NICE-TO-HAVE")])
         self.assertEqual(checked["verdicts"], {"R-1": "VIOLATED", "R-2": "VIOLATED"})
 
     def test_inconsistent_answers_are_rejected(self):
@@ -106,13 +106,23 @@ class StandardsReviewTest(unittest.TestCase):
                 mod.check_standards_answer(self.answer(findings, verdicts), self.batch, self.repo, "STD-r1-b1")
 
     def test_nice_to_have_and_outside_lines_become_suggestions(self):
-        findings = [{**self.finding(fid, ref, line), "rule_level": level, "id": fid}
-                    for fid, ref, line, level in (("A", "R-1", 2, "MANDATORY"), ("B", "R-1", 1, "MANDATORY"),
-                                                  ("C", "R-2", 2, "NICE-TO-HAVE"))]
+        findings = [{**self.finding(fid, ref, line, impact), "rule_level": level, "id": fid}
+                    for fid, ref, line, level, impact in (("A", "R-1", 2, "MANDATORY", "LOW"), ("B", "R-1", 1, "MANDATORY", "MEDIUM"),
+                                                          ("C", "R-2", 2, "NICE-TO-HAVE", "MEDIUM"), ("D", "R-2", 3, "NICE-TO-HAVE", "HIGH"))]
         routed, suggestions = mod.split_suggestions(findings, {"app/a.py": {2, 3}})
-        self.assertEqual([f["id"] for f in routed], ["A"])
+        # A NICE-TO-HAVE finding rated HIGH is the sensible exception: it is routed, not a suggestion.
+        self.assertEqual([f["id"] for f in routed], ["A", "D"])
         self.assertEqual([(s["id"], s["automation_eligibility"], s["impact"]) for s in suggestions],
-                         [("B", "SUGGESTION", "LOW"), ("C", "SUGGESTION", "LOW")])
+                         [("B", "SUGGESTION", "MEDIUM"), ("C", "SUGGESTION", "MEDIUM")])
+
+    def test_rule_findings_in_a_business_sensitive_file_go_to_the_developer(self):
+        rule_findings = [{**self.finding("A"), "id": "STD:A"}, {**self.finding("B"), "id": "STD:B", "file": "app/b.py"}]
+        pr_findings = [{"id": "PR-001", "file": "app/a.py", "category": "BUSINESS_RULES"},
+                       {"id": "PR-002", "file": "app/b.py", "category": "STYLE"}]
+        routed = mod.route_sensitive_files(rule_findings, pr_findings, mod.PROTECTED_PR_REVIEW_CATEGORIES)
+        self.assertEqual([(f["id"], f["automation_eligibility"]) for f in routed],
+                         [("STD:A", "DEVELOPER_REQUIRED"), ("STD:B", "AUTO_FIX")])
+        self.assertIn("PR-001 BUSINESS_RULES", routed[0]["reason"])
 
     def test_later_rounds_review_only_rules_whose_files_changed(self):
         rules = [{"id": "R-1", "domain": "D", "text": "x", "globs": ["app/a.py"]},
