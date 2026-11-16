@@ -55,6 +55,7 @@ Implementation design history; use the workflow guides above for current operati
 - [Resume a BLOCKED Delivery run](plans/delivery-resume.md)
 - [Per-suite verification timeouts and repair turns](plans/verification-timeouts-and-repair-turns.md) (planned)
 - [Project knowledge for the reviewers](plans/reviewer-knowledge.md)
+- [Follow-up on review comments](plans/source-review-follow-up.md) (planned)
 
 ## Verification records
 
