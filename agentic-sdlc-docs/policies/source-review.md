@@ -10,6 +10,24 @@ changed production/test source file. Include a reachable failure scenario and ob
 consequence. Exclude requirements/plan compliance, CI status, stylistic preferences,
 speculation and pre-existing issues. Independent validation must accept it explicitly.
 
+## Project rule findings
+
+When the reviewed repository declares project rules (`review_knowledge`), a violation of a
+rule by lines the PR adds or changes is an accepted finding even without a reachable failure
+scenario. It cites its rule (`standard_ref`), normally uses `MAINTAINABILITY` (allowed only
+with a rule), and goes through independent validation and the gate below like any finding.
+Severity is normally LOW or MEDIUM for a `MANDATORY` rule and LOW for a `NICE-TO-HAVE` rule,
+higher only when the violation also causes a concrete problem; the reviewer's severity stands.
+
+- A violation of a `NICE-TO-HAVE` rule, unless HIGH, is routed `SUGGESTION`.
+- A rule finding on lines the PR does not add or change is a non-blocking suggestion that is
+  not validated (`outside_changed_lines`).
+- Suggestions are optional: never automatically fixed and never blocking.
+- Every applicable rule gets a verdict per changed file it covers; a rule and file left
+  unassessed is a coverage gap.
+
+The rules come from the trusted `repository_root`, never from the PR.
+
 ## AUTO_FIX
 
 All conditions are mandatory for both LOW and MEDIUM severity:

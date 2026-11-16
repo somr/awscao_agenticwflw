@@ -14,7 +14,7 @@ review, with a comment beside the code for each finding it can place.
 | | |
 |---|---|
 | Registered name | `source_review` |
-| Agents | Context Mapper, Correctness Reviewer, Security Reviewer, Finding Validator, Feedback Author (five profiles) |
+| Agents | Context Mapper, Correctness Reviewer, Security Reviewer, Standards Reviewer (only with [project rules](#project-rules)), Finding Validator, Feedback Author (six profiles) |
 | Done by Python | Pinning the PR, exporting the source, the routing gate, placing findings in the diff, rendering the artifacts, publication |
 | Requires | A GitHub PR URL, or a local committed repository in fixture mode |
 | Human gate | A person edits `review-draft.md` and runs the publish command; a person decides the `HUMAN_REQUIRED` findings. Nothing approves, requests changes on or merges the PR. |
@@ -27,14 +27,20 @@ review, with a comment beside the code for each finding it can place.
 flowchart TD
     A["Pin PR base and head,<br/>export the source"] --> B[Context Mapper]
     B --> C[Correctness Reviewer]
-    C --> D[Security Reviewer]
-    D --> E[Finding Validator]
+    B --> D[Security Reviewer]
+    B --> S["Standards Reviewers<br/>(project rules, one per batch)"]
+    C --> E[Finding Validator]
+    D --> E
+    S --> E
+    S --> SG["Suggestions outside<br/>the changed lines"]
     E --> F{"Routing gate<br/>(Python)"}
     F --> G[Feedback Author]
+    SG --> G
     G --> P["Placement in the diff<br/>(Python)"]
     P --> H["code-review.json, comments.md<br/>and review-draft.md"]
     H --> I["AUTO_FIX queue"]
     H --> J["HUMAN_REQUIRED queue"]
+    H --> SQ["SUGGESTION queue<br/>(project rules only)"]
     H --> K["A person edits the draft<br/>and publishes it"]
 ```
 
@@ -44,19 +50,23 @@ flowchart TD
    needs a concrete, reachable failure scenario.
 3. **Security Reviewer.** Independently examines authorization, sensitive data, transactions, concurrency and
    resource lifetime.
-4. **Finding Validator.** Re-reads the source, checks guards and base and head behavior, rejects speculation,
+4. **Standards Reviewers.** Only when the project has [rules](#project-rules): check the lines the PR adds or
+   changes against the project's own coding standards, one call per batch of rules and files, and give every rule a
+   verdict per file. A rule finding outside the lines the PR changes skips the validator and becomes a suggestion.
+5. **Finding Validator.** Re-reads the source, checks guards and base and head behavior, rejects speculation,
    merges findings that share a root cause and reassesses fix eligibility. Every candidate gets an explicit
    acceptance, rejection or duplicate decision. It also merges coverage gaps that other agents reported in different
    words.
-5. **Routing gate.** Python routes each validated finding, ignoring any route an agent supplied.
-6. **Feedback Author.** Explains the accepted findings for the PR author. It cannot change routing or severity;
+6. **Routing gate.** Python routes each validated finding, ignoring any route an agent supplied.
+7. **Feedback Author.** Explains the accepted findings for the PR author. It cannot change routing or severity;
    Python renders the canonical evidence and routing.
-7. **Placement.** Python decides which findings can go beside the code and writes the editable
+8. **Placement.** Python decides which findings can go beside the code and writes the editable
    `review-draft.md` ([The draft](#the-draft)).
 
-The specialist agents have separate contexts and are told not to consult each other's findings. They run one
-after another, which keeps CAO step ordering predictable and avoids contention on a shared server; independence
-does not need simultaneous execution. Parallel scheduling is not supported.
+The specialist agents have separate contexts and are told not to consult each other's findings. The correctness,
+security and standards reviewers run at the same time, at most `review_max_parallel` calls at once; each has a fixed
+step ID and the results are merged in a fixed order, so the outcome does not depend on which finishes first. The
+mapper runs before them and the validator and feedback author after them.
 
 ### Routing policy
 
@@ -91,6 +101,13 @@ estimate, not a calibrated probability: the gate enforces validated evidence fie
 | Callers disagree about idempotency | `HUMAN_REQUIRED` | Intended behavior needs a decision |
 | Suspicion contradicted by an existing guard | Rejected | No substantiated defect |
 
+**Rule findings.** A finding from a standards reviewer cites a project rule (`standard_ref`) and uses the
+`MAINTAINABILITY` category unless another fits better; only these findings may use it. A rule violation needs no
+failure scenario. It goes through the same gate, so a file the mapper marks with a protected boundary still sends it
+to a person. Two additions: a violation of a `NICE-TO-HAVE` rule, unless rated `HIGH`, is routed `SUGGESTION`, and a
+rule finding on lines the PR does not add or change is a suggestion that is never validated (`outside_changed_lines`).
+Suggestions are optional, never fixed automatically and never block.
+
 The normative rules are in [the policy](../policies/source-review.md). The thresholds are fixed by
 that policy and are not configurable.
 
@@ -100,7 +117,7 @@ that policy and are not configurable.
 2. Git and the GitHub CLI (`gh`) on the CAO server host. In GitHub mode `gh` needs read access to the PR, and Git
    needs HTTPS read access to its repository (`gh auth setup-git` is one way). The workflow never changes credentials.
 3. The repository root and any fixture paths must be reachable **on the server host**.
-4. Install the workflow and its five profiles:
+4. Install the workflow and its six profiles:
 
    ```bash
    bash .agentic-sdlc/cao/workflows/install_source_review.sh "$PWD"
@@ -108,10 +125,11 @@ that policy and are not configurable.
 
    The installer builds the workflow and its shared modules into one standalone artifact, validates it, and adds
    only `~/.aws/cli-agent-orchestrator/workflows/source_review.py` and the profiles `sdlc_source_mapper`,
-   `sdlc_source_correctness`, `sdlc_source_security`, `sdlc_source_validator` and `sdlc_source_feedback`. It does not
+   `sdlc_source_correctness`, `sdlc_source_security`, `sdlc_source_standards`, `sdlc_source_validator` and
+   `sdlc_source_feedback`. It does not
    touch the other workflows, their profiles or the repository hook.
 
-   It **refuses to overwrite** an installed `source_review` or any of the five profiles, so an ordinary reinstall
+   It **refuses to overwrite** an installed `source_review` or any of the six profiles, so an ordinary reinstall
    cannot replace definitions another run is using. Installation is not transactional across the profile installs:
    if it fails part way, inspect the new names before retrying and do not delete unrelated profiles. To replace an
    installed version, follow [Upgrading](#upgrading).
@@ -127,14 +145,14 @@ installed profile as `agent-context/<name>.md`. `cao profile remove` only manage
 
 1. Wait until no `source_review` run is active (`cao workflow runs`).
 2. Keep the installed workflow for rollback. The profiles can also be reinstalled from the repository.
-3. Remove the installed workflow and the five profiles, then reinstall:
+3. Remove the installed workflow and the six profiles, then reinstall:
 
    ```bash
    CAO_HOME=~/.aws/cli-agent-orchestrator
    ROLLBACK=$(mktemp -d)
    cp -p "$CAO_HOME/workflows/source_review.py" "$CAO_HOME"/agent-context/sdlc_source_*.md "$ROLLBACK"/
    rm "$CAO_HOME/workflows/source_review.py"
-   rm "$CAO_HOME"/agent-context/sdlc_source_{mapper,correctness,security,validator,feedback}.md
+   rm -f "$CAO_HOME"/agent-context/sdlc_source_{mapper,correctness,security,standards,validator,feedback}.md
    bash .agentic-sdlc/cao/workflows/install_source_review.sh "$PWD"
    ```
 
@@ -156,6 +174,7 @@ defaults; `CAO_WORKFLOW_DIR` moves the workflows.
 | `pr_url` | GitHub mode | A GitHub.com pull request URL. |
 | `source_repository` | fixture mode | A local committed repository. |
 | `base_sha`, `head_sha` | fixture mode | Exact 40-character commit SHAs. |
+| `review_max_parallel` | no, default `4` | At most this many reviewer calls (correctness, security and the standards batches) run at the same time, 1 to 4. `1` runs them one after another. Recorded in `code-review.json`. |
 
 Choose GitHub mode **or** fixture mode; mixing them is rejected. GitHub Enterprise, SHA-256 Git repositories,
 configurable routing thresholds and automatic fixing are not supported.
@@ -207,6 +226,7 @@ agentic-sdlc-records/source-review/<repo>-pr<N>/<run-id>/    results (not ignore
     ├── source/base/ and source/head/
     ├── diff.patch and snapshot.json
     ├── mapping.json, candidates.json, reported-gaps.json, adjudication.json, routed-findings.json
+    ├── knowledge/          only with project rules: rules/<RULE-ID>.md, index-b<k>.md and diff-b<k>.patch per batch, index.json
     └── .agentic-sdlc/runtime/<role>/    each agent's answer, raw output and stabilization log
 ```
 
@@ -231,7 +251,11 @@ remediation re-checks every validated finding against it. There is no global "la
 - `draft_sha256`, which shows whether `review-draft.md` was edited before publication;
 - `findings`, each with location, `placement` (see below), severity, confidence, trigger, evidence, consequence, fix direction,
   verification method, eligibility fields and routing reasons;
-- `queues.AUTO_FIX` and `queues.HUMAN_REQUIRED`: finding IDs;
+- `queues.AUTO_FIX` and `queues.HUMAN_REQUIRED`: finding IDs; with project rules also `queues.SUGGESTION`;
+- with project rules, `suggestions` (rule findings outside the lines the PR changes) and `standards`: the rule files
+  with their SHA-256, the settings, the applicable and skipped rules, the batches with their rules and files,
+  `verdicts` per rule, `file_verdicts` per rule and file, and `not_assessed` as "RULE in file";
+- `review_max_parallel`;
 - `comments_sha256`, which the publish tool checks so that an altered `comments.md` audit copy is detected.
 
 Each finding carries a `stable_id` and `reviewed_head_sha`. The ID hashes the PR identity, path, symbol, category
@@ -244,8 +268,9 @@ review does not prove that its defect was fixed.
 | Outcome | Meaning | What to do |
 |---|---|---|
 | `status: STALE` | The base tip or head moved, or the PR closed, before completion. | A development agent must not act on it. A person can still publish it if the PR is open; see [When the PR moves](#when-the-pr-moves). |
-| `coverage_status: INCOMPLETE` | Some files could not be reviewed (binary or non-UTF-8 files, control files, symlinks, submodules, files over 2 MB, or more than 100 MB per tree). | Assess the `coverage_gaps` before treating the review as complete. An empty findings list can still be `INCOMPLETE`. |
+| `coverage_status: INCOMPLETE` | Some files could not be reviewed (binary or non-UTF-8 files, control files, symlinks, submodules, files over 2 MB, or more than 100 MB per tree), or a project rule was not assessed for a file. | Assess the `coverage_gaps` before treating the review as complete. An empty findings list can still be `INCOMPLETE`. |
 | The run fails and `failure.json` exists | Orchestration failed, for example incomplete agent execution or a diff over 2 MB (which fails instead of being truncated). | Keep the evidence and use a fresh run ID. |
+| The run fails at once, with no working folder | The project rules in `repository_root` are invalid (see [Project rules](../reference/project-rules.md#writing-a-rule-file)), or an input is invalid. | Fix the rule file or the project file, then run again. |
 | A reused run ID is refused | Each run creates its directory exclusively; reuse and resume are deliberately refused. | Use a fresh ID. |
 
 `COMPLETE` means no gaps were reported within a source-only review; it is not proof of correctness.
@@ -290,7 +315,8 @@ flowchart TD
    | `HUMAN_REQUIRED` | Whether the finding is right and how to word it. It touches a protected area (security, data, public contracts, …), is high impact, or needs a judgment. Keep it, reword it, or set `publish="no"` with a `reason` if it is wrong. |
    | `AUTO_FIX` | The same decision. The label only means the fix looks local, clear and checkable. Nothing fixes it automatically; the PR author does. |
    | Placed in the general comment | Whether it can go beside the code after all: point `anchor` at changed lines of the same problem, for example the deleted line itself. |
-   | Coverage gaps | Whether a gap matters for this PR. They are listed in the general comment; add your own remarks there. |
+   | `SUGGESTION` | Whether to publish it. It comes from a `NICE-TO-HAVE` project rule; suggestions outside the changed lines are listed in the general comment. |
+| Coverage gaps | Whether a gap matters for this PR. They are listed in the general comment; add your own remarks there. |
 
 5. **Preview.** Run the command without `--publish`. It reads the PR from GitHub, posts nothing, and prints a summary
    followed by the exact request:
@@ -456,8 +482,28 @@ The separate publisher can push verified fixes and reply to the original GitHub 
 
 ## Configuration
 
-Source review has no configuration file. What you choose is the mode and the inputs above, and the routing policy is
-fixed. To try it without a real PR, use fixture mode.
+Source review's routing policy is fixed. What you choose is the mode, the inputs above and, optionally, project
+rules. To try it without a real PR, use fixture mode.
+
+### Project rules
+
+Source review reads `review_knowledge` from `agentic-sdlc-project.json` in `repository_root`, never from the PR, so a
+PR that edits a rule file does not change the rules used to review it. The rule files, their format, the settings
+and the batching are described in [Project rules for the reviewers](../reference/project-rules.md).
+
+- The rules whose patterns match a changed file are staged in the workspace (`knowledge/`), and each standards batch
+  gets its index and its part of the diff (`knowledge/diff-b<k>.patch`).
+- Rule findings on changed lines go to the Finding Validator with the other candidates, which accepts them when the
+  added code violates the rule. Rule findings outside the changed lines become suggestions (see
+  [Routing policy](#routing-policy)).
+- A rule and file still without a verdict after the repair turn is reported as a coverage gap ("Project rule X was
+  not assessed in file") and makes the review `INCOMPLETE`.
+- In `comments.md` and the draft, a rule finding shows its rule and level; suggestions outside the changed lines
+  have their own section in `comments.md` and are listed in the general comment.
+- [Source remediation](source-remediation.md) points its remediator and fix reviewer at the rules the review staged.
+
+Without `review_knowledge`, no standards step runs and the results have no `standards`, `suggestions` or
+`SUGGESTION` queue.
 
 ### Local fixture
 
@@ -488,6 +534,7 @@ cannot be previewed or published, because there is no GitHub PR.
   account and inherit its global configuration. Use a dedicated provider account or container if you must isolate
   a hostile repository.
 - Both snapshots are UTF-8 text exports; whatever cannot be exported becomes a coverage gap.
+- Project rules come from `repository_root`, not from the PR, and their SHA-256 are recorded in `code-review.json`.
 - Incomplete agent execution never becomes an empty review. A JSON or contract defect gets one repair attempt;
   an execution failure writes `failure.json` to the working folder, creates no results folder and fails the CAO run.
 - Only this run's step terminals are cleaned up. The workflow never restarts the CAO server, cleans up shared
@@ -497,7 +544,7 @@ cannot be previewed or published, because there is no GitHub PR.
 ## Tests
 
 The suite covers routing overrides, contracts, validation accounting, deduplication, source export from real Git
-commits, preservation of a dirty checkout, write-guard symlink escapes, the five-stage pipeline, coverage
+commits, preservation of a dirty checkout, write-guard symlink escapes, the pipeline with and without project rules (batches, per-file verdicts, suggestions), parallel reviewers, coverage
 propagation, placement in the diff, draft parsing and reviewer edits, the GitHub call allow-list, the per-finding
 check after the PR moves (with real Git commits), publication retries, the results and working folders (naming,
 publishing from the results folder, refusing the wrong folder or another run's report) and failed-run evidence:
@@ -513,5 +560,5 @@ accuracy across real PRs. The [live verification record](../verification/source-
 
 ## See also
 
-[Delivery](delivery.md) · [Agent profiles](../reference/agent-profiles.md) ·
+[Delivery](delivery.md) · [Agent profiles](../reference/agent-profiles.md) · [Project rules](../reference/project-rules.md) ·
 [Source-review contract](../contracts/source-review-workflow.md) · [Source-review policy](../policies/source-review.md)

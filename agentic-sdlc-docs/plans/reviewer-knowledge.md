@@ -1,6 +1,6 @@
 # Plan: project knowledge for the reviewers (coding standards)
 
-Status: **in progress: steps 1-5 done (4 and 5 on 2026-10-14); step 5b (every file checked) done 2026-11-16; step 6 (docs) left**. Decisions in section 3 are all agreed (D1-D15 2026-10-13, D16-D17 2026-11-16). Progress notes are at the end.
+Status: **done: steps 1-5 (4 and 5 on 2026-10-14), 5b (every file checked) and 6 (docs) on 2026-11-16**. Decisions in section 3 are all agreed (D1-D15 2026-10-13, D16-D17 2026-11-16). Progress notes are at the end.
 
 ## 1. Why
 
@@ -350,4 +350,15 @@ Each step: unit tests green, reinstall the affected workflows and profiles, live
   round 2). An AST scan of the round 1 and final code confirmed PY-1: all 40 (46) public definitions the change adds
   have docstrings, so the authors followed the rules and this run could not measure recall; live 1 does. No CAO
   sessions left open; the throwaway folder was deleted.
+- **Step 6 done (2026-11-16): docs.** New `reference/project-rules.md` (rule file format, settings with bounds, how the
+  reviewers batch and give per-file verdicts, findings and suggestions, authors, trust and audit, cost). Updated:
+  `workflows/delivery.md` (agents, review step, input `review_max_parallel`, records, `failed` cause, configuration
+  table, project-file key, new section "Project rules", forbidden roots), `workflows/source-review.md` (parallel
+  reviewers, standards stage, rule findings in the routing policy, six profiles and the upgrade `rm` list, input,
+  `knowledge/` folder, report keys, `SUGGESTION`, invalid rules, new section "Project rules"),
+  `workflows/hybrid-delivery.md`, `workflows/source-remediation.md`, `reference/agent-profiles.md` (two profiles, 16
+  files), `reference/write-scope-hook.md` (protected folders, read-only profile), `architecture.md`,
+  `build-and-install.md`, both policies and both workflow contracts (the PR review policy and the Delivery contract are
+  read by the agents), the docs index and the root README. All links and anchors checked by script; all 19 Mermaid
+  diagrams in the changed pages parse; the JSON example validated with the real loaders; 381 tests OK.
 

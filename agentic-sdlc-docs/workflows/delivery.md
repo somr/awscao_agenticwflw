@@ -10,12 +10,12 @@ a set of local artifacts, and a human records the final decision.
 | | |
 |---|---|
 | Registered name | `sdlc_deliver` |
-| Agents | Code Supervisor (hybrid mode only), Implementer (also the workers and the integrator), PR Reviewer, Remediator |
+| Agents | Code Supervisor (hybrid mode only), Implementer (also the workers and the integrator), PR Reviewer, Standards Reviewer (only with [project rules](#project-rules)), Remediator |
 | Done by Python | Plan checks, branch and commits, verification, review routing, the remediation loop, PR artifacts |
 | Requires | A plan approved with `approve_plan.py` (see [Planning](planning.md)) |
 | Human gate | Recording the decision on the delivered branch with `record_pr_approval.py` |
 | Results | `agentic-sdlc-records/<ticket>/` and the Git branch `sdlc/<ticket>` |
-| Write boundary | Implementer and remediator: the configured source roots. Supervisor and PR reviewer: their answer file only. |
+| Write boundary | Implementer and remediator: the configured source roots. Supervisor and reviewers: their answer file only. |
 
 ## How it works
 
@@ -34,7 +34,7 @@ flowchart TD
     REP --> VER
     OK -- "no, after repair" --> BL[BLOCKED]
     OK -- yes --> PR["Write the PR artifacts<br/>(local only)"]
-    PR --> REV[Independent PR Reviewer]
+    PR --> REV["Independent PR Reviewer,<br/>standards reviewers beside it"]
     REV --> F{"Auto-fixable findings<br/>and rounds left?"}
     F -- yes --> REM[Remediator]
     REM -- "changed nothing" --> ESC["Escalate those findings<br/>to the human"]
@@ -58,12 +58,15 @@ flowchart TD
    Python groups the assignments that do not depend on each other into waves, runs the tasks of a wave at the same
    time in separate Git worktrees, commits each task and merges the commits in task order; an integration pass then
    reconciles the result. In single mode one implementer does everything. See
-   [Specialists and skills](hybrid-delivery.md). Python makes every commit.
+   [Specialists and skills](hybrid-delivery.md). Python makes every commit. With [project rules](#project-rules), every
+   agent that writes code is told which rules apply to the files it changes.
 4. **Verify.** Python runs the project's verification commands. One failure gets one repair turn; a second failure ends the run `BLOCKED`.
 5. **PR artifacts.** Title, body and diff are written locally. Nothing is pushed.
-6. **Review.** A separate read-only agent reviews the diff and classifies the findings. Python applies the routing
-   policy, so an agent's own classification is never trusted: high-impact and protected-category findings always go
-   to a human, and only findings that meet the auto-fix conditions are remediated.
+6. **Review.** A separate read-only agent reviews the diff and classifies the findings. With
+   [project rules](#project-rules), standards reviewers check the added code against them at the same time, one call
+   per batch of rules and files. Python applies the routing policy, so an agent's own classification is never trusted:
+   high-impact and protected-category findings always go to a human, and only findings that meet the auto-fix
+   conditions are remediated.
 7. **Remediate.** The remediator fixes exactly the auto-fixable findings, Python verifies again, and the new head is
    reviewed afresh. This repeats at most three times. If the remediator changes no file under the source roots, no
    code change can resolve those findings (for example, the finding asks for verification evidence that only a
@@ -75,10 +78,11 @@ flowchart TD
 
 1. **Approve a plan.** Run [Planning](planning.md) until it reports `AWAITING_HUMAN_APPROVAL`, read
    `agentic-sdlc-records/<ticket>/development-plan.md`, then record your decision with `approve_plan.py`.
-2. **Install the profiles, then the workflow**, in this order (the default mode needs `sdlc_code_supervisor`):
+2. **Install the profiles, then the workflow**, in this order (the default mode needs `sdlc_code_supervisor`; project
+   rules need `sdlc_standards_reviewer`):
 
    ```bash
-   for profile in code-supervisor implementer pr-reviewer remediator; do
+   for profile in code-supervisor implementer pr-reviewer standards-reviewer remediator; do
      cao profile validate ".agentic-sdlc/cao/profiles/$profile.md"
      cao install ".agentic-sdlc/cao/profiles/$profile.md"
    done
@@ -90,8 +94,8 @@ flowchart TD
    `.agentic-sdlc/cao/specialists.json`, and the project's `agentic-sdlc-project.json`. The hook runs with the `python3` on your `PATH` and uses only the standard library.
 4. **Start from a clean tree.** The base branch must exist. In hybrid mode the source roots must have no uncommitted
    changes and the Git index must be empty.
-5. **Configure it for your project** in `agentic-sdlc-project.json`: source roots and verification commands
-   (see [Configuration](#configuration)).
+5. **Configure it for your project** in `agentic-sdlc-project.json`: source roots, verification commands and,
+   optionally, project rules (see [Configuration](#configuration)).
 
 ## Inputs
 
@@ -102,6 +106,7 @@ flowchart TD
 | `base_branch` | no, default `main` | The delivery branch starts from the current tip of this branch, and the plan's approved baseline must still be its ancestor. |
 | `implementation_mode` | no, default `hybrid` | `hybrid`: a supervisor assigns work to registered workers. `single`: one implementer does all the work and verification uses the project's `application` suite. |
 | `hybrid_max_parallel` | no, default `4` | Hybrid mode only: at most this many workers of a wave run at the same time (1 to 4). `1` runs every task one after another in the main checkout. |
+| `review_max_parallel` | no, default `4` | With [project rules](#project-rules): at most this many review calls (the PR reviewer and the standards batches) run at the same time (1 to 4). Recorded in the manifest. |
 | `resume` | no, default `false` | `true` continues the `BLOCKED` delivery recorded in `delivery-manifest.json` at its resume point instead of starting again. The implementation mode then comes from the manifest. See [Resume a `BLOCKED` run](#resume-a-blocked-run). |
 | `resume_redispatch` | no, default `false` | With `resume=true` at the `implementation` resume point: when the current registry rejects the saved tasks, the supervisor assigns only the remaining work instead of the run being refused. |
 
@@ -126,8 +131,8 @@ Under `agentic-sdlc-records/<ticket_id>/`:
 ```text
 ├── delivery-manifest.json   state, mode, parallel width, the supervisor's tasks and each task's commit, source roots, verification results (with the end of each failed command's output), review rounds, remediation history, PR head SHA; when BLOCKED also reason, resume point and branch head
 ├── pr-title.txt, pr-body.md, pr-diff.patch      the local "pull request"
-├── pr-review-r<N>.json      each independent review round
-├── human-review-brief.md    what to read before deciding
+├── pr-review-r<N>.json      each independent review round; with project rules also `standards` and `suggestions`
+├── human-review-brief.md    what to read before deciding; with project rules a "Project rules" section
 ├── pr-approval-record.json  after the human decision
 └── approval-history/        earlier decisions on superseded heads
 ```
@@ -160,7 +165,7 @@ stateDiagram-v2
 | `BLOCKED`, `verification_failed_after_remediation` | A remediation round broke verification. | See [After a `BLOCKED` run](#after-a-blocked-run). |
 | `BLOCKED`, `base_drift_overlap: <paths>` | Only on a resume: the base branch gained commits that change files this delivery also changed. | Merge the base branch into `sdlc/<ticket>` by hand, then resume again. See [Resume a `BLOCKED` run](#resume-a-blocked-run). |
 | `BLOCKED`, `review_failed: ...` | The reviewer or the remediator broke its contract. Remediation commits made before stay on the branch. | See [After a `BLOCKED` run](#after-a-blocked-run). |
-| Run state `failed` | A check stopped the run before any agent: the plan is not approved or changed after review, the baseline is no longer an ancestor, the source-root configuration is invalid, or the source roots are dirty. | `cao workflow result <run-id> --json` carries the traceback in its `warnings` field. |
+| Run state `failed` | A check stopped the run before any agent: the plan is not approved or changed after review, the baseline is no longer an ancestor, the source-root configuration or the project rules are invalid, or the source roots are dirty. | `cao workflow result <run-id> --json` carries the traceback in its `warnings` field. |
 | `AWAITING_HUMAN_REVIEW` with `has_developer_required_findings` | The review found items only a human may decide, such as high-impact or protected categories. | Read the brief. See [Human decisions](#human-decisions). |
 | `AWAITING_HUMAN_REVIEW` with `escalated_findings` | The reviewer marked these findings auto-fixable, but the remediator changed nothing for them. The brief shows each one with the remediator's reason. | Read the brief; each escalated finding is a developer finding. See [Human decisions](#human-decisions). |
 | `convergence_limit_reached` | Automatic remediation used all three rounds and auto-fixable findings remain. | Read the brief; treat the remaining findings as developer findings. See [Human decisions](#human-decisions). |
@@ -360,13 +365,13 @@ branch is still at the reviewed head, writes `pr-approval-record.json`, and sets
 
 ## Configuration
 
-Delivery reads two trusted files plus three run inputs (`base_branch`, `implementation_mode` and
-`hybrid_max_parallel`). The common registry belongs to `.agentic-sdlc/`, which every project can share unchanged.
+Delivery reads two trusted files, the project's rule files when it has any, and four run inputs (`base_branch`,
+`implementation_mode`, `hybrid_max_parallel` and `review_max_parallel`). The common registry belongs to `.agentic-sdlc/`, which every project can share unchanged.
 The project file holds everything that differs between projects.
 
 ```mermaid
 flowchart LR
-    PF["agentic-sdlc-project.json<br/>roots, write profiles, verification"] --> M["Effective configuration"]
+    PF["agentic-sdlc-project.json<br/>roots, write profiles, verification, rules"] --> M["Effective configuration"]
     R[".agentic-sdlc/cao/specialists.json<br/>workers and skills"] --> M
     M --> P["Delivery preflight<br/>validates before any agent"]
     M --> H["Write-scope hook<br/>checks every write"]
@@ -381,7 +386,9 @@ flowchart LR
 | Commands that verify a change | `verification` in `agentic-sdlc-project.json` | none; required |
 | Workers, skills and the suites they need | `workers`, `skills` in `.agentic-sdlc/cao/specialists.json` | one `developer` worker |
 | Implementation mode | input `implementation_mode` | `hybrid` |
+| Project rules the reviewers check | `review_knowledge` in `agentic-sdlc-project.json` | none |
 | Workers running at the same time | input `hybrid_max_parallel` | `4` |
+| Review calls running at the same time | input `review_max_parallel` | `4` |
 | Base branch | input `base_branch` | `main` |
 
 Both files are read from the repository when a run starts, so edits take effect on the next run. Agents can edit
@@ -432,9 +439,10 @@ The common registry, `.agentic-sdlc/cao/specialists.json`:
 
 | Key | File | Required | Rules |
 |---|---|---|---|
-| `version` | both | yes | Must be `1`. The project file accepts no other keys than the three below. |
+| `version` | both | yes | Must be `1`. The project file accepts no other keys than the four below. |
 | `source_roots` | project | no, default `["app"]` | See [Source roots](#source-roots). |
 | `write_profiles` | project | no, default implementer and remediator | Which agent profiles may write under the roots. |
+| `review_knowledge` | project | no | The rule files the reviewers check and their batch limits. See [Project rules](../reference/project-rules.md#enabling-the-rules). |
 | `verification` | project | yes, not empty | Suite name to a non-empty list of commands. A command is a non-empty list of non-empty strings: the program and its arguments, with no shell. |
 | `workers` | registry | yes, not empty | Each worker needs `profile` (an agent profile listed in `write_profiles`), `description` (the supervisor uses it to route work), `skills` (registered skill names; may be empty) and `verification` (a non-empty list of suite names the project defines). |
 | `skills` | registry | no | Each skill needs `path` (a file below `.agentic-sdlc/cao`, normally `skills/<name>/SKILL.md`), `description`, and `verification` (a non-empty list of suite names that run whenever the skill is selected). |
@@ -466,7 +474,7 @@ a multi-module project, write its `agentic-sdlc-project.json`:
 - **`source_roots`**: 1 to 16 relative directories. A root that does not exist yet is fine, because a worker may
   create a new module. Not allowed: absolute paths, `..`, `.`, trailing or doubled slashes, glob characters, `:`,
   and the SDLC's own folders and files (`.git`, `.claude`, `.agentic-sdlc`, `agentic-sdlc-records`,
-  `agentic-sdlc-docs`, `agentic-sdlc-local-inputs`, `agentic-sdlc-project.json`). A root that is a symlink leaving
+  `agentic-sdlc-docs`, `agentic-sdlc-local-inputs`, `agentic-sdlc-pr-review-kb`, `agentic-sdlc-project.json`). A root that is a symlink leaving
   the repository, or pointing into one of those, is refused.
 - **`write_profiles`**: `null` gives a profile every source root; a list limits it to those directories, each equal
   to or inside a source root, for example `"sdlc_java_persistence": ["billing/src"]`. The supervisor, the PR reviewer
@@ -475,6 +483,32 @@ a multi-module project, write its `agentic-sdlc-project.json`:
 
 The delivery manifest records the roots each run used. A plan that names files outside the roots cannot be
 implemented, so check the plan's task list against the roots before delivering.
+
+### Project rules
+
+With `review_knowledge` in the project file, the project's own coding standards take part in every review round. The
+rule files, their format, the settings and the batching are described in
+[Project rules for the reviewers](../reference/project-rules.md); this section covers what Delivery does with them.
+
+- **Authors.** The implementer (both modes, also its repair turn), the code supervisor, every worker for the files
+  it owns, the integration pass and the remediator get an index of the rules that can apply to what they write. The
+  remediator also gets every rule its findings cite. The full texts are staged under
+  `.agentic-sdlc/runtime/<ticket>/<run-id>/knowledge/authors/rules/`.
+- **Review rounds.** Each round selects the rules whose patterns match a file the diff adds lines to and runs the
+  standards batches beside the PR reviewer, at most `review_max_parallel` calls at a time. Finding ids are
+  `STD-r<round>-b<batch>:<id>`. From the second round, a rule is reviewed again only when one of its files changed
+  since the previous round; the others keep their verdicts, findings and suggestions, marked `carried_from_round`.
+- **Routing.** Rule findings go through the same routing as the PR reviewer's. In addition, a `NICE-TO-HAVE` finding
+  (unless rated `HIGH`) and a finding outside the lines the diff adds become **suggestions**: listed in the brief,
+  never remediated, never blocking. A rule finding in a file the PR reviewer flags with a protected category in the
+  same round becomes `DEVELOPER_REQUIRED`.
+- **Records.** Each `pr-review-r<N>.json` has `standards` (applicable, skipped, reviewed and carried rules, the
+  batches with their rules and files, `verdicts` per rule, `file_verdicts` per rule and file, `not_assessed` as
+  "RULE in file", and the reviewers' coverage notes) and `suggestions`. The manifest records the rule files with their
+  SHA-256, the settings and every round. The brief's "Project rules" section gives the verdict counts, every rule and
+  file that was not assessed, and the suggestions.
+- **Not assessed.** A rule and file without a verdict after the repair turn does not stop the run: it is listed in
+  the brief under "Not assessed (check these yourself)".
 
 ## Safety boundaries
 
@@ -487,6 +521,7 @@ implemented, so check the plan's task list against the roots before delivering.
   executable-code change.
 - The implementer never runs tests, builds or Git; Python does, so the evidence is not an agent's claim.
 - The review is independent and read-only, and its routing is recomputed by Python.
+- Project rules come from the checkout Delivery runs from; no agent may write `agentic-sdlc-pr-review-kb/`.
 - Remediation is bounded to three rounds and always followed by verification and a fresh review.
 - Approval is a human act, bound to the plan's SHA-256 and to the exact reviewed head commit.
 - A resume trusts only the delivery manifest, which agents cannot write, and Git: every recorded commit must still be
@@ -494,7 +529,7 @@ implemented, so check the plan's task list against the roots before delivering.
 
 ## Tests
 
-`tests/test_deliver.py`, `tests/test_hybrid.py`, `tests/test_worktrees.py`, `tests/test_source_config.py`, `tests/test_restrict_write_scope.py`,
+`tests/test_deliver.py`, `tests/test_review_knowledge.py`, `tests/test_hybrid.py`, `tests/test_worktrees.py`, `tests/test_source_config.py`, `tests/test_restrict_write_scope.py`,
 `tests/test_record_pr_approval.py` and the end-to-end flows in `tests/test_workflow_integration.py` and
 `tests/test_delivery_resume.py` (what each `BLOCKED` exit records, and every resume path). See
 [build and install](../build-and-install.md#tests) for how to run them.
@@ -502,5 +537,6 @@ implemented, so check the plan's task list against the roots before delivering.
 ## See also
 
 [Specialists and skills](hybrid-delivery.md) · [Planning](planning.md) · [Agent profiles](../reference/agent-profiles.md) ·
+[Project rules](../reference/project-rules.md) ·
 [Delivery contract](../../.agentic-sdlc/contracts/delivery-workflow.md) ·
 [PR review policy](../../.agentic-sdlc/policies/pr-review.md)

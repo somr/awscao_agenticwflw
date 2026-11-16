@@ -58,6 +58,24 @@ High-impact/protected areas include, at minimum:
 - major dependency changes;
 - changes that contradict or materially extend the approved plan.
 
+## Project rule findings
+
+When the project declares rules (`review_knowledge` in `agentic-sdlc-project.json`), a
+standards reviewer checks the code the PR adds against them. A violation is a finding even
+without a failure scenario; it cites its rule (`standard_ref`), with the file and line range at
+the PR HEAD. Impact is normally LOW or MEDIUM for a `MANDATORY` rule and LOW for a
+`NICE-TO-HAVE` rule, higher only when the violation also causes a concrete problem; the
+reviewer's impact stands and the routing above applies. In addition:
+
+- a `NICE-TO-HAVE` finding, unless HIGH, and a finding outside the lines the diff adds are
+  suggestions: reported in the Human Review Brief, never remediated, never blocking;
+- a rule finding in a file the PR review flags with a protected category in the same round is
+  `DEVELOPER_REQUIRED`: business-sensitive code is changed by a person;
+- every applicable rule gets a verdict per changed file it covers; a rule and file left
+  unassessed is listed for the human reviewer.
+
+A remediator fixing a rule finding follows the full text of the cited rule.
+
 ## Human comments
 
 Human review comments are triaged using the same model, except explicit requests for discussion, design judgment or developer action are always `DEVELOPER_REQUIRED` regardless of inferred severity.

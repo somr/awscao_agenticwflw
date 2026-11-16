@@ -223,6 +223,10 @@ Source remediation reads the same trusted files as Delivery; there is no separat
   [source roots](delivery.md#source-roots)). Findings outside them are excluded as `HUMAN_REQUIRED`.
 - **Verification:** the `application` suite from the same file, run from the repository root without a shell. Without
   a project file, the legacy keys in `.agentic-sdlc/cao/specialists.json` apply, as in Delivery.
+- **Project rules:** when the review applied [project rules](../reference/project-rules.md), the remediator and the
+  fix reviewer are pointed at the rules the review staged in its working folder (`workspace/knowledge/`), with the
+  rules the findings cite named. A review without rules adds nothing. Suggestions are never selected: only
+  `AUTO_FIX` findings are.
 - **Contract and policy:** [contract](../contracts/source-remediation-workflow.md) and
   [policy](../policies/source-remediation.md); both are given to the agents and pinned for the run.
 

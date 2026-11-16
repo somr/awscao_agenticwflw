@@ -16,8 +16,11 @@ HEAD. Source exports, diff and agent answers are isolated per unique run ID.
 
 ## Required stages
 
-Context mapping → independent correctness and security reviews → independent candidate
-validation/deduplication → deterministic eligibility gate → feedback authoring.
+Context mapping → independent correctness, security and (when the repository declares
+project rules) standards reviews, run in parallel → independent candidate
+validation/deduplication → deterministic eligibility gate → feedback authoring. Standards
+reviews give every applicable rule a verdict per changed file it covers; rule findings outside
+the changed lines become unvalidated, non-blocking suggestions.
 Source semantics are agent decisions; routing, JSON validation, provenance and artifact
 publication are deterministic orchestration. Account for every changed path, every
 candidate and every reported coverage gap. Reject unsupported findings; retain coverage
@@ -40,7 +43,9 @@ A result with no findings is not an approval. Moving either PR tip invalidates c
 
 Every accepted finding includes stable identity, reviewed HEAD, source location,
 category/severity/confidence, failure scenario, evidence, consequence, remediation
-direction, suggested verification, eligibility conditions, route and routing reasons.
+direction, suggested verification, eligibility conditions, route and routing reasons; a rule
+finding also its rule (`standard_ref`) and level. Routes are `AUTO_FIX`, `HUMAN_REQUIRED` and,
+for project rules only, `SUGGESTION`.
 Apply [source-review policy](../policies/source-review.md).
 
 ## Development handoff

@@ -25,6 +25,8 @@ cao/
 │   ├── worktrees.py                 # Per-task worktrees, commits and ordered cherry-picks
 │   ├── resume.py                    # Resuming a BLOCKED delivery from its manifest
 │   ├── source_config.py             # Project file, source roots and write profiles
+│   ├── review_knowledge.py          # Project rules: loading, selection, batches, per-file verdicts
+│   ├── delivery_standards.py        # Delivery's standards review rounds
 │   ├── source_review.py             # PR snapshots, source review and fix routing
 │   ├── source_remediation.py        # Ticket-independent bounded fixes and independent review
 │   ├── source_review_contracts.py   # Shared Source review policy and evidence contracts
@@ -114,7 +116,7 @@ The shared installer builds the complete dependency closure, validates its candi
 and then promotes it. Planning, Delivery and Source remediation keep the previous installed file as `.bak`.
 Source remediation requires its two profiles to be installed explicitly; see its [guide](workflows/source-remediation.md).
 Source Review retains its stricter existing refusal to replace an installed workflow
-or any of its five profiles; follow its [upgrade procedure](workflows/source-review.md).
+or any of its six profiles; follow its [upgrade procedure](workflows/source-review.md#upgrading).
 Profile installation is not transactional; inspect partial source-review installations
 before retrying.
 
@@ -182,11 +184,13 @@ the exception and control flow are unchanged.
 
 A bundle contains code only. Everything a run reads from the repository at start-up is
 resolved from `repository_root`, not embedded: the contracts, policies, schemas and
-templates under `.agentic-sdlc/`, the project's `agentic-sdlc-project.json`, and, for hybrid Delivery,
+templates under `.agentic-sdlc/`, the project's `agentic-sdlc-project.json` and the rule files it names in
+`agentic-sdlc-pr-review-kb/` ([project rules](reference/project-rules.md)), and, for hybrid Delivery,
 `.agentic-sdlc/cao/specialists.json` and `.agentic-sdlc/cao/skills/`. Changing those files takes effect on the next run without a
 rebuild; changing Python modules requires rebuilding and reinstalling the bundle. Installing
 `sdlc_deliver` also requires the `sdlc_code_supervisor` profile, because Delivery defaults to
-`implementation_mode=hybrid` (see [hybrid delivery](workflows/hybrid-delivery.md)).
+`implementation_mode=hybrid` (see [hybrid delivery](workflows/hybrid-delivery.md)), and, for a project with rules,
+the `sdlc_standards_reviewer` profile.
 
 ## Tests
 
@@ -205,7 +209,7 @@ test class. Local HTTP fixture tests require socket access.
 Additional packaging tests cover deterministic output and dependency digests, module
 conflicts, execution in isolated Python with no source-package path, frozen bundles
 surviving dependency changes, exact terminal cleanup, and installer collision/failure
-handling. Further suites cover the write-scope hook (including the configurable source roots, and a parity test that runs the workflow's validator and the hook's copy over one corpus), non-converged planning, developer guidance, warm start, reviewer history, hybrid delivery with parallel worktree waves, Delivery resume and Source remediation. The integration tests use real Git commits and application verification
+handling. Further suites cover the write-scope hook (including the configurable source roots, and a parity test that runs the workflow's validator and the hook's copy over one corpus), non-converged planning, developer guidance, warm start, reviewer history, hybrid delivery with parallel worktree waves, Delivery resume, Source remediation and project rules (parsing, batching, per-file verdicts, both workflows' standards reviews). The integration tests use real Git commits and application verification
 subprocesses, with only agent responses/CAO transport simulated. They cover planning
 JSON repair and plan revision, digest-bound approval, delivery verification repair,
 automatic remediation, protected findings, re-review and human handoff.
