@@ -118,6 +118,20 @@ print(json.dumps({'calls': calls, 'inputs': ns['INPUTS']}))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(result.stdout)['calls'], ['repair', 'repair-repair-1'])
 
+    def test_the_final_validator_replaces_the_validator_on_the_last_attempt_only(self):
+        mod = bundle('deliver')
+        seen = []
+        def strict(value):
+            seen.append('strict')
+            raise mod.WorkflowContractError('missing verdict')
+        def lenient(value):
+            seen.append('lenient')
+            return {**value, 'filled': True}
+        with tempfile.TemporaryDirectory() as temp, patch.object(mod, '_run_delivered_step', return_value='{"ok":true}'):
+            value = mod._run_json_contract_step(agent='test', prompt='p', label='test', step_id='s', repo=Path(temp),
+                                                evidence_dir=Path(temp), validator=strict, final_validator=lenient)
+        self.assertEqual((value, seen), ({'ok': True, 'filled': True}, ['strict', 'lenient']))
+
     def test_repair_policy_preserves_delivery_and_planning_instructions(self):
         for name in builder.WORKFLOWS:
             mod = bundle(name)

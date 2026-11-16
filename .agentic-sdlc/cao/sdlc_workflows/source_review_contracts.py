@@ -7,6 +7,7 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 from .errors import WorkflowContractError
+from .review_knowledge import check_file_verdicts
 
 POLICY_VERSION = "source-review-v1"
 
@@ -21,7 +22,6 @@ PROTECTED = {
 CATEGORIES = PROTECTED | {"CORRECTNESS", "TESTING", "RESOURCE_HANDLING", "SECURITY", "OTHER", "MAINTAINABILITY"}
 # A finding that cites a project rule (standard_ref). MAINTAINABILITY is allowed only on such findings.
 STANDARD_REF = re.compile(r"[A-Z][A-Z0-9]*-[0-9]+")
-RULE_VERDICTS = ("VIOLATED", "NOT_VIOLATED", "NOT_ASSESSED")
 # A NICE-TO-HAVE rule finding is a suggestion, unless the reviewer rated it HIGH because the violation also
 # causes a concrete problem: that exception is routed like any other finding (so to a human).
 ROUTES = ("AUTO_FIX", "HUMAN_REQUIRED", "SUGGESTION")
@@ -150,40 +150,28 @@ def rule_levels(work: Path) -> dict[str, str]:
     return {rule["id"]: rule["level"] for rule in json.loads(index.read_text(encoding="utf-8"))["applicable"]}
 
 
-def standards_contract(value: Any, work: Path, snapshot: dict, mapping: dict, batch: list[dict]) -> dict:
-    """One standards batch: every rule of the batch gets one verdict, every finding cites a rule of the batch
-    that applies to its file, and a VIOLATED verdict lists exactly the findings citing that rule."""
+def standards_contract(value: Any, work: Path, snapshot: dict, mapping: dict, batch: list[dict],
+                       fill_missing: bool = False) -> dict:
+    """One standards batch: every finding cites a rule of the batch that covers its file there, and every
+    rule gets a verdict per file it covers in the batch (review_knowledge.check_file_verdicts; fill_missing
+    on the last contract attempt turns a missing one into a gap). Adds file_verdicts and those gaps."""
     require(isinstance(value, dict), "Standards review must be an object")
     require(isinstance(value.get("findings"), list), "findings array required")
     covers = {rule["id"]: set(rule["covers"]) for rule in batch}
-    citing: dict[str, list[str]] = {rule_id: [] for rule_id in covers}
+    citing: dict[tuple[str, str], list[str]] = {}
     ids = []
     for finding in value["findings"]:
         validate_finding(finding, work, snapshot, mapping)
         ref = finding.get("standard_ref")
         require(ref in covers, f"standard_ref must name a rule of this batch: {ref!r}")
-        require(finding["file"] in covers[ref], f"Rule {ref} does not apply to {finding['file']}")
+        require(finding["file"] in covers[ref], f"Rule {ref} does not apply to {finding['file']} in this batch")
         require(finding["side"] == "head", "Rule findings anchor to the head side")
         ids.append(finding["candidate_id"])
-        citing[ref].append(finding["candidate_id"])
+        citing.setdefault((ref, finding["file"]), []).append(finding["candidate_id"])
     require(len(ids) == len(set(ids)), "Duplicate candidate IDs")
-    require(isinstance(value.get("rules"), list), "rules array required")
-    seen = []
-    for verdict in value["rules"]:
-        require(isinstance(verdict, dict), "Rule verdict must be an object")
-        rule_id = verdict.get("id")
-        require(rule_id in covers, f"Verdict for a rule outside this batch: {rule_id!r}")
-        seen.append(rule_id)
-        require(verdict.get("status") in RULE_VERDICTS, "Invalid rule verdict")
-        listed = strings(verdict.get("finding_ids"), "finding_ids")
-        if verdict["status"] == "VIOLATED":
-            require(listed and sorted(listed) == sorted(citing[rule_id]),
-                    f"VIOLATED {rule_id} must list exactly the findings that cite it")
-        else:
-            require(not listed and not citing[rule_id], f"{rule_id} has findings but is not VIOLATED")
-    require(sorted(seen) == sorted(covers), "Give every rule of the batch exactly one verdict")
-    strings(value.get("coverage_gaps"), "coverage_gaps")
-    return value
+    gaps = strings(value.get("coverage_gaps"), "coverage_gaps")
+    file_verdicts, filled = check_file_verdicts(value.get("rules"), batch, citing, fill_missing)
+    return {**value, "file_verdicts": file_verdicts, "coverage_gaps": gaps + filled}
 
 def review_contract(value: Any, work: Path, snapshot: dict, mapping: dict) -> dict:
     require(isinstance(value, dict), "Review must be an object")

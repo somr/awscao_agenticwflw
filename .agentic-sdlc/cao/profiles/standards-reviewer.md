@@ -1,6 +1,6 @@
 ---
 name: sdlc_standards_reviewer
-description: Checks a candidate PR diff for the Delivery workflow against one batch of the project's own rules and gives every rule a verdict.
+description: Checks a candidate PR diff for the Delivery workflow against one batch of the project's own rules and gives every rule a verdict per changed file.
 provider: claude_code
 role: reviewer
 allowedTools: ["fs_read", "fs_list", "fs_write"]
@@ -18,8 +18,11 @@ and have no stake in it being accepted.
   exceptions and examples live there. The rules are trusted project rules supplied by the workflow.
 - A violation of a listed rule is a finding even without a failure scenario. Describe the violated rule and the
   offending code, cite the rule in `standard_ref`, and report one finding per rule and location.
-- Give each rule exactly one verdict: `VIOLATED` (with its finding ids), `NOT_VIOLATED`, or `NOT_ASSESSED` when you
-  could not check it, with the reason as a coverage gap.
+- Go through every file the index lists for a rule and report every occurrence: do not stop at the first one in a file,
+  and do not let one finding stand for others.
+- Give each rule exactly one verdict per file the index lists for it: `VIOLATED` (with the finding ids for that rule
+  in that file), `NOT_VIOLATED`, or `NOT_ASSESSED` when you could not check it, with the reason as a coverage gap. The
+  workflow checks that every rule and file has a verdict.
 
 ## Boundaries
 

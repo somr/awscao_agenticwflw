@@ -78,7 +78,8 @@ class StandardsReviewTest(unittest.TestCase):
                 "deterministically_verifiable": True, "automation_eligibility": "AUTO_FIX", "reason": "rename"}
 
     def answer(self, findings, verdicts):
-        return {"rules": [{"id": rule, "status": status, "finding_ids": ids} for rule, (status, ids) in verdicts.items()],
+        return {"rules": [{"id": rule, "files": [{"path": "app/a.py", "status": status, "finding_ids": ids}]}
+                          for rule, (status, ids) in verdicts.items()],
                 "findings": findings, "coverage_gaps": []}
 
     def test_a_complete_answer_is_prefixed_and_keeps_the_reviewers_impact(self):
@@ -87,7 +88,30 @@ class StandardsReviewTest(unittest.TestCase):
                         {"R-1": ("VIOLATED", ["N1"]), "R-2": ("VIOLATED", ["N2"])}), self.batch, self.repo, "STD-r1-b1")
         self.assertEqual([(f["id"], f["impact"], f["rule_level"]) for f in checked["findings"]],
                          [("STD-r1-b1:N1", "HIGH", "MANDATORY"), ("STD-r1-b1:N2", "MEDIUM", "NICE-TO-HAVE")])
-        self.assertEqual(checked["verdicts"], {"R-1": "VIOLATED", "R-2": "VIOLATED"})
+        self.assertEqual(checked["file_verdicts"], {"R-1": {"app/a.py": "VIOLATED"}, "R-2": {"app/a.py": "VIOLATED"}})
+        self.assertEqual(mod.rule_verdicts(checked["file_verdicts"]), {"R-1": "VIOLATED", "R-2": "VIOLATED"})
+
+    def test_the_last_attempt_records_a_missing_verdict_as_a_gap(self):
+        answer = self.answer([self.finding()], {"R-1": ("VIOLATED", ["N1"])})
+        with self.assertRaises(mod.WorkflowContractError):
+            mod.check_standards_answer(answer, self.batch, self.repo, "STD-r1-b1")
+        checked = mod.check_standards_answer(answer, self.batch, self.repo, "STD-r1-b1", fill_missing=True)
+        self.assertEqual(checked["file_verdicts"]["R-2"], {"app/a.py": "NOT_ASSESSED"})
+        self.assertEqual(checked["coverage_gaps"], ["The reviewer gave rule R-2 no verdict for app/a.py: not assessed"])
+
+    def test_verdicts_of_a_rule_split_over_batches_are_merged(self):
+        merged = mod.merge_file_verdicts([{"R-1": {"b.py": "NOT_VIOLATED"}}, {"R-1": {"a.py": "NOT_ASSESSED"}, "R-2": {"a.py": "VIOLATED"}}])
+        self.assertEqual(merged, {"R-1": {"a.py": "NOT_ASSESSED", "b.py": "NOT_VIOLATED"}, "R-2": {"a.py": "VIOLATED"}})
+        self.assertEqual(mod.rule_verdicts(merged), {"R-1": "NOT_ASSESSED", "R-2": "VIOLATED"})
+
+    def test_the_prompt_holds_only_the_batch_files_diff(self):
+        diff = ("diff --git a/app/a.py b/app/a.py\n--- a/app/a.py\n+++ b/app/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+                "diff --git a/app/b.py b/app/b.py\n--- a/app/b.py\n+++ b/app/b.py\n@@ -1 +1 @@\n-x\n+SECRET_B\n")
+        prompt = mod.build_standards_reviewer_prompt(repo=self.repo, number=1, diff_text=diff, pr_head_sha="abc",
+                                                     knowledge_dir=self.repo, index="idx", batch=self.batch)
+        self.assertIn("+y", prompt)
+        self.assertNotIn("SECRET_B", prompt)
+        self.assertIn("verdict per file", prompt)
 
     def test_inconsistent_answers_are_rejected(self):
         ok = {"R-2": ("NOT_VIOLATED", [])}
@@ -128,11 +152,12 @@ class StandardsReviewTest(unittest.TestCase):
         rules = [{"id": "R-1", "domain": "D", "text": "x", "globs": ["app/a.py"]},
                  {"id": "R-2", "domain": "D", "text": "x", "globs": ["app/b.py"]},
                  {"id": "R-3", "domain": "D", "text": "x", "globs": ["app/c.py"]}]
-        knowledge = {"rules": rules, "settings": {"batch_max_rules": 15, "batch_max_kb": 32}}
+        knowledge = {"rules": rules, "settings": {"batch_max_rules": 15, "batch_max_kb": 32, "batch_max_files": 5}}
         added = {"app/a.py": {1}, "app/b.py": {1}, "app/c.py": {1}}
         first = mod.plan_standards_round(knowledge, added, None, None)
         self.assertEqual([r["id"] for r in first["reviewed"]], ["R-1", "R-2", "R-3"])
-        previous = {"rules": {"R-1": "VIOLATED", "R-2": "NOT_VIOLATED"}, "findings": [], "suggestions": []}
+        previous = {"rules": {"R-1": {"app/a.py": "VIOLATED"}, "R-2": {"app/b.py": "NOT_VIOLATED"}},
+                    "findings": [], "suggestions": []}
         later = mod.plan_standards_round(knowledge, added, {"app/a.py"}, previous)
         # R-3 had no verdict before (a new rule for this run), so it is reviewed even though its file is unchanged.
         self.assertEqual(([r["id"] for r in later["reviewed"]], [r["id"] for r in later["carried"]]),

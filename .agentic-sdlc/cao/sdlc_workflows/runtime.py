@@ -341,6 +341,7 @@ def _run_json_contract_step(
     validator=None,
     max_repairs: int = 1,
     preserve_source: bool = True,
+    final_validator=None,
 ) -> Any:
     """Run a stabilized LLM step that must return machine-readable JSON.
 
@@ -348,6 +349,8 @@ def _run_json_contract_step(
     transport-truncated output raises IncompleteAgentExecutionError and never
     enters the JSON-repair path. Once a stable final response exists, one
     bounded contract-repair turn is allowed for genuine JSON/shape defects.
+    final_validator, when given, replaces validator on the last attempt (a more lenient check that
+    records what is still missing instead of failing the step).
     """
     current_prompt = prompt
     previous_output = ""
@@ -372,8 +375,9 @@ def _run_json_contract_step(
 
         try:
             value = _parse_json_output(output, label)
-            if validator is not None:
-                value = validator(value)
+            check = final_validator if final_validator is not None and attempt == max_repairs else validator
+            if check is not None:
+                value = check(value)
             return value
         except WorkflowContractError as exc:
             last_error = exc

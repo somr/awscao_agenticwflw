@@ -23,11 +23,13 @@ KNOWLEDGE_DIR = "agentic-sdlc-pr-review-kb"
 KNOWLEDGE_LIMITS = {
     "batch_max_rules": (15, 1, 50),
     "batch_max_kb": (32, 4, 128),
+    "batch_max_files": (5, 1, 50),
     "max_files": (32, 1, 128),
     "max_rules": (200, 1, 1000),
     "max_rule_kb": (8, 1, 32),
 }
 RULE_LEVELS = ("MANDATORY", "NICE-TO-HAVE")
+RULE_VERDICT_VALUES = ("VIOLATED", "NOT_VIOLATED", "NOT_ASSESSED")
 RULE_SECTIONS = ("Applicable files", "Rule description", "Why we have the rule", "Examples: bad", "Examples: good")
 RULE_HEADING = re.compile(
     r"^## (?P<id>[A-Z][A-Z0-9]*-[0-9]+) - \[(?P<level>[A-Z-]+)\] (?P<domain>[^.]+?)\. (?P<title>\S.*?)\.?$"
@@ -193,15 +195,13 @@ def _rule_bytes(rule: dict[str, Any]) -> int:
     return len(rule["text"].encode("utf-8"))
 
 
-def build_batches(rules: list[dict[str, Any]], settings: dict[str, Any]) -> list[list[dict[str, Any]]]:
-    """Split rules into the fewest balanced batches within both budgets.
+def _rule_batches(rules: list[dict[str, Any]], settings: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    """Split rules into the fewest balanced groups within the rule-count and size budgets.
 
-    Rules are ordered by domain then id, so related rules tend to share a batch; each batch takes
+    Rules are ordered by domain then id, so related rules tend to share a group; each group takes
     up to an even share of the rules and starts early only when the next rule would exceed the
     size budget.
     """
-    if not rules:
-        return []
     max_bytes = settings["batch_max_kb"] * 1024
     ordered = sorted(rules, key=lambda rule: (rule["domain"].lower(), rule["id"]))
     count = max(math.ceil(len(ordered) / settings["batch_max_rules"]),
@@ -221,6 +221,32 @@ def build_batches(rules: list[dict[str, Any]], settings: dict[str, Any]) -> list
         count += 1
 
 
+def batch_files(batch: list[dict[str, Any]]) -> list[str]:
+    """The changed files one batch reviews: the union of its rules' covered files."""
+    return sorted({path for rule in batch for path in rule["covers"]})
+
+
+def build_batches(rules: list[dict[str, Any]], settings: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    """Split the applicable rules into review batches within all three budgets.
+
+    Rules are first grouped by rule count and size; each group's covered files (sorted, so files of
+    one folder stay together) are then split into the fewest even chunks of at most batch_max_files.
+    A batch is one group's rules restricted to one chunk: a rule appears in every chunk it covers a
+    file of, with covers narrowed to that chunk, so each (rule, file) pair is reviewed exactly once.
+    """
+    if not rules:
+        return []
+    batches: list[list[dict[str, Any]]] = []
+    for group in _rule_batches(rules, settings):
+        files = batch_files(group)
+        share = math.ceil(len(files) / math.ceil(len(files) / settings["batch_max_files"]))
+        for start in range(0, len(files), share):
+            chunk = set(files[start:start + share])
+            batches.append([{**rule, "covers": sorted(set(rule["covers"]) & chunk)}
+                            for rule in group if set(rule["covers"]) & chunk])
+    return batches
+
+
 def stage_rules(batches: list[list[dict[str, Any]]], selection: dict[str, Any], knowledge: dict[str, Any],
                 destination: Path) -> list[Path]:
     """Write one file per rule, a short index per batch and index.json for the audit trail.
@@ -231,6 +257,7 @@ def stage_rules(batches: list[list[dict[str, Any]]], selection: dict[str, Any], 
     indexes: list[Path] = []
     for number, batch in enumerate(batches, start=1):
         lines = [f"# Project rules, batch {number}", "",
+                 f"Changed files in this batch: {', '.join(batch_files(batch))}",
                  "Full text with examples: rules/<RULE-ID>.md next to this index.", ""]
         for rule in batch:
             _write_text(destination / "rules" / f"{rule['id']}.md", rule["text"])
@@ -245,9 +272,92 @@ def stage_rules(batches: list[list[dict[str, Any]]], selection: dict[str, Any], 
         "applicable": [{"id": rule["id"], "level": rule["level"], "covers": rule["covers"]}
                        for rule in selection["applicable"]],
         "skipped": selection["skipped"],
-        "batches": [[rule["id"] for rule in batch] for batch in batches],
+        "batches": batch_summary(batches),
     })
     return indexes
+
+
+def batch_summary(batches: list[list[dict[str, Any]]]) -> list[dict[str, list[str]]]:
+    """Each batch's rule ids and files, for the audit trail."""
+    return [{"rules": [rule["id"] for rule in batch], "files": batch_files(batch)} for batch in batches]
+
+
+def check_file_verdicts(raw: Any, batch: list[dict[str, Any]], citing: dict[tuple[str, str], list[str]],
+                        fill_missing: bool = False) -> tuple[dict[str, dict[str, str]], list[str]]:
+    """Check a standards reviewer's verdicts: one per rule of the batch and each file it covers there.
+
+    raw: [{"id", "files": [{"path", "status", "finding_ids"}]}]. citing: the reviewer's finding ids per
+    (rule id, file). A VIOLATED file lists exactly the findings citing that rule in that file; other
+    statuses list none and have none. With fill_missing (the last contract attempt), a missing rule or
+    file is not an error: it becomes NOT_ASSESSED (VIOLATED when findings cite it) and is returned as a
+    gap. Returns ({rule id: {file: status}}, gaps).
+    """
+    if not isinstance(raw, list):
+        raise WorkflowContractError("rules must be an array of per-rule verdicts")
+    rules = {rule["id"]: rule for rule in batch}
+    given: dict[str, dict[str, str]] = {}
+    for entry in raw:
+        rule_id = entry.get("id") if isinstance(entry, dict) else None
+        if rule_id not in rules or rule_id in given:
+            raise WorkflowContractError(f"Verdict for an unknown or repeated rule: {rule_id!r}")
+        if not isinstance(entry.get("files"), list):
+            raise WorkflowContractError(f"{rule_id}: files must be an array with one verdict per covered file")
+        per_file: dict[str, str] = {}
+        for item in entry["files"]:
+            path = item.get("path") if isinstance(item, dict) else None
+            if path not in rules[rule_id]["covers"] or path in per_file:
+                raise WorkflowContractError(f"{rule_id}: verdict for a file it does not cover in this batch, "
+                                            f"or a repeated one: {path!r}")
+            status, listed = item.get("status"), item.get("finding_ids")
+            if status not in RULE_VERDICT_VALUES or not isinstance(listed, list):
+                raise WorkflowContractError(f"Invalid verdict for {rule_id} in {path}")
+            cited = citing.get((rule_id, path), [])
+            if status == "VIOLATED":
+                if not listed or sorted(listed) != sorted(cited):
+                    raise WorkflowContractError(f"VIOLATED {rule_id} in {path} must list exactly the findings "
+                                                "citing that rule in that file")
+            elif listed or cited:
+                raise WorkflowContractError(f"{rule_id} has findings in {path} but that file is not VIOLATED")
+            per_file[path] = status
+        given[rule_id] = per_file
+    gaps: list[str] = []
+    for rule_id, rule in rules.items():
+        per_file = given.setdefault(rule_id, {})
+        for path in rule["covers"]:
+            if path in per_file:
+                continue
+            if not fill_missing:
+                raise WorkflowContractError(f"Give rule {rule_id} a verdict for every file it covers in this "
+                                            f"batch; {path} has none")
+            per_file[path] = "VIOLATED" if citing.get((rule_id, path)) else "NOT_ASSESSED"
+            gaps.append(f"The reviewer gave rule {rule_id} no verdict for {path}"
+                        + ("" if per_file[path] == "VIOLATED" else ": not assessed"))
+    return {rule_id: dict(sorted(given[rule_id].items())) for rule_id in sorted(given)}, gaps
+
+
+def rule_status(per_file: dict[str, str]) -> str:
+    """One rule's overall verdict from its per-file verdicts."""
+    statuses = set(per_file.values())
+    return next(status for status in ("VIOLATED", "NOT_ASSESSED", "NOT_VIOLATED") if status in statuses)
+
+
+def not_assessed_pairs(file_verdicts: dict[str, dict[str, str]]) -> list[str]:
+    """'RULE-ID in file' for every file a rule was not assessed in, also where the rule is VIOLATED elsewhere."""
+    return [f"{rule_id} in {path}" for rule_id, per_file in sorted(file_verdicts.items())
+            for path, status in per_file.items() if status == "NOT_ASSESSED"]
+
+
+def diff_for_files(diff: str, files: list[str]) -> str:
+    """The parts of a git diff that change the given (head-side) files."""
+    wanted, keep, parts = set(files), False, []
+    for line in diff.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            keep = False
+            match = re.match(r"diff --git a/.* b/(.*)$", line.rstrip("\n"))
+            keep = bool(match) and match[1] in wanted
+        if keep:
+            parts.append(line)
+    return "".join(parts)
 
 
 def added_lines(diff: str) -> dict[str, set[int]]:

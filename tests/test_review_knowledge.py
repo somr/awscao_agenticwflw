@@ -57,10 +57,10 @@ class SettingsTest(unittest.TestCase):
     def test_defaults_apply_to_every_optional_limit(self):
         settings = rk.validate_knowledge_settings({'files': [f'{KB}/a.md']})
         self.assertEqual(settings, {'files': [f'{KB}/a.md'], 'batch_max_rules': 15, 'batch_max_kb': 32,
-                                    'max_files': 32, 'max_rules': 200, 'max_rule_kb': 8})
+                                    'batch_max_files': 5, 'max_files': 32, 'max_rules': 200, 'max_rule_kb': 8})
 
     def test_every_limit_is_configurable_within_its_bounds(self):
-        raw = {'files': [f'{KB}/a.md'], 'batch_max_rules': 50, 'batch_max_kb': 128, 'max_files': 128,
+        raw = {'files': [f'{KB}/a.md'], 'batch_max_rules': 50, 'batch_max_kb': 128, 'batch_max_files': 50, 'max_files': 128,
                'max_rules': 1000, 'max_rule_kb': 32}
         self.assertEqual(rk.validate_knowledge_settings(raw), raw)
 
@@ -80,6 +80,7 @@ class SettingsTest(unittest.TestCase):
             'duplicate': {'files': [f'{KB}/a.md', f'{KB}/a.md']},
             'too many files': {'files': [f'{KB}/a.md', f'{KB}/b.md'], 'max_files': 1},
             'limit below range': {'files': [f'{KB}/a.md'], 'batch_max_rules': 0},
+            'files per batch above range': {'files': [f'{KB}/a.md'], 'batch_max_files': 51},
             'limit above range': {'files': [f'{KB}/a.md'], 'max_rules': 1001},
             'limit is a boolean': {'files': [f'{KB}/a.md'], 'batch_max_kb': True},
             'limit is a string': {'files': [f'{KB}/a.md'], 'batch_max_kb': '32'},
@@ -216,12 +217,12 @@ class SelectTest(unittest.TestCase):
 
 
 def synthetic(count, *, domains=('Alpha',), size=100):
-    return [{'id': f'R-{index}', 'domain': domains[index % len(domains)], 'text': 'x' * size}
+    return [{'id': f'R-{index}', 'domain': domains[index % len(domains)], 'text': 'x' * size, 'covers': ['app/a.py']}
             for index in range(1, count + 1)]
 
 
 class BatchTest(unittest.TestCase):
-    SETTINGS = {'batch_max_rules': 15, 'batch_max_kb': 32}
+    SETTINGS = {'batch_max_rules': 15, 'batch_max_kb': 32, 'batch_max_files': 5}
 
     def ids(self, batches):
         return [[r['id'] for r in batch] for batch in batches]
@@ -240,7 +241,7 @@ class BatchTest(unittest.TestCase):
 
     def test_every_rule_appears_once_and_domains_stay_together(self):
         rules = synthetic(40, domains=('Naming', 'Comments', 'Errors'))
-        batches = rk.build_batches(rules, {'batch_max_rules': 10, 'batch_max_kb': 32})
+        batches = rk.build_batches(rules, {'batch_max_rules': 10, 'batch_max_kb': 32, 'batch_max_files': 5})
         flat = [r['id'] for b in batches for r in b]
         self.assertEqual(sorted(flat), sorted(r['id'] for r in rules))
         domains = [r['domain'] for b in batches for r in b]
@@ -252,8 +253,28 @@ class BatchTest(unittest.TestCase):
         self.assertEqual(self.ids(rk.build_batches(rules, self.SETTINGS)),
                          self.ids(rk.build_batches(list(reversed(rules)), self.SETTINGS)))
 
+    def test_files_are_split_into_even_chunks_and_every_rule_file_pair_is_reviewed_once(self):
+        files = [f'app/m{n}.py' for n in range(1, 8)]
+        rules = [{'id': 'A-1', 'domain': 'D', 'text': 'x', 'covers': files},
+                 {'id': 'A-2', 'domain': 'D', 'text': 'x', 'covers': ['app/m1.py', 'app/m7.py']},
+                 {'id': 'A-3', 'domain': 'D', 'text': 'x', 'covers': ['app/m2.py']}]
+        batches = rk.build_batches(rules, self.SETTINGS)
+        self.assertEqual(rk.batch_summary(batches), [
+            {'rules': ['A-1', 'A-2', 'A-3'], 'files': files[:4]},
+            {'rules': ['A-1', 'A-2'], 'files': files[4:]},
+        ])
+        self.assertEqual([r['covers'] for r in batches[0]], [files[:4], ['app/m1.py'], ['app/m2.py']])
+        pairs = [(r['id'], f) for b in batches for r in b for f in r['covers']]
+        self.assertEqual(sorted(pairs), sorted((r['id'], f) for r in rules for f in r['covers']))
+        self.assertEqual(len(pairs), len(set(pairs)))
+
+    def test_a_cap_of_one_file_gives_one_batch_per_file(self):
+        rules = [{'id': 'A-1', 'domain': 'D', 'text': 'x', 'covers': ['b.py', 'a.py', 'c.py']}]
+        batches = rk.build_batches(rules, {**self.SETTINGS, 'batch_max_files': 1})
+        self.assertEqual([rk.batch_files(b) for b in batches], [['a.py'], ['b.py'], ['c.py']])
+
     def test_configured_batch_size_is_respected(self):
-        self.assertEqual([len(b) for b in rk.build_batches(synthetic(7), {'batch_max_rules': 1, 'batch_max_kb': 4})],
+        self.assertEqual([len(b) for b in rk.build_batches(synthetic(7), {'batch_max_rules': 1, 'batch_max_kb': 4, 'batch_max_files': 5})],
                          [1] * 7)
 
 
@@ -269,13 +290,72 @@ class StageTest(RepoCase):
         self.assertEqual([p.name for p in indexes], ['index-b1.md', 'index-b2.md'])
         self.assertIn('- A-1 [MANDATORY] Readability. First (rules/A-1.md); changed files: app/x.py',
                       indexes[0].read_text())
+        self.assertIn('Changed files in this batch: app/x.py', indexes[0].read_text())
         self.assertNotIn('A-2', indexes[0].read_text())
         self.assertEqual((destination / 'rules/A-2.md').read_text(), selection['applicable'][1]['text'])
         audit = json.loads((destination / 'index.json').read_text())
-        self.assertEqual(audit['batches'], [['A-1'], ['A-2']])
+        self.assertEqual(audit['batches'], [{'rules': ['A-1'], 'files': ['app/x.py']},
+                                            {'rules': ['A-2'], 'files': ['app/x.py']}])
         self.assertEqual(audit['files'], knowledge['files'])
         self.assertNotIn('files', audit['settings'])
 
+
+
+class FileVerdictTest(unittest.TestCase):
+    BATCH = [{'id': 'A-1', 'covers': ['a.py', 'b.py']}, {'id': 'A-2', 'covers': ['a.py']}]
+
+    def entry(self, rule_id, **files):
+        return {'id': rule_id, 'files': [{'path': path.replace('_', '.'), 'status': status, 'finding_ids': ids}
+                                         for path, (status, ids) in files.items()]}
+
+    def test_a_complete_answer_gives_verdicts_per_rule_and_file(self):
+        raw = [self.entry('A-1', a_py=('VIOLATED', ['F1']), b_py=('NOT_VIOLATED', [])),
+               self.entry('A-2', a_py=('NOT_ASSESSED', []))]
+        verdicts, gaps = rk.check_file_verdicts(raw, self.BATCH, {('A-1', 'a.py'): ['F1']})
+        self.assertEqual(verdicts, {'A-1': {'a.py': 'VIOLATED', 'b.py': 'NOT_VIOLATED'}, 'A-2': {'a.py': 'NOT_ASSESSED'}})
+        self.assertEqual(gaps, [])
+        self.assertEqual(rk.rule_status(verdicts['A-1']), 'VIOLATED')
+        self.assertEqual(rk.rule_status({'a.py': 'NOT_VIOLATED', 'b.py': 'NOT_ASSESSED'}), 'NOT_ASSESSED')
+        self.assertEqual(rk.not_assessed_pairs({'A-1': {'a.py': 'VIOLATED', 'b.py': 'NOT_ASSESSED'}}), ['A-1 in b.py'])
+
+    def test_contract_errors(self):
+        citing = {('A-1', 'a.py'): ['F1']}
+        cases = {
+            'a covered file is missing': [self.entry('A-1', a_py=('VIOLATED', ['F1'])), self.entry('A-2', a_py=('NOT_VIOLATED', []))],
+            'a rule is missing': [self.entry('A-1', a_py=('VIOLATED', ['F1']), b_py=('NOT_VIOLATED', []))],
+            'a file the rule does not cover here': [self.entry('A-1', a_py=('VIOLATED', ['F1']), b_py=('NOT_VIOLATED', [])),
+                                                    self.entry('A-2', a_py=('NOT_VIOLATED', []), b_py=('NOT_VIOLATED', []))],
+            'findings in a file not VIOLATED': [self.entry('A-1', a_py=('NOT_VIOLATED', []), b_py=('NOT_VIOLATED', [])),
+                                                self.entry('A-2', a_py=('NOT_VIOLATED', []))],
+            'VIOLATED without its findings': [self.entry('A-1', a_py=('VIOLATED', ['F1']), b_py=('VIOLATED', ['F1'])),
+                                              self.entry('A-2', a_py=('NOT_VIOLATED', []))],
+            'old per-rule shape': [{'id': 'A-1', 'status': 'VIOLATED', 'finding_ids': ['F1']},
+                                   {'id': 'A-2', 'status': 'NOT_VIOLATED', 'finding_ids': []}],
+            'not an array': {'A-1': 'VIOLATED'},
+        }
+        for name, raw in cases.items():
+            with self.subTest(name), self.assertRaises(WorkflowContractError):
+                rk.check_file_verdicts(raw, self.BATCH, citing)
+
+    def test_the_last_attempt_turns_missing_verdicts_into_gaps(self):
+        raw = [self.entry('A-1', b_py=('NOT_VIOLATED', []))]
+        verdicts, gaps = rk.check_file_verdicts(raw, self.BATCH, {('A-1', 'a.py'): ['F1']}, fill_missing=True)
+        self.assertEqual(verdicts, {'A-1': {'a.py': 'VIOLATED', 'b.py': 'NOT_VIOLATED'}, 'A-2': {'a.py': 'NOT_ASSESSED'}})
+        self.assertEqual(gaps, ['The reviewer gave rule A-1 no verdict for a.py',
+                                'The reviewer gave rule A-2 no verdict for a.py: not assessed'])
+        with self.assertRaises(WorkflowContractError):  # what is given must still be right
+            rk.check_file_verdicts([self.entry('A-1', b_py=('VIOLATED', []))], self.BATCH, {}, fill_missing=True)
+
+
+class DiffForFilesTest(unittest.TestCase):
+    def test_keeps_only_the_named_files(self):
+        diff = ('diff --git a/app/a.py b/app/a.py\n--- a/app/a.py\n+++ b/app/a.py\n@@ -1 +1 @@\n-x\n+y\n'
+                'diff --git a/app/b.py b/app/b.py\nnew file mode 100644\n--- /dev/null\n+++ b/app/b.py\n@@ -0,0 +1 @@\n+z\n'
+                'diff --git a/old.py b/app/c.py\nsimilarity index 90%\nrename from old.py\nrename to app/c.py\n')
+        self.assertEqual(rk.diff_for_files(diff, ['app/b.py', 'app/c.py']),
+                         'diff --git a/app/b.py b/app/b.py\nnew file mode 100644\n--- /dev/null\n+++ b/app/b.py\n@@ -0,0 +1 @@\n+z\n'
+                         'diff --git a/old.py b/app/c.py\nsimilarity index 90%\nrename from old.py\nrename to app/c.py\n')
+        self.assertEqual(rk.diff_for_files(diff, []), '')
 
 
 class AuthorRulesTest(unittest.TestCase):

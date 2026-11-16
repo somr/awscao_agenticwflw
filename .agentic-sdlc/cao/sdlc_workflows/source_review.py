@@ -53,6 +53,11 @@ from .review_knowledge import (
     select_rules,
     build_batches,
     stage_rules,
+    batch_files,
+    batch_summary,
+    diff_for_files,
+    not_assessed_pairs,
+    rule_status,
 )
 from .runtime import (
     _run_json_contract_step,
@@ -262,6 +267,9 @@ def prepare_standards(work: Path, snapshot: dict, knowledge: dict | None) -> dic
     selection = select_rules(knowledge, changed)
     batches = build_batches(selection["applicable"], knowledge["settings"])
     indexes = stage_rules(batches, selection, knowledge, work / "knowledge")
+    diff = (work / "diff.patch").read_text(encoding="utf-8", errors="replace")
+    for number, batch in enumerate(batches, start=1):
+        _write_text(work / "knowledge" / f"diff-b{number}.patch", diff_for_files(diff, batch_files(batch)))
     return {"knowledge": knowledge, "selection": selection, "batches": batches,
             "indexes": [path.read_text(encoding="utf-8") for path in indexes]}
 
@@ -313,11 +321,12 @@ repository (not part of the PR). MAINTAINABILITY and standard_ref are only for f
 cite one of those rules; only the standards reviewers report such findings.
 """
 
-    def call(role: str, prompt: str, validator, agent: str | None = None):
+    def call(role: str, prompt: str, validator, agent: str | None = None, final_validator=None):
         folder = evidence / role
         folder.mkdir(parents=True, exist_ok=True)
         return _run_json_contract_step(agent=f"sdlc_source_{agent or role}", prompt=common + prompt,
-            label=role, step_id=f"source-{role}", repo=work, evidence_dir=folder, validator=validator)
+            label=role, step_id=f"source-{role}", repo=work, evidence_dir=folder, validator=validator,
+            final_validator=final_validator)
 
     mapping = call("mapper", '''Map every changed file, including excluded files, exactly once.
 Output {"summary":"...", "files":[{"file":"...", "scope":"SOURCE|TEST|OUT_OF_SCOPE",
@@ -347,23 +356,29 @@ Do not claim runtime verification. Human judgment required on sensitive boundari
         role = f"standards-b{number}"
         # The batch index comes last, so parallel calls share the longest common prompt start.
         return lambda: call(role, f"""Read mapping.json. You are the standards reviewer for batch {number}.
-Check only the project rules in the index below, and only lines this PR adds or changes on the
-head side. For you the common scope differs: a violation of a listed rule is in scope even
+Check only the project rules in the index below, only the changed files the index lists for each
+rule, and only lines this PR adds or changes on the head side. knowledge/diff-b{number}.patch
+holds the diff of exactly those files; read it instead of the full diff.patch. For you the common scope differs: a violation of a listed rule is in scope even
 without a reachable failure; describe the violated rule and the offending code in
 failure_scenario and source_evidence. Code the PR does not add or change is out of scope.
 Read knowledge/rules/<RULE-ID>.md whenever the title is not enough: exceptions and examples
-are there. Give every rule in the index exactly one verdict: VIOLATED (finding_ids lists every
-finding citing it), NOT_VIOLATED, or NOT_ASSESSED (only if you could not check it; say why in
-coverage_gaps). Every finding sets standard_ref to its rule id, side "head", one finding per
+are there. Go through every listed file for every rule and report every occurrence: do not stop
+at the first one in a file, and do not let one finding stand for others. For every rule in the
+index, give exactly one verdict per file the index lists for it: VIOLATED (finding_ids lists every
+finding citing that rule in that file), NOT_VIOLATED, or NOT_ASSESSED (only if you could not check
+it; say why in coverage_gaps). The workflow checks that every rule and file has a verdict. Every finding sets standard_ref to its rule id, side "head", one finding per
 rule and location. Use MAINTAINABILITY unless another allowed category fits better. Severity is
 normally LOW or MEDIUM for MANDATORY rules and LOW for NICE-TO-HAVE rules; rate it higher only when
 the violation also causes a concrete problem (a reachable failure, a security exposure), and say
 so in consequence. Use candidate IDs prefixed with {role}-.
-Return {{"rules":[{{"id":"RULE-ID", "status":"VIOLATED|NOT_VIOLATED|NOT_ASSESSED", "finding_ids":[]}}],
+Return {{"rules":[{{"id":"RULE-ID", "files":[{{"path":"<changed file listed for the rule>",
+"status":"VIOLATED|NOT_VIOLATED|NOT_ASSESSED", "finding_ids":[]}}]}}],
 "findings":[{json.dumps(STANDARDS_FINDING_SHAPE)}], "coverage_gaps":[]}}.
 The example is a schema, not a finding.
 
-{index}""", lambda value: standards_contract(value, work, snapshot, mapping, batch), agent="standards")
+{index}""", lambda value: standards_contract(value, work, snapshot, mapping, batch), agent="standards",
+            # A rule or file still without a verdict after the repair turn becomes a coverage gap.
+            final_validator=lambda value: standards_contract(value, work, snapshot, mapping, batch, fill_missing=True))
 
     calls = [reviewer(role, focus) for role, focus in reviewers]
     calls += [standards_reviewer(number, batch, standards["indexes"][number - 1])
@@ -376,14 +391,14 @@ The example is a schema, not a finding.
         reported += [(role, gap) for gap in reviewed["coverage_gaps"]]
     levels = rule_levels(work)
     added = added_lines((work / "diff.patch").read_text(encoding="utf-8", errors="replace")) if batches else {}
-    verdicts: dict[str, str] = {}
+    file_verdicts: dict[str, dict[str, str]] = {}
     suggestions: list[dict] = []
     for number, reviewed in enumerate(results[len(reviewers):], start=1):
         role = f"standards-b{number}"
-        for verdict in reviewed["rules"]:
-            verdicts[verdict["id"]] = verdict["status"]
-            if verdict["status"] == "NOT_ASSESSED":
-                reported.append((role, f"Project rule {verdict['id']} was not assessed"))
+        for rule_id, per_file in reviewed["file_verdicts"].items():
+            file_verdicts.setdefault(rule_id, {}).update(per_file)
+            reported += [(role, f"Project rule {rule_id} was not assessed in {path}")
+                         for path, status in per_file.items() if status == "NOT_ASSESSED"]
         for finding in reviewed["findings"]:
             finding["candidate_id"] = role + ":" + finding["candidate_id"]
             if overlaps_added_lines(finding, added):
@@ -473,8 +488,10 @@ Mention coverage limitations in the summary when present.
             "settings": {key: value for key, value in knowledge["settings"].items() if key != "files"},
             "applicable": [rule["id"] for rule in selection["applicable"]],
             "skipped": selection["skipped"],
-            "batches": [[rule["id"] for rule in batch] for batch in batches],
-            "verdicts": verdicts,
+            "batches": batch_summary(batches),
+            "verdicts": {rule_id: rule_status(per_file) for rule_id, per_file in sorted(file_verdicts.items())},
+            "file_verdicts": {rule_id: dict(sorted(per_file.items())) for rule_id, per_file in sorted(file_verdicts.items())},
+            "not_assessed": not_assessed_pairs(file_verdicts),
         }
     return report
 

@@ -1,6 +1,6 @@
 # Plan: project knowledge for the reviewers (coding standards)
 
-Status: **in progress: steps 1-5 done (4 and 5 on 2026-10-14); step 6 (docs) left**. Decisions in section 3 are all agreed (2026-10-13). Progress notes are at the end.
+Status: **in progress: steps 1-5 done (4 and 5 on 2026-10-14); step 5b (every file checked) done 2026-11-16; step 6 (docs) left**. Decisions in section 3 are all agreed (D1-D15 2026-10-13, D16-D17 2026-11-16). Progress notes are at the end.
 
 ## 1. Why
 
@@ -57,6 +57,8 @@ noticeably slower.
 | D13 | Without `review_knowledge` | **Agreed 2026-10-13.** No standards reviewer runs; behaviour and prompts are exactly as today, except that D10's parallelism also applies to correctness and security (tests prove the rest is unchanged). |
 | D14 | Rule findings outside changed lines | **Agreed 2026-10-13, revised 2026-10-14.** Python checks every standards finding: its line range (head side) must overlap a line the change **adds** (not just a context line of a hunk). A finding that does not is **kept as a suggestion** with the reviewer's severity, never `AUTO_FIX`, never blocking, marked `outside_changed_lines` (Source review) or with a `suggestion_reason` (Delivery). It skips the Source review validator and is never sent to a remediator. |
 | D15 | Later Delivery rounds | **Agreed 2026-10-13.** In round n > 1, a rule is reviewed again only if one of its covered files changed since the previous round's reviewed commit (`git diff --name-only`); otherwise its verdict and open findings carry forward, marked with the round they come from. The PR reviewer still reviews the full diff every round. |
+| D16 | Every file is checked | **Agreed 2026-11-16** (after a live run missed PY-1 occurrences in a batch of 8 rules). A verdict is given **per rule and file**: `rules: [{"id", "files": [{"path", "status", "finding_ids"}]}]`. Python requires one entry for every file a rule covers in the batch; `VIOLATED` lists exactly the findings citing that rule in that file. A missing entry gets the contract-repair turn; if the repaired answer still lacks it, the last attempt records it as `NOT_ASSESSED` (or `VIOLATED` when findings cite it) with a coverage gap, instead of failing the run. A rule's overall verdict is `VIOLATED` in any file, else `NOT_ASSESSED` in any file, else `NOT_VIOLATED`; the not-assessed list names each rule and file. This proves no file was skipped silently; it cannot prove a `NOT_VIOLATED` is right. Prompts and profiles also ask for every occurrence, not only the first. |
+| D17 | Files per batch | **Agreed 2026-11-16.** New optional setting `batch_max_files` (default 5, bounds 1-50). The rules are grouped as before (D8); each group's covered files (sorted) are split into the fewest even chunks of at most that many files, and a batch is one group restricted to one chunk, so every (rule, file) pair is reviewed exactly once. The reviewer sees only its batch's part of the diff (Delivery: in the prompt; Source review: `knowledge/diff-b<k>.patch`). More calls, smaller context per call. Records list each batch as `{"rules", "files"}`. |
 
 ## 4. Design
 
@@ -166,6 +168,8 @@ Each step: unit tests green, reinstall the affected workflows and profiles, live
    whose files the remediator changed are reviewed again (unit tests cover it either way).
 5. **Authors.** Section 4.6. Live: rerun step 4's scenario; the implementer uses full names and the review has no
    `NAMING-1` finding.
+5b. **Every file checked (D16, D17).** Live: a Source review fixture with planted violations over 7 files (known
+   count, so recall is measured) and a Delivery run on PAY-DEMO-001 checking per-file verdicts, batches and the brief.
 6. **Docs.** `workflows/source-review.md`, `workflows/delivery.md`, `workflows/hybrid-delivery.md`,
    `reference/agent-profiles.md` (two new profiles), `reference/write-scope-hook.md`, `architecture.md`,
    `build-and-install.md` (project-file keys, new profiles), `.agentic-sdlc/policies/pr-review.md` and
@@ -318,3 +322,32 @@ Each step: unit tests green, reinstall the affected workflows and profiles, live
   NAMING-1 (`db_path`). Round 3 only PY-2 suggestions. The rules index reached the agents' prompts (17 terminal logs
   contain it). The supervisor's first dispatch needed one contract repair (task T7 with an empty `owns`); the earlier
   runs did not, and the rules text cannot be excluded as a cause.
+- **Step 5b done (2026-11-16): every file checked (D16, D17).** `review_knowledge.py`: setting `batch_max_files`
+  (default 5, 1-50); `build_batches` groups rules as before and splits each group's files into even chunks, a rule's
+  `covers` narrowed to the chunk; `check_file_verdicts` (one verdict per rule and covered file, `VIOLATED` lists exactly
+  the citing findings in that file; `fill_missing` turns a missing one into `NOT_ASSESSED` plus a gap), `rule_status`,
+  `not_assessed_pairs`, `batch_summary`, `diff_for_files`. `runtime._run_json_contract_step` gains `final_validator`,
+  used on the last attempt only. Delivery: the prompt holds only the batch's part of the diff; records keep
+  `verdicts` (per rule), `file_verdicts`, `not_assessed` as "RULE in file", batches as `{"rules", "files"}`;
+  carry-forward keeps per-file verdicts. Source review: `knowledge/diff-b<k>.patch` per batch, the same report keys,
+  a gap per not-assessed rule and file. Both prompts and both standards profiles ask for every occurrence and a verdict
+  per file. Tests: 381 OK, source mode too; 4 mutations (missing file accepted, no cap, unfiltered diff, unchecked
+  finding ids) all caught. The integration test covers a repair turn that still omits a file: the run continues and
+  the brief lists "R-1 in app/x.py". Reinstalled all four workflows (shared `runtime.py`) and both standards profiles
+  (`source_review` by its upgrade procedure); everything matches the working tree.
+  Live 1, Source review `source-review-filecap-20261116-1` (scratch root with the sample rules plus PY-1, PY-3, PY-4;
+  a local repo whose head adds 7 billing modules with 21 planted violations: PY-1 x14, NAMING-1 x4, PY-4 x2, PY-3 x1):
+  2 batches (4 + 3 files, 5 rules each), both first attempt, per-file verdicts in the new shape, about 90 s in
+  parallel. **All 21 planted violations reported, no rule false positive**, plus one real DATA_LOSS finding
+  (`save_invoice` truncates before writing). All routed `HUMAN_REQUIRED` (billing marked business-sensitive by the
+  mapper: existing behaviour). No baseline run without the cap on the same fixture, so the gain is not measured
+  against the old code.
+  Live 2, Delivery `deliver-filecap-20261116-1` (fresh clone, the sample rules plus PY-1..PY-6 as on 2026-10-14,
+  hybrid, approved PAY-DEMO-001 plan, implementer not steered): `AWAITING_HUMAN_REVIEW`, 3 rounds, 2 remediations,
+  every step first attempt. Each round 2 batches (3 source files, 3 test files; 8 rules each). Round 1: 6 NAMING-1
+  findings, every other rule not violated in every file; round 2 only the one NAMING-1 finding round 1 had routed to
+  the developer (now `AUTO_FIX`); round 3 clean. No rule finding appeared late (2026-10-14: six PY-1 found only in
+  round 2). An AST scan of the round 1 and final code confirmed PY-1: all 40 (46) public definitions the change adds
+  have docstrings, so the authors followed the rules and this run could not measure recall; live 1 does. No CAO
+  sessions left open; the throwaway folder was deleted.
+

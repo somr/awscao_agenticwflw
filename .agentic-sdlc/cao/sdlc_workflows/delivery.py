@@ -44,7 +44,9 @@ from .runtime import (
     MAX_PARALLEL_REVIEWS,
     PROVIDER,
 )
-from .review_knowledge import load_review_knowledge, added_lines, stage_author_rules, author_rules_guidance
+from .review_knowledge import (
+    load_review_knowledge, added_lines, stage_author_rules, author_rules_guidance, batch_summary, not_assessed_pairs,
+)
 from .delivery_standards import (
     STANDARDS_REVIEWER,
     plan_standards_round,
@@ -53,6 +55,8 @@ from .delivery_standards import (
     split_suggestions,
     route_sensitive_files,
     carry_forward,
+    merge_file_verdicts,
+    rule_verdicts,
     stage_round,
 )
 from .hybrid import (
@@ -640,7 +644,7 @@ def render_standards_section(review: dict[str, Any]) -> str:
              "- Rule findings that need attention are listed above with the other findings."]
     if standards["not_assessed"]:
         lines += ["", "### Not assessed (check these yourself)", ""]
-        lines += [f"- {rule}" for rule in standards["not_assessed"]]
+        lines += [f"- {pair}" for pair in standards["not_assessed"]]
         lines += [f"- Reviewer note: {gap}" for gap in standards["coverage_gaps"]]
     suggestions = review.get("suggestions", [])
     lines += ["", f"### Suggestions (optional, never fixed automatically): {len(suggestions)}", ""]
@@ -1088,20 +1092,22 @@ def main() -> None:
             )
 
         def standards_review(number: int, batch: list[dict[str, Any]], index: str, knowledge_dir: Path):
-            def validate(value: Any) -> dict[str, Any]:
-                checked = check_standards_answer(value, batch, repo, f"STD-r{round_no}-b{number}")
+            def validate(value: Any, fill_missing: bool = False) -> dict[str, Any]:
+                checked = check_standards_answer(value, batch, repo, f"STD-r{round_no}-b{number}", fill_missing)
                 checked["findings"] = classify_pr_review({"findings": checked["findings"]}, pr_head_sha=sha)["findings"]
                 return checked
             return lambda: _run_json_contract_step(
                 preserve_source=False,
                 agent=STANDARDS_REVIEWER,
                 prompt=build_standards_reviewer_prompt(repo=repo, number=number, diff_text=diff, pr_head_sha=sha,
-                                                       knowledge_dir=knowledge_dir, index=index),
+                                                       knowledge_dir=knowledge_dir, index=index, batch=batch),
                 label=f"Standards reviewer (batch {number})",
                 step_id=f"standards-review-r{round_no}-b{number}",
                 repo=repo,
                 evidence_dir=reviewing_dir / "agent-output",
                 validator=validate,
+                # A rule or file still without a verdict after the repair turn becomes a coverage gap.
+                final_validator=lambda value: validate(value, fill_missing=True),
             )
 
         calls = [pr_review]
@@ -1119,28 +1125,30 @@ def main() -> None:
         result = results[0]
         if plan is not None:
             routed, suggestions = split_suggestions([f for answer in results[1:] for f in answer["findings"]], added)
-            verdicts = {rule: status for answer in results[1:] for rule, status in answer["verdicts"].items()}
+            file_verdicts = merge_file_verdicts([answer["file_verdicts"] for answer in results[1:]])
             if plan["carried"]:
                 carried = carry_forward(standards_state, plan["carried"], round_no)
                 routed += carried["findings"]
                 suggestions += carried["suggestions"]
-                verdicts.update(carried["verdicts"])
+                file_verdicts = merge_file_verdicts([file_verdicts, carried["file_verdicts"]])
+            verdicts = rule_verdicts(file_verdicts)
             standards = {
                 "round": review_offset + round_no,
                 "applicable": [rule["id"] for rule in plan["selection"]["applicable"]],
                 "skipped": plan["selection"]["skipped"],
                 "reviewed": [rule["id"] for rule in plan["reviewed"]],
                 "carried": [rule["id"] for rule in plan["carried"]],
-                "batches": [[rule["id"] for rule in batch] for batch in plan["batches"]],
-                "verdicts": dict(sorted(verdicts.items())),
-                "not_assessed": sorted(rule for rule, status in verdicts.items() if status == "NOT_ASSESSED"),
+                "batches": batch_summary(plan["batches"]),
+                "verdicts": verdicts,
+                "file_verdicts": file_verdicts,
+                "not_assessed": not_assessed_pairs(file_verdicts),
                 "coverage_gaps": [gap for answer in results[1:] for gap in answer["coverage_gaps"]],
             }
             findings = result["findings"] + route_sensitive_files(routed, result["findings"], PROTECTED_PR_REVIEW_CATEGORIES)
             result = {**result, "findings": findings, "suggestions": suggestions, "standards": standards,
                       "has_developer_required": any(f["automation_eligibility"] == "DEVELOPER_REQUIRED" for f in findings),
                       "has_auto_fix": any(f["automation_eligibility"] == "AUTO_FIX" for f in findings)}
-            standards_state.update(sha=sha, rules=verdicts, findings=routed, suggestions=suggestions)
+            standards_state.update(sha=sha, rules=file_verdicts, findings=routed, suggestions=suggestions)
             standards_rounds.append(standards)
         _write_json(records_dir / f"pr-review-r{review_offset + round_no}.json", result)
         reviews_written[0] = round_no
