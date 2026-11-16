@@ -17,7 +17,7 @@ from build_workflow import WORKFLOWS, build_source
 
 REGISTERED_NAMES = {'dev_plan': 'sdlc_dev_plan', 'deliver': 'sdlc_deliver', 'source_review': 'source_review',
                     'source_remediate': 'source_remediate'}
-SOURCE_ROLES = ('mapper', 'correctness', 'security', 'validator', 'feedback')
+SOURCE_ROLES = ('mapper', 'correctness', 'security', 'standards', 'validator', 'feedback')
 
 
 def cao(*args: str, check: bool = True) -> subprocess.CompletedProcess:

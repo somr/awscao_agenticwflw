@@ -15,10 +15,12 @@ Checked on **2026-10-01** against the current repository working tree and the lo
 | Delivery | [`sdlc_code_supervisor`](../../.agentic-sdlc/cao/profiles/code-supervisor.md) | Propose ordered assignments to registered workers and select skills; return a task graph. |
 | Delivery | [`sdlc_implementer`](../../.agentic-sdlc/cao/profiles/implementer.md) | Implement approved tasks and required tests; also perform hybrid integration and verification repair; return a completion summary. |
 | Delivery | [`sdlc_pr_reviewer`](../../.agentic-sdlc/cao/profiles/pr-reviewer.md) | Review the candidate diff against requirements, plan and verification evidence; return findings for deterministic routing. |
+| Delivery | [`sdlc_standards_reviewer`](../../.agentic-sdlc/cao/profiles/standards-reviewer.md) | Only with [project rules](project-rules.md): check the added code against one batch of rules and files; return findings citing the rules and a verdict per rule and file. Read-only. |
 | Delivery | [`sdlc_remediator`](../../.agentic-sdlc/cao/profiles/remediator.md) | Fix only assigned, eligible review findings; return a remediation summary. |
 | Source review | [`sdlc_source_mapper`](../../.agentic-sdlc/cao/profiles/source-mapper.md) | Map changed files, callers, coverage gaps and protected boundaries in a pinned PR snapshot. |
 | Source review | [`sdlc_source_correctness`](../../.agentic-sdlc/cao/profiles/source-correctness.md) | Identify substantiated correctness regressions in production or test source. |
 | Source review | [`sdlc_source_security`](../../.agentic-sdlc/cao/profiles/source-security.md) | Independently inspect security and reliability regressions. |
+| Source review | [`sdlc_source_standards`](../../.agentic-sdlc/cao/profiles/source-standards.md) | Only with [project rules](project-rules.md): check the code the PR adds against one batch of rules and files; return findings citing the rules and a verdict per rule and file. |
 | Source review | [`sdlc_source_validator`](../../.agentic-sdlc/cao/profiles/source-validator.md) | Accept, reject or deduplicate every candidate against source evidence; reassess fix eligibility. |
 | Source review | [`sdlc_source_feedback`](../../.agentic-sdlc/cao/profiles/source-feedback.md) | Explain validated findings in plain language for the PR author, without changing severity or routing; Python renders canonical feedback. |
 | Source remediation | [`sdlc_remediator`](../../.agentic-sdlc/cao/profiles/remediator.md) | Apply only authorized eligible findings within configured write roots; report attempted changes and deviations. |
@@ -42,13 +44,13 @@ Follow these when adding or editing a profile.
 
 All profiles use the `claude_code` provider. The delivery supervisor proposes assignments to registered workers and selects required skills. Python validates and executes those assignments and owns stage ordering, retries and artifact persistence. Agents do not launch other agents directly. See [hybrid delivery and extension guide](../workflows/hybrid-delivery.md).
 
-All 14 files set `role: reviewer` and the same `allowedTools` (`fs_read`, `fs_list`, `fs_write`); see [Profile conventions](#profile-conventions) for why. Do not infer permissions from the profile name. Python owns Git operations and verification; human approval is recorded separately. Delivery currently prepares local PR artifacts, while source review can inspect an existing GitHub PR.
+All 16 files set `role: reviewer` and the same `allowedTools` (`fs_read`, `fs_list`, `fs_write`); see [Profile conventions](#profile-conventions) for why. Do not infer permissions from the profile name. Python owns Git operations and verification; human approval is recorded separately. Delivery currently prepares local PR artifacts, while source review can inspect an existing GitHub PR.
 
 The profiles instruct each agent to write one answer file. **Current hooks enforce a broader runtime directory boundary**, as shown below; exact per-step output authorization is proposed in [the hardening plan](../../hardening-plan.md).
 
 | Profiles | Current enforced write scope |
 |---|---|
-| Planning, code supervisor, PR reviewer | Repository `.agentic-sdlc/runtime/**` |
+| Planning, code supervisor, PR reviewer, standards reviewer | Repository `.agentic-sdlc/runtime/**` |
 | Implementer, remediator | Runtime tree plus configured source roots (default `app/**`), narrowed by `write_profiles` where configured |
 | Source-review profiles | Only `.agentic-sdlc/runtime/**` inside the isolated run workspace; exported source and other workspace files are not writable |
 
@@ -70,13 +72,13 @@ This validates and installs all four planning profiles, including the context no
 Validate and install the delivery profiles explicitly:
 
 ```bash
-for profile in code-supervisor implementer pr-reviewer remediator; do
+for profile in code-supervisor implementer pr-reviewer standards-reviewer remediator; do
   cao profile validate ".agentic-sdlc/cao/profiles/$profile.md"
   cao install ".agentic-sdlc/cao/profiles/$profile.md"
 done
 ```
 
-Install the delivery workflow separately, after the profiles (the default hybrid mode needs `sdlc_code_supervisor`). After pulling changes to a profile, reinstall it before the workflow; `cao install` overwrites the installed copy:
+Install the delivery workflow separately, after the profiles (the default hybrid mode needs `sdlc_code_supervisor`, and [project rules](project-rules.md) need `sdlc_standards_reviewer`). After pulling changes to a profile, reinstall it before the workflow; `cao install` overwrites the installed copy:
 
 ```bash
 bash .agentic-sdlc/cao/workflows/install_deliver.sh "$PWD"
@@ -84,7 +86,7 @@ bash .agentic-sdlc/cao/workflows/install_deliver.sh "$PWD"
 
 ## Source-review installation
 
-Source review installs its five profiles as part of its dedicated installer and refuses to overwrite an existing installation:
+Source review installs its six profiles, including the standards reviewer `sdlc_source_standards`, as part of its dedicated installer and refuses to overwrite an existing installation:
 
 ```bash
 bash .agentic-sdlc/cao/workflows/install_source_review.sh "$PWD"

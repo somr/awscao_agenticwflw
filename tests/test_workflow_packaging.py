@@ -50,6 +50,8 @@ class BundleTest(unittest.TestCase):
             with self.subTest(workflow=name):
                 ast.literal_eval(node.value)
         self.assertEqual(delivery.INPUTS['hybrid_max_parallel']['default'], delivery.MAX_PARALLEL_WORKERS)
+        self.assertEqual(delivery.INPUTS['review_max_parallel']['default'], delivery.MAX_PARALLEL_REVIEWS)
+        self.assertEqual(source_review.INPUTS['review_max_parallel']['default'], source_review.MAX_PARALLEL_REVIEWS)
 
     def test_builds_are_deterministic_and_capture_all_module_digests(self):
         for name in builder.WORKFLOWS:
@@ -115,6 +117,20 @@ print(json.dumps({'calls': calls, 'inputs': ns['INPUTS']}))
                                         cwd=root, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(result.stdout)['calls'], ['repair', 'repair-repair-1'])
+
+    def test_the_final_validator_replaces_the_validator_on_the_last_attempt_only(self):
+        mod = bundle('deliver')
+        seen = []
+        def strict(value):
+            seen.append('strict')
+            raise mod.WorkflowContractError('missing verdict')
+        def lenient(value):
+            seen.append('lenient')
+            return {**value, 'filled': True}
+        with tempfile.TemporaryDirectory() as temp, patch.object(mod, '_run_delivered_step', return_value='{"ok":true}'):
+            value = mod._run_json_contract_step(agent='test', prompt='p', label='test', step_id='s', repo=Path(temp),
+                                                evidence_dir=Path(temp), validator=strict, final_validator=lenient)
+        self.assertEqual((value, seen), ({'ok': True, 'filled': True}, ['strict', 'lenient']))
 
     def test_repair_policy_preserves_delivery_and_planning_instructions(self):
         for name in builder.WORKFLOWS:
@@ -190,7 +206,7 @@ class InstallerTest(unittest.TestCase):
                 self.assertEqual(target.read_text(), builder.build_source(name))
         self.assertFalse(list(self.destination.glob('*candidate*')))
         self.assertFalse(list(self.destination.glob('.*.lock')))
-        self.assertEqual(len([c for c in self.calls if c[0] == 'install']), 5)
+        self.assertEqual(len([c for c in self.calls if c[0] == 'install']), 6)
 
     def test_validation_failure_preserves_installed_bytes_and_cleans_candidate(self):
         target = self.destination / 'sdlc_dev_plan.py'

@@ -17,6 +17,7 @@ Start with the [project README](../README.md) for the quick start and current ca
 | Extend Delivery with workers, skills or verification toolchains | [Specialists and skills](workflows/hybrid-delivery.md) |
 | Install or change agent profiles and providers | [Agent profiles](reference/agent-profiles.md) |
 | Inspect the answer protocol and write hook | [Agent answers and write scope](reference/write-scope-hook.md) |
+| Give the reviewers the project's own coding standards | [Project rules for the reviewers](reference/project-rules.md) |
 | Check current enforcement boundaries and limitations | [Enforcement and human authority](architecture.md#enforcement-and-human-authority) |
 
 ## Contracts and policies
@@ -53,6 +54,7 @@ Implementation design history; use the workflow guides above for current operati
 - [Consolidation and follow-ups](plans/consolidation-and-follow-ups.md)
 - [Resume a BLOCKED Delivery run](plans/delivery-resume.md)
 - [Per-suite verification timeouts and repair turns](plans/verification-timeouts-and-repair-turns.md) (planned)
+- [Project knowledge for the reviewers](plans/reviewer-knowledge.md)
 
 ## Verification records
 

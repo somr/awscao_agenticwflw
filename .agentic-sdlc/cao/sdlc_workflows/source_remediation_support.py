@@ -10,7 +10,7 @@ from pathlib import Path
 from .artifacts import _read_json, _sha256_file
 from .source_review_contracts import (
     POLICY_VERSION, CONFIDENCE_THRESHOLD, ELIGIBILITY, require, string, strings, sha, safe_path, mapping_contract,
-    validate_finding, adjudication_contract, route_finding, review_run_directories,
+    validate_finding, adjudication_contract, route_finding, review_run_directories, rule_levels, ROUTES,
 )
 
 
@@ -116,16 +116,22 @@ def load_remediation_review(results: Path, repo: Path) -> tuple[dict, dict, dict
                                       snapshot, mapping, _read_json(directory / files[5]))
     expected_gaps = sorted(set(snapshot['coverage_gaps'] + [entry['gap'] for entry in decisions['coverage_gaps']]))
     require(report['coverage_gaps'] == expected_gaps, 'Report dropped or altered validated coverage gaps')
-    accepted = [route_finding(d['finding'], snapshot, mapping) for d in decisions['decisions'] if d['disposition'] == 'ACCEPT']
+    levels = rule_levels(directory / 'workspace')
+    accepted = [route_finding(d['finding'], snapshot, mapping, levels) for d in decisions['decisions'] if d['disposition'] == 'ACCEPT']
     require(isinstance(report.get('findings'), list), 'Missing findings')
     by_id = {f['stable_id']: f for f in report['findings']}
     require(len(by_id) == len(report['findings']) == len(accepted), 'Finding count or IDs differ from validation')
     for finding in accepted:
         actual = by_id.get(finding['stable_id'], {})
         require(all(actual.get(k) == v for k, v in finding.items()), 'Finding differs from accepted evidence/routing')
+    # Reviews made before project rules have no SUGGESTION queue.
+    routes = ROUTES if 'SUGGESTION' in (report.get('queues') or {}) else ROUTES[:2]
     require(report.get('queues') == {route: [f['stable_id'] for f in report['findings'] if f['route'] == route]
-                                   for route in ('AUTO_FIX', 'HUMAN_REQUIRED')}, 'Queue does not match findings')
+                                   for route in routes}, 'Queue does not match findings')
     return report, mapping, digests
+
+
+NOT_SELECTED_REASONS = {'HUMAN_REQUIRED': 'Human handling required', 'SUGGESTION': 'Suggestion only, never fixed automatically'}
 
 
 def select_remediation_findings(report: dict, selection: dict | None) -> tuple[list[dict], list[dict]]:
@@ -146,7 +152,7 @@ def select_remediation_findings(report: dict, selection: dict | None) -> tuple[l
             excluded[fid] = string(entry.get('reason'), 'exclusion reason')
         require(all(fid in eligible for fid in selected), 'Selection may contain only known AUTO_FIX findings')
     return [findings[fid] for fid in selected], [
-        {'id': fid, 'route': f['route'], 'reason': excluded.get(fid, 'Human handling required' if f['route'] == 'HUMAN_REQUIRED' else 'Not selected')}
+        {'id': fid, 'route': f['route'], 'reason': excluded.get(fid, NOT_SELECTED_REASONS.get(f['route'], 'Not selected'))}
         for fid, f in findings.items() if fid not in selected]
 
 

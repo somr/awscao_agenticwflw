@@ -86,14 +86,15 @@ flowchart TD
 
 Protected folders are never writable, for any profile: `.git`, `.claude`,
 `.agentic-sdlc/cao`, `.agentic-sdlc/policies`, `.agentic-sdlc/contracts`, `.agentic-sdlc/templates`,
-`.agentic-sdlc/schemas` and `agentic-sdlc-records`. A widened profile therefore cannot rewrite its own guardrails,
-the registry or a published record.
+`.agentic-sdlc/schemas`, `agentic-sdlc-records`, the project rules folder `agentic-sdlc-pr-review-kb` and the project
+file `agentic-sdlc-project.json`. A widened profile therefore cannot rewrite its own guardrails, the registry, the
+rules the reviewers enforce ([project rules](project-rules.md)) or a published record.
 
 ## Who may write what
 
 | Role | Writable |
 |---|---|
-| Planning agents, the code supervisor, the PR reviewer, the source fix reviewer | Anything under `.agentic-sdlc/runtime/`; they are told to write only their answer file, and exact per-step authorization is planned in the [hardening plan](../../hardening-plan.md) |
+| Planning agents, the code supervisor, the PR reviewer, the standards reviewer, the source fix reviewer | Anything under `.agentic-sdlc/runtime/`; they are told to write only their answer file, and exact per-step authorization is planned in the [hardening plan](../../hardening-plan.md) |
 | Implementer, remediator, and any worker profile listed in `write_profiles` | The same runtime area, plus the configured source roots |
 | Source-review agents | Only the answer area of the run's isolated workspace, through a hook generated for that workspace (see [source review](../workflows/source-review.md)) |
 | Nobody | The protected folders above |
@@ -116,11 +117,12 @@ The hook reads both files when it decides on widening and validates them every t
 - **Roots cannot escape.** A root must be a relative, normalized path with no `..`, glob characters or `:`
   (which git treats as pathspec syntax), and must not overlap the protected folders. A root whose real path
   leaves the repository, for example through a symlink, invalidates the whole configuration.
-- **Read-only roles cannot be listed.** The supervisor, the reviewers, and the planning and source-review
-  profiles can never appear in `write_profiles`.
+- **Read-only roles cannot be listed.** The supervisor, the reviewers (including `sdlc_standards_reviewer`), and the
+  planning and source-review profiles can never appear in `write_profiles`.
 - **New modules are fine.** A root may name a directory that does not exist yet.
 - **Both files are protected.** The registry sits under `.agentic-sdlc/cao`, and `agentic-sdlc-project.json` is on
-  the hook's deny list, so no agent can edit either. Neither can be a source root.
+  the hook's deny list, so no agent can edit either. Neither can be a source root, and neither can the project rules
+  folder `agentic-sdlc-pr-review-kb`.
 
 Delivery validates the same rules before any agent starts, so a bad configuration stops the run instead of
 surfacing as denied writes. See [Delivery](../workflows/delivery.md#configuration).

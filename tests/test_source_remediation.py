@@ -227,6 +227,60 @@ class RemediationTests(unittest.TestCase):
         self.assertEqual(result['state'], 'BLOCKED')
         self.assertEqual(self.git('diff','--cached','--name-only').strip(), 'app/code.py')
 
+    def test_a_review_citing_project_rules_is_rechecked_and_suggestions_are_never_fixed(self):
+        levels = {'NAMING-1': 'MANDATORY', 'STYLE-1': 'NICE-TO-HAVE'}
+        _write_json(self.review_work / 'workspace/knowledge/index.json', {'applicable': [
+            {'id': rule_id, 'level': level, 'covers': ['app/code.py']} for rule_id, level in levels.items()]})
+        rule = {**self.candidate, 'candidate_id': 'standards-b1:N1', 'category': 'MAINTAINABILITY',
+                'standard_ref': 'NAMING-1', 'title': 'Abbreviated name', 'severity': 'MEDIUM'}
+        nice = {**rule, 'candidate_id': 'standards-b1:N2', 'standard_ref': 'STYLE-1', 'title': 'Could be clearer'}
+        candidates = [self.candidate, self.human, rule, nice]
+        findings = [source.route_finding(f, self.snapshot, self.mapping, levels) for f in candidates]
+        self.report.update(findings=findings, queues={r: [f['stable_id'] for f in findings if f['route'] == r]
+                                                      for r in ('AUTO_FIX', 'HUMAN_REQUIRED', 'SUGGESTION')})
+        _write_json(self.review_dir / 'code-review.json', self.report)
+        _write_json(self.review_work / 'workspace/candidates.json', candidates)
+        _write_json(self.review_work / 'workspace/adjudication.json', {'decisions': [
+            {'candidate_id': f['candidate_id'], 'disposition': 'ACCEPT', 'finding': f, 'reason': 'Source supported'}
+            for f in candidates], 'coverage_gaps': [], 'snapshot_restatements': []})
+        report, _, _ = mod.load_remediation_review(self.review_dir, self.repo)
+        routes = {f['standard_ref'] if f.get('standard_ref') else f['candidate_id']: (f['route'], f['severity']) for f in report['findings']}
+        self.assertEqual(routes['NAMING-1'], ('AUTO_FIX', 'MEDIUM'))
+        self.assertEqual(routes['STYLE-1'], ('SUGGESTION', 'MEDIUM'))
+        selected, excluded = mod.select_remediation_findings(report, None)
+        self.assertNotIn('SUGGESTION', {f['route'] for f in selected})
+        self.assertIn('Suggestion only, never fixed automatically', {e['reason'] for e in excluded})
+        with self.assertRaises(Exception):
+            mod.select_remediation_findings(report, {'selected': report['queues']['SUGGESTION']})
+        # A report whose rule levels were changed after the review no longer matches the evidence.
+        _write_json(self.review_work / 'workspace/knowledge/index.json', {'applicable': [
+            {'id': 'NAMING-1', 'level': 'NICE-TO-HAVE', 'covers': []}, {'id': 'STYLE-1', 'level': 'NICE-TO-HAVE', 'covers': []}]})
+        with self.assertRaises(Exception):
+            mod.load_remediation_review(self.review_dir, self.repo)
+
+    def remediation_prompts(self):
+        prompts = {}
+        def capture(**kwargs):
+            prompts[kwargs['step_id']] = kwargs['prompt']
+            return self.agent(**kwargs)
+        with patch.object(mod, '_run_json_contract_step', side_effect=capture), \
+             patch.object(mod, 'check_remediation_profiles'), \
+             patch.object(mod, 'remediation_github', side_effect=lambda endpoint: self.metadata):
+            mod.execute_source_remediation({'repository_root': str(self.repo), 'review_directory': str(self.review_dir)}, 'fix-001')
+        return prompts
+
+    def test_without_project_rules_the_remediation_prompts_are_unchanged(self):
+        prompts = self.remediation_prompts()
+        self.assertNotIn('Project rules', prompts['remediate-r1'])
+        self.assertNotIn('Project rules', prompts['fix-review-r1'])
+
+    def test_remediator_and_fix_reviewer_are_pointed_at_the_rules_the_review_applied(self):
+        _write_json(self.review_work / 'workspace/knowledge/index.json', {'applicable': []})
+        prompts = self.remediation_prompts()
+        knowledge = self.review_work / 'workspace' / 'knowledge'
+        for step in ('remediate-r1', 'fix-review-r1'):
+            self.assertIn(f"Project rules (trusted; the review applied them): listed in {knowledge / 'index.json'}", prompts[step])
+
     def test_selection_can_narrow_but_not_promote(self):
         selection = Path(self.temp.name) / 'selection.json'
         _write_json(selection, {'selected': []})

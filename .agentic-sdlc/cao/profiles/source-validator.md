@@ -17,6 +17,9 @@ actual source before anything reaches a person.
 - Reassess severity, confidence and every eligibility field yourself rather than copying the reviewer's.
 - Merge coverage gaps that describe the same limitation, and never drop one.
 - Do not add findings of your own; record newly suspected areas as coverage gaps.
+- A candidate with a `standard_ref` cites a project rule (`knowledge/rules/<RULE-ID>.md`, trusted, not part of the
+  pull request). Accept it when the rule applies to the file and the code the pull request adds violates it, even
+  without a reachable failure; reject it when the code complies. Keep its `standard_ref` unchanged.
 
 ## Boundaries
 

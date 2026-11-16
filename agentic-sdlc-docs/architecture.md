@@ -113,7 +113,7 @@ flowchart TD
     MODE -->|Single| IMP["One Implementer"]
     INT --> COMMIT["Python commits and verifies"]
     IMP --> COMMIT
-    COMMIT -->|Pass| REVIEW["Local PR artifacts<br/>and independent PR Reviewer"]
+    COMMIT -->|Pass| REVIEW["Local PR artifacts, independent PR Reviewer<br/>and standards reviewers (project rules)"]
     COMMIT -->|First verification failure| REPAIR["One implementation repair turn"]
     REPAIR --> COMMIT
     COMMIT -->|Verification still fails| BLOCK["BLOCKED: reason and<br/>resume point recorded"]
@@ -130,7 +130,7 @@ The supervisor proposes 1–16 ordered assignments with their dependencies and t
 
 [`specialists.json`](../.agentic-sdlc/cao/specialists.json), common to every project, connects workers to profiles and skills; the project's [`agentic-sdlc-project.json`](../agentic-sdlc-project.json) sets the source roots, write profiles and verification suites. Hybrid verification uses the deduplicated union of selected worker and skill commands; single mode uses the `application` suite. Python runs commands without a shell, with timeouts, and repeats verification after repair or remediation. The registry currently ships one general `developer` worker and AngularJS/Spark skills; those skill suites need their own project files and toolchains.
 
-Protected or high-impact findings go to human handling. Exhausting automatic remediation also leads to a brief with unresolved findings, and so does a remediation round that changes nothing: its findings are escalated to the human. An agent step that breaks its contract or a repair that changes nothing ends the run `BLOCKED`; only the checks before any agent runs end it `failed`. A `BLOCKED` manifest records the reason, the resume point, the branch head and the finished tasks, so a later run with `resume=true` continues from there using only that manifest and Git. See the [Delivery guide](workflows/delivery.md#resume-a-blocked-run) for resume and [hybrid delivery](workflows/hybrid-delivery.md) for extension procedures.
+With [project rules](reference/project-rules.md), standards reviewers check the added code against the project's own coding standards beside the PR reviewer, and the agents that write code get the rules that apply to their files. Protected or high-impact findings go to human handling. Exhausting automatic remediation also leads to a brief with unresolved findings, and so does a remediation round that changes nothing: its findings are escalated to the human. An agent step that breaks its contract or a repair that changes nothing ends the run `BLOCKED`; only the checks before any agent runs end it `failed`. A `BLOCKED` manifest records the reason, the resume point, the branch head and the finished tasks, so a later run with `resume=true` continues from there using only that manifest and Git. See the [Delivery guide](workflows/delivery.md#resume-a-blocked-run) for resume and [hybrid delivery](workflows/hybrid-delivery.md) for extension procedures.
 
 ### Source review: an independent PR snapshot
 
@@ -141,8 +141,11 @@ flowchart TD
     PR["GitHub PR or local commit pair"] --> SNAP["Python pins commits<br/>and exports source snapshot"]
     SNAP --> MAP["Context Mapper"]
     MAP --> COR["Correctness Reviewer"]
-    COR --> SEC["Security Reviewer"]
-    SEC --> VAL["Finding Validator<br/>accepts, rejects or deduplicates"]
+    MAP --> SEC["Security Reviewer"]
+    MAP --> STD["Standards Reviewers<br/>(project rules only)"]
+    COR --> VAL["Finding Validator<br/>accepts, rejects or deduplicates"]
+    SEC --> VAL
+    STD --> VAL
     VAL --> GATE["Python routing gate"]
     GATE --> AUTHOR["Feedback Author"]
     AUTHOR --> OUT["Python places findings in the diff and renders<br/>code-review.json, comments.md and review-draft.md"]
@@ -151,7 +154,7 @@ flowchart TD
     OUT --> PUB["A person edits the draft and publishes<br/>one COMMENT review (publish tool)"]
 ```
 
-The arrows show execution order. Correctness and security reviewers have separate contexts and are instructed not to consult each other's findings; the validator considers their combined candidates. Source review reads code and test source but does not run tests, establish requirements compliance or approve the PR. GitHub mode checks the remote base/head again at completion and marks changed snapshots `STALE`. Publication is a separate command run by a person: it posts the edited `review-draft.md` as one non-blocking `COMMENT` review, with comments beside the code where the diff allows, and after a PR moves it places only findings whose lines are unchanged. See the [Source-review guide](workflows/source-review.md).
+The arrows show execution order. The correctness, security and standards reviewers run at the same time (at most `review_max_parallel`), have separate contexts and are instructed not to consult each other's findings; the validator considers their combined candidates. Standards reviewers run only when the project has [rules](reference/project-rules.md), and their findings on lines the PR does not change become suggestions. Source review reads code and test source but does not run tests, establish requirements compliance or approve the PR. GitHub mode checks the remote base/head again at completion and marks changed snapshots `STALE`. Publication is a separate command run by a person: it posts the edited `review-draft.md` as one non-blocking `COMMENT` review, with comments beside the code where the diff allows, and after a PR moves it places only findings whose lines are unchanged. See the [Source-review guide](workflows/source-review.md).
 
 ### Source remediation: bounded fixes for an existing review
 
@@ -185,7 +188,7 @@ flowchart LR
 
 CAO snapshots the entry script, not its Python import tree, so local entry points must not be copied directly into the workflow installation directory. Bundling preserves the workflow code when that script is relocated or replayed. It does **not** freeze every external asset, and no workflow relies on CAO's own resume: Source Review refuses reuse of an existing run directory, and Planning warm starts and Delivery resumes are new runs that read durable records.
 
-Python edits require rebuilding and reinstalling affected bundles. Profile edits require profile reinstallation. Repository assets such as the registry, skills and contracts remain outside the bundle and are read by subsequent runs. Planning and Delivery profiles are installed separately before their workflows; Source Review's installer includes its five profiles and refuses to overwrite an existing installation. See [build and install](build-and-install.md).
+Python edits require rebuilding and reinstalling affected bundles. Profile edits require profile reinstallation. Repository assets such as the registry, skills and contracts remain outside the bundle and are read by subsequent runs. Planning and Delivery profiles are installed separately before their workflows; Source Review's installer includes its six profiles and refuses to overwrite an existing installation. See [build and install](build-and-install.md).
 
 ## Layout and evidence lifecycle
 

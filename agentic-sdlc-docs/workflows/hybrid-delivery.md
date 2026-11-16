@@ -67,6 +67,9 @@ assign, hand off, run a shell or use Git.
   run stops. Earlier waves stay committed.
 - **Judgment stays checked.** Task scope and plan coverage are model judgments. The integration pass and the
   independent review check them again; the validator does not prove that the assignments equal the plan.
+- **Project rules.** With [project rules](delivery.md#project-rules), the supervisor gets the index of the rules that
+  can apply under the source roots, each worker the rules that can apply to its `owns`, and the integration pass the
+  rules for the source roots, so the code they write already follows the project's standards.
 - **Ownership.** `owns` schedules the work and is reported, not enforced: a change outside it is listed as a
   deviation in the PR body and the brief. The hard boundary is the write-scope hook and the configured
   [source roots](delivery.md#source-roots).

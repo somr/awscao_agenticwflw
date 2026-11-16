@@ -460,6 +460,22 @@ class ConfigurableSourceRootsHookTest(unittest.TestCase):
             self.check(repo, profile, ["agentic-sdlc-project.json"], allowed=False)
         self.check(repo, "sdlc_implementer", ["agentic-sdlc-project.json"], allowed=False, real=True)
 
+    def test_review_knowledge_is_accepted_and_no_worker_can_edit_the_rules(self):
+        repo = self.make_repo({"version": 1, "workers": {}},
+                              project={"version": 1, "source_roots": ["app"],
+                                       "review_knowledge": {"files": ["agentic-sdlc-pr-review-kb/rules.md"]}})
+        self.check(repo, "sdlc_implementer", ["app/value.py"], allowed=True)
+        self.check(repo, "sdlc_implementer", ["app/value.py"], allowed=True, real=True)
+        for profile in ("sdlc_implementer", "sdlc_remediator", "sdlc_code_supervisor", "sdlc_standards_reviewer"):
+            self.check(repo, profile, ["agentic-sdlc-pr-review-kb/rules.md", "agentic-sdlc-pr-review-kb/new.md"],
+                       allowed=False)
+        self.check(repo, "sdlc_implementer", ["agentic-sdlc-pr-review-kb/rules.md"], allowed=False, real=True)
+
+    def test_the_rules_folder_can_never_be_a_source_root(self):
+        for roots in (["agentic-sdlc-pr-review-kb"], ["agentic-sdlc-pr-review-kb/sub"]):
+            repo = self.make_repo({"version": 1}, project={"version": 1, "source_roots": roots})
+            self.check(repo, "sdlc_implementer", [roots[0] + "/rules.md", "app/value.py"], allowed=False)
+
     def test_keys_in_both_files_or_a_broken_project_file_grant_nothing(self):
         for registry, project in (({"source_roots": ["billing/src"]}, {"version": 1, "source_roots": ["billing/src"]}),
                                   ({"version": 1}, {"source_roots": ["billing/src"]}),

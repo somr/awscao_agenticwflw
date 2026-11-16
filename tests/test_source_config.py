@@ -103,12 +103,15 @@ INVALID = {
     'inside the records directory': {'source_roots': ['agentic-sdlc-records/T-1']},
     'the docs directory': {'source_roots': ['agentic-sdlc-docs']},
     'the local-inputs directory': {'source_roots': ['agentic-sdlc-local-inputs/x']},
+    'the project rules directory': {'source_roots': ['agentic-sdlc-pr-review-kb']},
+    'inside the project rules directory': {'source_roots': ['agentic-sdlc-pr-review-kb/x']},
     'duplicate root': {'source_roots': ['app', 'app']},
     'write_profiles is a list': {'write_profiles': ['sdlc_implementer']},
     'write_profiles is empty': {'write_profiles': {}},
     'empty profile name': {'write_profiles': {'': None}},
     'supervisor may not write': {'write_profiles': {'sdlc_code_supervisor': None}},
     'pr reviewer may not write': {'write_profiles': {'sdlc_pr_reviewer': None}},
+    'standards reviewer may not write': {'write_profiles': {'sdlc_standards_reviewer': None}},
     'planning author may not write': {'write_profiles': {'sdlc_plan_author': None}},
     'normalizer may not write': {'write_profiles': {'sdlc_context_normalizer': None}},
     'source-review profiles may not write': {'write_profiles': {'sdlc_source_mapper': None}},
@@ -145,7 +148,8 @@ class ValidatorParityTest(unittest.TestCase):
                 self.assertEqual(module.validate_source_config(None), DEFAULTS)
 
     def test_project_file_shape_and_selection_agree_everywhere(self):
-        project = {'version': 1, 'source_roots': ['billing/src'], 'verification': {'application': [['make']]}}
+        project = {'version': 1, 'source_roots': ['billing/src'], 'verification': {'application': [['make']]},
+                   'review_knowledge': {'files': ['agentic-sdlc-pr-review-kb/rules.md']}}
         for label, module in implementations():
             with self.subTest(implementation=label):
                 self.assertEqual(module.validate_project_file(project), project)
@@ -155,7 +159,7 @@ class ValidatorParityTest(unittest.TestCase):
                 for bad in ({'source_roots': ['app']}, {'version': 2}, {'version': 1, 'workers': {}}, ['app'], 'app'):
                     with self.assertRaises(ValueError):
                         module.validate_project_file(bad)
-                for key in ('source_roots', 'write_profiles', 'verification'):
+                for key in ('source_roots', 'write_profiles', 'verification', 'review_knowledge'):
                     with self.assertRaisesRegex(ValueError, f'{key} set in both'):
                         module.select_source_settings({key: []}, {'version': 1})
                 with self.assertRaises(ValueError):

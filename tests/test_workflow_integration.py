@@ -64,7 +64,10 @@ class DeliveryHarness:
         sdlc = repo / '.agentic-sdlc'
         for directory in ('contracts', 'policies', 'schemas', 'templates', 'cao'):
             shutil.copytree(ROOT / '.agentic-sdlc' / directory, sdlc / directory)
-        shutil.copy2(ROOT / 'agentic-sdlc-project.json', repo / 'agentic-sdlc-project.json')
+        # The fixture has no project rules unless a test adds them (the real file names rules this fixture lacks).
+        project = json.loads((ROOT / 'agentic-sdlc-project.json').read_text())
+        project.pop('review_knowledge', None)
+        (repo / 'agentic-sdlc-project.json').write_text(json.dumps(project))
         (repo / 'app/tests').mkdir(parents=True)
         (repo / 'app/tests/__init__.py').write_text('')
         (repo / 'app/value.py').write_text('def value():\n    return 0\n')
@@ -155,7 +158,7 @@ class DeliveryHarness:
         registry_path, project_path = repo / '.agentic-sdlc/cao/specialists.json', repo / 'agentic-sdlc-project.json'
         config = {**json.loads(registry_path.read_text()), **json.loads(project_path.read_text())}
         change(config)
-        keys = ('source_roots', 'write_profiles', 'verification')
+        keys = ('source_roots', 'write_profiles', 'verification', 'review_knowledge')
         project_path.write_text(json.dumps({'version': 1, **{k: config[k] for k in keys if k in config}}))
         registry_path.write_text(json.dumps({k: v for k, v in config.items() if k not in keys}))
 
@@ -344,6 +347,118 @@ class LifecycleIntegrationTest(DeliveryHarness, unittest.TestCase):
                 self.assertEqual(manifest['implementation_mode'], 'single')
                 self.assertEqual([c['command'] for c in manifest['verification']['commands']], suite)
                 self.assertNotIn('sdlc_code_supervisor', [agent for agent, _ in calls])
+
+    def test_project_rules_are_reviewed_beside_the_pr_reviewer_and_later_rounds_review_only_changed_files(self):
+        rule = """## {id} - [{level}] Readability. Rule {id}
+
+### Applicable files
+
+- `{glob}`
+
+### Rule description
+
+Text.
+
+### Why we have the rule
+
+Text.
+
+### Examples: bad
+
+Text.
+
+### Examples: good
+
+Text.
+"""
+        for modular in (False, True):
+            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.plan(Path(temp), modular)
+                (repo / 'agentic-sdlc-pr-review-kb').mkdir()
+                (repo / 'agentic-sdlc-pr-review-kb/rules.md').write_text('# Rules\n\n' + '\n'.join([
+                    rule.format(id='R-1', level='MANDATORY', glob='app/value.py'),
+                    rule.format(id='R-2', level='NICE-TO-HAVE', glob='app/other.py'),
+                    rule.format(id='R-3', level='MANDATORY', glob='app/ui/**/*.js')]))
+                suite = [[sys.executable, '-c', 'import runpy; assert runpy.run_path("app/value.py")["value"]() >= 2']]
+                def configure(config):
+                    config['verification'].update(application=suite)
+                    config['review_knowledge'] = {'files': ['agentic-sdlc-pr-review-kb/rules.md']}
+                self.edit_config(repo, configure)
+                delivery, transport = load('deliver', modular)
+                prompts = {}
+
+                def finding(fid, ref, path, line, impact, eligibility):
+                    return {'id': fid, 'standard_ref': ref, 'file': path, 'line_start': line, 'line_end': line,
+                            'location': f'line {line}', 'category': 'STYLE', 'impact': impact, 'confidence': 0.95,
+                            'failure_scenario': 'abbreviated name', 'consequence': 'harder to read',
+                            'related_acceptance_criterion': None, 'remediation_direction': 'use a full name',
+                            'localized_and_bounded': True, 'deterministically_verifiable': True,
+                            'automation_eligibility': eligibility, 'reason': 'a rename'}
+
+                def respond(agent, step_id, prompt):
+                    prompts[step_id] = prompt
+                    if agent == delivery.IMPLEMENTER:
+                        (repo / 'app/value.py').write_text('def value():\n    v = 2\n    return v\n')
+                        (repo / 'app/other.py').write_text('def oth():\n    return 1\n')
+                        return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py', 'app/other.py'], 'assumptions': [], 'deviations': []}
+                    if agent == delivery.REMEDIATOR:
+                        self.assertIn('STD-r1-b1:N1', prompt)
+                        self.assertNotIn('N2', prompt)
+                        (repo / 'app/value.py').write_text('def value():\n    result = 2\n    return result\n')
+                        return {'findings_addressed': ['STD-r1-b1:N1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
+                    if step_id == 'standards-review-r1-b1':
+                        return {'rules': [{'id': 'R-1', 'files': [{'path': 'app/value.py', 'status': 'VIOLATED', 'finding_ids': ['N1', 'N3']}]},
+                                          {'id': 'R-2', 'files': [{'path': 'app/other.py', 'status': 'VIOLATED', 'finding_ids': ['N2']}]}],
+                                'findings': [finding('N1', 'R-1', 'app/value.py', 2, 'LOW', 'AUTO_FIX'),
+                                             finding('N2', 'R-2', 'app/other.py', 1, 'MEDIUM', 'AUTO_FIX'),
+                                             finding('N3', 'R-1', 'app/value.py', 1, 'LOW', 'AUTO_FIX')],
+                                'coverage_gaps': []}
+                    if step_id.startswith('standards-review-r2-b1'):
+                        # No verdict for app/value.py, also after the repair turn: the last attempt records it as a gap.
+                        return {'rules': [{'id': 'R-1', 'files': []}], 'findings': [], 'coverage_gaps': []}
+                    return {'summary': 'Synthetic review', 'findings': []}
+                calls, output = self.drive(delivery, transport, {'repository_root': str(repo), 'ticket_id': 'T-1',
+                                                                 'implementation_mode': 'single'}, respond, 'delivery-rules')
+                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW')
+                self.assertEqual(sorted(step for _, step in calls if 'review' in step),
+                                 ['pr-review-r1', 'pr-review-r2', 'standards-review-r1-b1', 'standards-review-r2-b1',
+                                  'standards-review-r2-b1-repair-1'])
+                self.assertIn('app/value.py has none', prompts['standards-review-r2-b1-repair-1'])
+                index = prompts['standards-review-r1-b1'].rsplit('```', 1)[1]
+                self.assertIn('R-1 [MANDATORY]', index)
+                self.assertIn('R-2 [NICE-TO-HAVE]', index)
+                self.assertNotIn('R-3', prompts['standards-review-r1-b1'])
+                self.assertNotIn('R-2 [', prompts['standards-review-r2-b1'].rsplit('```', 1)[1])
+                first = json.loads((records / 'pr-review-r1.json').read_text())
+                n1 = next(f for f in first['findings'] if f['id'] == 'STD-r1-b1:N1')
+                self.assertEqual((n1['impact'], n1['automation_eligibility']), ('LOW', 'AUTO_FIX'))
+                self.assertEqual(sorted((s['standard_ref'], s['suggestion_reason'].split(':')[0]) for s in first['suggestions']),
+                                 [('R-1', 'Outside the lines this diff adds'), ('R-2', 'NICE-TO-HAVE rule R-2')])
+                last = json.loads((records / 'pr-review-r2.json').read_text())
+                self.assertEqual(last['standards']['reviewed'], ['R-1'])
+                self.assertEqual(last['standards']['carried'], ['R-2'])
+                self.assertEqual(last['standards']['verdicts'], {'R-1': 'NOT_ASSESSED', 'R-2': 'VIOLATED'})
+                self.assertEqual(last['standards']['file_verdicts'], {'R-1': {'app/value.py': 'NOT_ASSESSED'},
+                                                                      'R-2': {'app/other.py': 'VIOLATED'}})
+                self.assertEqual(last['standards']['not_assessed'], ['R-1 in app/value.py'])
+                self.assertEqual(first['standards']['batches'], [{'rules': ['R-1', 'R-2'], 'files': ['app/other.py', 'app/value.py']}])
+                self.assertEqual([(s['standard_ref'], s['carried_from_round']) for s in last['suggestions']], [('R-2', 1)])
+                self.assertFalse(last['has_auto_fix'])
+                manifest = json.loads((records / 'delivery-manifest.json').read_text())
+                self.assertEqual([r['round'] for r in manifest['standards']['rounds']], [1, 2])
+                self.assertEqual(manifest['standards']['rounds'][0]['skipped'], ['R-3'])
+                # Step 5: the authors get the rules that can apply to what they write.
+                self.assertIn('- R-1 [MANDATORY]', prompts['implement-v1'])
+                self.assertIn('- R-2 [NICE-TO-HAVE]', prompts['implement-v1'])
+                self.assertIn('knowledge/authors/rules/<RULE-ID>.md', prompts['implement-v1'])
+                self.assertIn('- R-1 [MANDATORY]', prompts['remediate-r1'])
+                self.assertNotIn('- R-2 [', prompts['remediate-r1'])
+                self.assertNotIn('- R-3 [', prompts['remediate-r1'])
+                brief = (records / 'human-review-brief.md').read_text()
+                self.assertIn('## Project rules', brief)
+                self.assertIn('Suggestions (optional, never fixed automatically): 1', brief)
+                self.assertIn('- R-1 in app/value.py', brief)
+                self.assertIn('Reviewer note: The reviewer gave rule R-1 no verdict for app/value.py: not assessed', brief)
 
     def test_single_mode_needs_an_application_suite(self):
         for modular in (False, True):

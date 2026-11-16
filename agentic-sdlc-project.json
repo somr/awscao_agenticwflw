@@ -9,5 +9,6 @@
     ],
     "angularjs": [["npm", "--prefix", "app/ui", "run", "verify"]],
     "spark": [["spark-submit", "--master", "local[2]", "app/spark/tests/verify.py"]]
-  }
+  },
+  "review_knowledge": {"files": ["agentic-sdlc-pr-review-kb/code-readability.md"]}
 }

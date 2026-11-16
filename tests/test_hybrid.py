@@ -145,6 +145,29 @@ class HybridTest(unittest.TestCase):
                 self.assertEqual(git(repo, 'log', '--format=%s', '-2').splitlines(), ['[T-1] T2: implement hybrid task', '[T-1] T1: implement hybrid task'])
                 self.assertEqual(registry['workers'].keys(), mod.load_specialists(repo)['workers'].keys())
 
+    def test_rules_reach_the_supervisor_and_integration_for_the_roots_and_each_worker_for_its_owns(self):
+        for mod in modules():
+            with tempfile.TemporaryDirectory() as temp:
+                repo = make_repo(Path(temp))
+                dispatch = {'tasks': [task(), task('T2', depends_on=['T1'])]}
+                calls = []
+                def run(**kwargs):
+                    calls.append(kwargs)
+                    if kwargs['agent'] == mod.SUPERVISOR:
+                        return kwargs['validator'](dispatch)
+                    if kwargs['step_id'].startswith('worker-'):
+                        (kwargs['repo'] / f"app/{kwargs['step_id'].split('-')[1].lower()}.py").write_text('x = 1\n')
+                    return summary(kwargs['step_id'])
+                with patch.object(mod, '_run_json_contract_step', side_effect=run):
+                    mod.run_hybrid(repo=repo, prompt='Approved scope', evidence_dir=repo / '.agentic-sdlc/runtime/T-1/run/implementation/agent-output',
+                                   completion_validator=lambda value: value, ticket_id='T-1', run_id='run-1', max_parallel=4,
+                                   rules_for=lambda paths: f'RULES FOR {sorted(paths)}')
+                prompts = {c['step_id']: c['prompt'] for c in calls}
+                self.assertTrue(prompts['dispatch-v1'].endswith("RULES FOR ['app']"))
+                self.assertTrue(prompts['worker-T1'].endswith("RULES FOR ['app/t1.py']"))
+                self.assertTrue(prompts['worker-T2'].endswith("RULES FOR ['app/t2.py']"))
+                self.assertTrue(prompts['integrate-v1'].endswith("RULES FOR ['app']"))
+
     def test_invalid_registry_fails_closed(self):
         for mod in modules():
             original = mod.load_specialists(ROOT)
@@ -316,7 +339,7 @@ class ProjectFileTest(unittest.TestCase):
 
     def test_this_repository_keeps_per_project_settings_out_of_the_common_registry(self):
         registry = json.loads((ROOT / '.agentic-sdlc/cao/specialists.json').read_text())
-        self.assertFalse({'source_roots', 'write_profiles', 'verification'} & set(registry))
+        self.assertFalse({'source_roots', 'write_profiles', 'verification', 'review_knowledge'} & set(registry))
 
     def test_the_project_file_supplies_roots_profiles_and_verification(self):
         for mod in modules():

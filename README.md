@@ -2,11 +2,11 @@
 
 This repository is a learning and validation project for an agentic software-development lifecycle built on AWS Labs CLI Agent Orchestrator (CAO). The maintained implementation lives under [.agentic-sdlc/](.agentic-sdlc/).
 
-Current repository capabilities (2026-10-05):
+Current repository capabilities (2026-11-16):
 
 - Planning (`sdlc_dev_plan`) retrieves and normalizes requirements, analyses the repository, authors a Development Plan, and performs an independent plan review before human approval. It supports developer guidance, review history, and warm starts from eligible non-converged candidates.
-- Delivery (`sdlc_deliver`) implements an approved plan, runs configured verification commands, performs independent PR review and up to three remediation rounds, and prepares a human review package. Hybrid mode is the default: a supervisor assigns tasks to registered workers, independent tasks run at the same time in separate Git worktrees, and an integration pass follows. Single-implementer mode is also available. A run that ends `BLOCKED` can be resumed after a fix, keeping the tasks it finished.
-- Source review (`source_review`) reviews an existing GitHub pull request in an isolated snapshot and routes validated findings into `AUTO_FIX` or `HUMAN_REQUIRED` queues. It produces feedback only; it does not apply fixes or run tests. A person edits the generated `review-draft.md` and publishes it with a separate command, as one non-blocking `COMMENT` review with comments beside the code.
+- Delivery (`sdlc_deliver`) implements an approved plan, runs configured verification commands, performs independent PR review and up to three remediation rounds, and prepares a human review package. Hybrid mode is the default: a supervisor assigns tasks to registered workers, independent tasks run at the same time in separate Git worktrees, and an integration pass follows. Single-implementer mode is also available. A run that ends `BLOCKED` can be resumed after a fix, keeping the tasks it finished. With project rules, the agents that write code get the rules for their files and standards reviewers check the added code against them.
+- Source review (`source_review`) reviews an existing GitHub pull request in an isolated snapshot and routes validated findings into `AUTO_FIX` or `HUMAN_REQUIRED` queues. With project rules, standards reviewers also check the PR against the project's own coding standards, and optional findings go to a `SUGGESTION` queue. It produces feedback only; it does not apply fixes or run tests. A person edits the generated `review-draft.md` and publishes it with a separate command, as one non-blocking `COMMENT` review with comments beside the code.
 - Source remediation (`source_remediate`) fixes selected eligible findings without a ticket, verifies and independently reviews the changes, then prepares local records for human review. A separate command can push the verified commit and post GitHub done replies.
 
 Python owns orchestration, validation, Git operations, verification and routing. Human approval is recorded separately for the reviewed plan and the delivered commit. Delivery produces local PR artifacts; it does not push, open a GitHub PR or merge.
@@ -63,7 +63,7 @@ python3 .agentic-sdlc/scripts/approve_plan.py --repository-root "$PWD" --ticket-
 Install the four delivery profiles, then the workflow:
 
 ```bash
-for profile in code-supervisor implementer pr-reviewer remediator; do
+for profile in code-supervisor implementer pr-reviewer standards-reviewer remediator; do
   cao profile validate ".agentic-sdlc/cao/profiles/$profile.md"
   cao install ".agentic-sdlc/cao/profiles/$profile.md"
 done
@@ -101,7 +101,7 @@ cao workflow run source_review --wait --json --run-id source-review-pr42-1 \
   --input pr_url=https://github.com/OWNER/REPO/pull/42
 ```
 
-Replace the PR URL and run ID. This installer includes its five profiles and refuses to overwrite an existing workflow or profile; use the [Source-review guide](agentic-sdlc-docs/workflows/source-review.md) for upgrades, local fixture mode and optional publication. Results are `code-review.json`, `comments.md` and the editable `review-draft.md` under `agentic-sdlc-records/source-review/<repo>-pr<N>/<run-id>/`; the working files stay in `.agentic-sdlc/runtime/source-review/<run-id>/`.
+Replace the PR URL and run ID. This installer includes its six profiles and refuses to overwrite an existing workflow or profile; use the [Source-review guide](agentic-sdlc-docs/workflows/source-review.md) for upgrades, local fixture mode and optional publication. Results are `code-review.json`, `comments.md` and the editable `review-draft.md` under `agentic-sdlc-records/source-review/<repo>-pr<N>/<run-id>/`; the working files stay in `.agentic-sdlc/runtime/source-review/<run-id>/`.
 
 Eligible Source review findings can be fixed with the ticket-independent
 [`source_remediate` workflow](agentic-sdlc-docs/workflows/source-remediation.md). It creates a local branch,
@@ -115,7 +115,8 @@ The sample application lives under `app/`. `.agentic-sdlc/` is common to every p
 
 - `source_roots`: the directories where generated source is written, committed and diffed (default `["app"]`);
 - `write_profiles`: which agent profiles may write there;
-- `verification`: the commands that verify a change, so use your own build and test commands.
+- `verification`: the commands that verify a change, so use your own build and test commands;
+- `review_knowledge` (optional): the project's own coding standards, as rule files in `agentic-sdlc-pr-review-kb/`, which Delivery's and Source review's standards reviewers check and Delivery's authors follow. See [Project rules for the reviewers](agentic-sdlc-docs/reference/project-rules.md).
 
 The common [`.agentic-sdlc/cao/specialists.json`](.agentic-sdlc/cao/specialists.json) holds `workers` and `skills`, the specialists Delivery can assign work to. A skill is available only when the project defines its verification suites.
 

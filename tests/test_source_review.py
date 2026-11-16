@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import patch
@@ -136,6 +137,64 @@ class ReviewTests(unittest.TestCase):
         self.assertIn('AUTO_FIX', comments)
         self.assertIn('/blob/' + 'b'*40, comments)
         self.assertIn('Suggested verification:', comments)
+
+    def test_correctness_and_security_run_at_the_same_time_and_merge_in_fixed_order(self):
+        both_running = threading.Barrier(2, timeout=10)
+        security_done = threading.Event()
+        def fake(**kwargs):
+            role = kwargs['agent'].removeprefix('sdlc_source_')
+            if role in ('correctness', 'security'):
+                both_running.wait()  # BrokenBarrierError unless the two run concurrently
+                if role == 'correctness':
+                    self.assertTrue(security_done.wait(10))  # finishes last, still merged first
+                    value = {'findings': [copy.deepcopy(self.finding)], 'coverage_gaps': ['c gap']}
+                else:
+                    value = {'findings': [{**copy.deepcopy(self.finding), 'candidate_id': 'S1'}], 'coverage_gaps': ['s gap']}
+                result = kwargs['validator'](value)
+                if role == 'security':
+                    security_done.set()
+                return result
+            if role == 'validator':
+                self.assertEqual([c['candidate_id'] for c in json.loads((self.work / 'candidates.json').read_text())],
+                                 ['correctness:C1', 'security:S1'])
+                self.assertEqual([g['source'] for g in json.loads((self.work / 'reported-gaps.json').read_text())],
+                                 ['correctness', 'security'])
+                return kwargs['validator']({'decisions': [
+                    {'candidate_id': 'correctness:C1', 'disposition': 'ACCEPT', 'reason': 'Confirmed',
+                     'finding': {**self.finding, 'candidate_id': 'correctness:C1'}},
+                    {'candidate_id': 'security:S1', 'disposition': 'DUPLICATE', 'reason': 'Same', 'duplicate_of': 'correctness:C1'}],
+                    'coverage_gaps': [{'gap': 'merged', 'covers': ['G1', 'G2']}]})
+            return self.fake_agent(**kwargs)
+        with patch.object(mod, '_run_json_contract_step', side_effect=fake):
+            report = mod.run_agents(self.work, self.snapshot, 4)
+        self.assertEqual(report['review_max_parallel'], 4)
+        self.assertEqual(len(report['findings']), 1)
+
+    def test_review_max_parallel_one_keeps_the_original_order(self):
+        order = []
+        def fake(**kwargs):
+            order.append((kwargs['step_id'], threading.current_thread() is threading.main_thread()))
+            return self.fake_agent(**kwargs)
+        with patch.object(mod, '_run_json_contract_step', side_effect=fake):
+            report = mod.run_agents(self.work, self.snapshot, 1)
+        self.assertEqual(order, [(s, True) for s in ('source-mapper', 'source-correctness', 'source-security',
+                                                     'source-validator', 'source-feedback')])
+        self.assertEqual(report['review_max_parallel'], 1)
+
+    def test_a_failed_reviewer_fails_the_review_after_the_other_finishes(self):
+        finished = []
+        def fake(**kwargs):
+            role = kwargs['agent'].removeprefix('sdlc_source_')
+            if role == 'security':
+                raise mod.WorkflowContractError('security answer broke the contract')
+            result = self.fake_agent(**kwargs)
+            finished.append(role)
+            return result
+        with patch.object(mod, '_run_json_contract_step', side_effect=fake):
+            with self.assertRaisesRegex(mod.WorkflowContractError, 'security answer'):
+                mod.run_agents(self.work, self.snapshot, 4)
+        self.assertEqual(finished, ['mapper', 'correctness'])
+        self.assertFalse((self.work / 'candidates.json').exists())
 
     def test_gap_survives_empty_findings(self):
         def fake(**kwargs):
@@ -639,7 +698,8 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn('base-only.py', snapshot['changed_files'])
 
     def test_success_persists_exact_comment_hash_and_run_output(self):
-        def review(work, snapshot):
+        def review(work, snapshot, max_parallel, standards):
+            self.assertEqual((max_parallel, standards), (4, None))
             return {'snapshot': snapshot, 'summary': 'No confirmed defects', 'findings': [],
                     'coverage_gaps': ['Missing context\n'], 'coverage_status': 'INCOMPLETE',
                     'queues': {'AUTO_FIX': [], 'HUMAN_REQUIRED': []}}
@@ -657,6 +717,16 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(emit.call_args.args[0]['coverage_status'], 'INCOMPLETE')
         self.assertEqual(report['draft_sha256'], mod.hashlib.sha256((run / 'review-draft.md').read_bytes()).hexdigest())
         self.assertEqual(emit.call_args.args[0]['attention'], {'human_required': 0, 'general_only': 0, 'coverage_gaps': 1})
+
+    def test_an_invalid_review_max_parallel_stops_before_any_work(self):
+        for value in (0, 5, True, '2', 1.5):
+            with self.subTest(value=value), patch.dict(os.environ, {'CAO_WORKFLOW_RUN_ID': f'bad-{value}'}), \
+                    patch.object(mod, 'get_inputs', return_value={**self.inputs, 'review_max_parallel': value}), \
+                    patch.object(mod, 'run_agents') as run:
+                with self.assertRaisesRegex(mod.WorkflowContractError, 'review_max_parallel'):
+                    mod.main()
+                run.assert_not_called()
+        self.assertFalse((self.root / '.agentic-sdlc/runtime/source-review').exists())
 
     def test_failed_agent_records_failure_not_clean_review(self):
         with patch.dict(os.environ, {'CAO_WORKFLOW_RUN_ID': 'test-failure'}), patch.object(mod, 'get_inputs', return_value=self.inputs), patch.object(mod, 'run_agents', side_effect=execution_error('missing answer')):
@@ -686,6 +756,274 @@ class SnapshotTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 mod.main()
         self.assertEqual((run / 'marker').read_text(), 'keep')
+
+
+
+RULE_TEXT = """# Rules
+
+## {id} - [{level}] Readability. Rule {id}
+
+### Applicable files
+
+- `{glob}`
+
+### Rule description
+
+Text.
+
+### Why we have the rule
+
+Text.
+
+### Examples: bad
+
+Text.
+
+### Examples: good
+
+Text.
+"""
+
+
+class StandardsTests(unittest.TestCase):
+    """Project rules in Source review: diff lines, the standards contract, routing by level and the pipeline."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.work = Path(self.temp.name) / 'work'
+        (self.work / 'source/base').mkdir(parents=True)
+        (self.work / 'source/head').mkdir(parents=True)
+        (self.work / 'source/base/code.py').write_text('def count(x):\n    return x\n')
+        (self.work / 'source/head/code.py').write_text('def count(x):\n    return x + 1\n')
+        (self.work / 'diff.patch').write_text('diff --git a/code.py b/code.py\n--- a/code.py\n+++ b/code.py\n'
+                                              '@@ -1,2 +1,2 @@\n def count(x):\n-    return x\n+    return x + 1\n')
+        self.snapshot = {'repository': None, 'pr_number': None, 'pr_url': None, 'base_sha': 'a' * 40,
+                         'head_sha': 'b' * 40, 'merge_base_sha': 'a' * 40, 'changed_files': ['code.py'],
+                         'coverage_gaps': []}
+        self.mapping = {'summary': 'One changed function', 'files': [{'file': 'code.py', 'scope': 'SOURCE',
+                        'reason': 'Python code', 'related_files': [], 'sensitive_boundaries': []}], 'coverage_gaps': []}
+        rules = []
+        for rule_id, level in (('A-1', 'MANDATORY'), ('A-2', 'MANDATORY'), ('B-1', 'NICE-TO-HAVE'), ('Z-1', 'MANDATORY')):
+            glob = 'other/*.py' if rule_id == 'Z-1' else '*.py'
+            rules += importlib.import_module('sdlc_workflows.review_knowledge').parse_rules(RULE_TEXT.format(id=rule_id, level=level, glob=glob), 'kb/rules.md', 8192)
+        self.knowledge = {'files': [{'path': 'agentic-sdlc-pr-review-kb/rules.md', 'sha256': 'f' * 64}],
+                          'rules': rules, 'settings': {'files': ['agentic-sdlc-pr-review-kb/rules.md'],
+                          'batch_max_rules': 15, 'batch_max_kb': 32, 'batch_max_files': 5, 'max_files': 32, 'max_rules': 200, 'max_rule_kb': 8}}
+        self.rule_finding = {**mod.STANDARDS_FINDING_SHAPE, 'candidate_id': 'N1', 'file': 'code.py',
+                             'line_start': 2, 'line_end': 2, 'symbol': 'count', 'standard_ref': 'A-1',
+                             'title': 'Abbreviated name'}
+
+    def batch(self):
+        return [{**rule, 'covers': ['code.py']} for rule in self.knowledge['rules'] if rule['id'] != 'Z-1']
+
+    def test_added_lines_count_only_lines_the_diff_adds(self):
+        diff = ('diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,4 +1,5 @@\n keep\n-old\n+new\n keep\n+added\n keep\n'
+                '@@ -10,2 +11,2 @@\n ctx\n+late\n'
+                'diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n'
+                'diff --git a/new.py b/new.py\n--- /dev/null\n+++ b/new.py\n@@ -0,0 +1,2 @@\n+--- looks like a header\n+b\n')
+        self.assertEqual(mod.added_lines(diff), {'a.py': {2, 4, 12}, 'new.py': {1, 2}})
+
+    def test_standards_contract_accepts_a_complete_answer(self):
+        value = {'rules': [verdict('A-1', 'VIOLATED', ['N1']),
+                           verdict('A-2', 'NOT_VIOLATED', []),
+                           verdict('B-1', 'NOT_ASSESSED', [])],
+                 'findings': [self.rule_finding], 'coverage_gaps': ['B-1 needs the caller']}
+        checked = mod.standards_contract(value, self.work, self.snapshot, self.mapping, self.batch())
+        self.assertEqual(checked['file_verdicts'], {'A-1': {'code.py': 'VIOLATED'}, 'A-2': {'code.py': 'NOT_VIOLATED'},
+                                                    'B-1': {'code.py': 'NOT_ASSESSED'}})
+        self.assertEqual(checked['coverage_gaps'], ['B-1 needs the caller'])
+        missing = {**value, 'rules': value['rules'][:2]}
+        with self.assertRaisesRegex(mod.WorkflowContractError, 'B-1'):
+            mod.standards_contract(missing, self.work, self.snapshot, self.mapping, self.batch())
+        filled = mod.standards_contract(missing, self.work, self.snapshot, self.mapping, self.batch(), fill_missing=True)
+        self.assertEqual(filled['coverage_gaps'], ['B-1 needs the caller',
+                                                   'The reviewer gave rule B-1 no verdict for code.py: not assessed'])
+
+    def test_standards_contract_rejects_incomplete_or_inconsistent_answers(self):
+        ok = [verdict('A-2', 'NOT_VIOLATED', []), verdict('B-1', 'NOT_VIOLATED', [])]
+        violated = verdict('A-1', 'VIOLATED', ['N1'])
+        cases = {
+            'a rule without verdict': ([violated, ok[0]], [self.rule_finding]),
+            'old per-rule shape': ([{'id': 'A-1', 'status': 'VIOLATED', 'finding_ids': ['N1']}] + ok, [self.rule_finding]),
+            'a file outside the batch': ([{**violated, 'files': violated['files'] + [{'path': 'other.py', 'status': 'NOT_VIOLATED', 'finding_ids': []}]}] + ok,
+                                         [self.rule_finding]),
+            'a rule twice': ([violated, violated] + ok, [self.rule_finding]),
+            'a rule outside the batch': ([violated, *ok, verdict('Z-1', 'NOT_VIOLATED', [])], [self.rule_finding]),
+            'violated without findings': ([verdict('A-1', 'VIOLATED', [])] + ok, []),
+            'findings but not violated': ([verdict('A-1', 'NOT_VIOLATED', [])] + ok, [self.rule_finding]),
+            'finding ids do not match': ([verdict('A-1', 'VIOLATED', ['N9'])] + ok, [self.rule_finding]),
+            'unknown status': ([verdict('A-1', 'MAYBE', ['N1'])] + ok, [self.rule_finding]),
+            'no standard_ref': ([violated] + ok, [{**self.rule_finding, 'standard_ref': None}]),
+            'ref outside the batch': ([violated] + ok, [{**self.rule_finding, 'standard_ref': 'Z-1'}]),
+            'base side': ([violated] + ok, [{**self.rule_finding, 'side': 'base'}]),
+            'malformed ref': ([violated] + ok, [{**self.rule_finding, 'standard_ref': 'a-1'}]),
+        }
+        for name, (rules, findings) in cases.items():
+            with self.subTest(case=name), self.assertRaises(mod.WorkflowContractError):
+                mod.standards_contract({'rules': rules, 'findings': findings, 'coverage_gaps': []},
+                                       self.work, self.snapshot, self.mapping, self.batch())
+        batch = [{**rule, 'covers': []} if rule['id'] == 'A-1' else rule for rule in self.batch()]
+        with self.assertRaisesRegex(mod.WorkflowContractError, 'does not apply'):
+            mod.standards_contract({'rules': [violated] + ok, 'findings': [self.rule_finding], 'coverage_gaps': []},
+                                   self.work, self.snapshot, self.mapping, batch)
+
+    def test_maintainability_needs_a_rule(self):
+        with self.assertRaisesRegex(mod.WorkflowContractError, 'MAINTAINABILITY requires'):
+            mod.validate_finding({**self.rule_finding, 'standard_ref': None}, self.work, self.snapshot, self.mapping)
+
+    def test_severity_stands_and_nice_to_have_is_a_suggestion_unless_rated_high(self):
+        levels = {'A-1': 'MANDATORY', 'B-1': 'NICE-TO-HAVE'}
+        mandatory = mod.route_finding(self.rule_finding, self.snapshot, self.mapping, levels)
+        self.assertEqual((mandatory['severity'], mandatory['route'], mandatory['rule_level']), ('MEDIUM', 'AUTO_FIX', 'MANDATORY'))
+        high = mod.route_finding({**self.rule_finding, 'severity': 'HIGH'}, self.snapshot, self.mapping, levels)
+        self.assertEqual((high['severity'], high['route']), ('HIGH', 'HUMAN_REQUIRED'))
+        nice = mod.route_finding({**self.rule_finding, 'standard_ref': 'B-1', 'severity': 'MEDIUM'}, self.snapshot, self.mapping, levels)
+        self.assertEqual((nice['severity'], nice['route']), ('MEDIUM', 'SUGGESTION'))
+        exception = mod.route_finding({**self.rule_finding, 'standard_ref': 'B-1', 'severity': 'HIGH'}, self.snapshot, self.mapping, levels)
+        self.assertEqual((exception['severity'], exception['route']), ('HIGH', 'HUMAN_REQUIRED'))
+        sensitive = {**self.mapping, 'files': [{**self.mapping['files'][0], 'sensitive_boundaries': ['BUSINESS_RULES']}]}
+        self.assertEqual(mod.route_finding(self.rule_finding, self.snapshot, sensitive, levels)['route'], 'HUMAN_REQUIRED')
+        with self.assertRaisesRegex(mod.WorkflowContractError, 'Unknown project rule'):
+            mod.route_finding(self.rule_finding, self.snapshot, self.mapping, {})
+        plain = {**self.rule_finding, 'category': 'CORRECTNESS', 'standard_ref': None}
+        self.assertNotEqual(mod.route_finding(plain, self.snapshot, self.mapping)['stable_id'], mandatory['stable_id'])
+        self.assertNotIn('rule_level', mod.route_finding(plain, self.snapshot, self.mapping))
+
+    def test_the_validator_may_not_change_the_cited_rule(self):
+        candidate = {**self.rule_finding, 'candidate_id': 'standards-b1:N1'}
+        decision = {'candidate_id': 'standards-b1:N1', 'disposition': 'ACCEPT', 'reason': 'Confirmed',
+                    'finding': {**candidate, 'standard_ref': 'A-2'}}
+        with self.assertRaisesRegex(mod.WorkflowContractError, 'standard_ref'):
+            mod.adjudication_contract({'decisions': [decision], 'coverage_gaps': []}, [candidate], self.work, self.snapshot, self.mapping)
+
+    def test_pipeline_with_rules(self):
+        standards = mod.prepare_standards(self.work, self.snapshot, self.knowledge)
+        self.assertEqual(standards['selection']['skipped'], ['Z-1'])
+        self.assertEqual([[r['id'] for r in b] for b in standards['batches']], [['A-1', 'A-2', 'B-1']])
+        self.assertEqual((self.work / 'knowledge/diff-b1.patch').read_text(), (self.work / 'diff.patch').read_text())
+        self.assertTrue((self.work / 'knowledge/rules/A-1.md').is_file())
+        prompts = {}
+        outside = {**self.rule_finding, 'candidate_id': 'N2', 'line_start': 1, 'line_end': 1, 'title': 'Header name'}
+        nice = {**self.rule_finding, 'candidate_id': 'N3', 'standard_ref': 'B-1', 'title': 'Could be clearer'}
+        def fake(**kwargs):
+            role = kwargs['step_id'].removeprefix('source-')
+            prompts[role] = kwargs['prompt']
+            if role == 'mapper':
+                value = copy.deepcopy(self.mapping)
+            elif role in ('correctness', 'security'):
+                value = {'findings': [], 'coverage_gaps': []}
+            elif role == 'standards-b1':
+                self.assertEqual(kwargs['agent'], 'sdlc_source_standards')
+                value = {'rules': [verdict('A-1', 'VIOLATED', ['N1', 'N2']), verdict('A-2', 'NOT_ASSESSED', []),
+                                   verdict('B-1', 'VIOLATED', ['N3'])],
+                         'findings': [copy.deepcopy(self.rule_finding), outside, nice], 'coverage_gaps': []}
+            elif role == 'validator':
+                candidates = json.loads((self.work / 'candidates.json').read_text())
+                self.assertEqual([c['candidate_id'] for c in candidates], ['standards-b1:N1', 'standards-b1:N3'])
+                gaps = json.loads((self.work / 'reported-gaps.json').read_text())
+                self.assertEqual([g['gap'] for g in gaps], ['Project rule A-2 was not assessed in code.py'])
+                value = {'decisions': [{'candidate_id': c['candidate_id'], 'disposition': 'ACCEPT', 'reason': 'Confirmed',
+                                        'finding': c} for c in candidates],
+                         'coverage_gaps': [{'gap': 'Rule A-2 was not assessed', 'covers': ['G1']}]}
+            else:
+                routed = json.loads((self.work / 'routed-findings.json').read_text())
+                value = {'summary': 'Rules', 'comments': [{'stable_id': f['stable_id'], 'explanation': 'Rename it.'}
+                                                          for f in routed['findings'] + routed['suggestions']]}
+            return kwargs['validator'](value)
+        with patch.object(mod, '_run_json_contract_step', side_effect=fake):
+            report = mod.run_agents(self.work, self.snapshot, 4, standards)
+        self.assertIn('knowledge/ holds the project', prompts['mapper'])
+        self.assertTrue(prompts['standards-b1'].rstrip().endswith(standards['indexes'][0].rstrip()))
+        self.assertIn('Candidates with a standard_ref', prompts['validator'])
+        by_ref = {f['standard_ref']: f for f in report['findings']}
+        self.assertEqual((by_ref['A-1']['severity'], by_ref['A-1']['route']), ('MEDIUM', 'AUTO_FIX'))
+        self.assertEqual((by_ref['B-1']['severity'], by_ref['B-1']['route']), ('MEDIUM', 'SUGGESTION'))
+        self.assertEqual(report['queues']['SUGGESTION'], [by_ref['B-1']['stable_id']])
+        self.assertEqual([(s['standard_ref'], s['severity'], s['outside_changed_lines']) for s in report['suggestions']],
+                         [('A-1', 'MEDIUM', True)])
+        self.assertEqual(report['standards']['verdicts'], {'A-1': 'VIOLATED', 'A-2': 'NOT_ASSESSED', 'B-1': 'VIOLATED'})
+        self.assertEqual(report['standards']['not_assessed'], ['A-2 in code.py'])
+        self.assertEqual(report['standards']['batches'], [{'rules': ['A-1', 'A-2', 'B-1'], 'files': ['code.py']}])
+        self.assertIn('knowledge/diff-b1.patch', prompts['standards-b1'])
+        self.assertEqual((report['standards']['applicable'], report['standards']['skipped']), (['A-1', 'A-2', 'B-1'], ['Z-1']))
+        self.assertEqual(report['coverage_status'], 'INCOMPLETE')
+        report['status'] = 'REVIEWED'
+        for finding in report['findings']:
+            finding['placement'] = mod.place_finding(finding, mod.diff_hunks((self.work / 'diff.patch').read_text()))
+        comments = mod.render_comments(report)
+        self.assertIn('Project rule: A-1 (MANDATORY)', comments)
+        self.assertIn('## Suggestions outside the changed lines', comments)
+        draft = mod.render_draft(report)
+        general = draft.split('<!-- general -->')[1].split('<!-- end general -->')[0]
+        self.assertIn('code.py:1-1 (A-1): Rename it.', general)
+
+    def test_without_rules_no_standards_step_runs_and_the_report_is_unchanged(self):
+        steps = []
+        def fake(**kwargs):
+            steps.append(kwargs['step_id'])
+            role = kwargs['step_id'].removeprefix('source-')
+            value = {'mapper': copy.deepcopy(self.mapping), 'validator': {'decisions': [], 'coverage_gaps': []},
+                     'feedback': {'summary': 'None', 'comments': []}}.get(role, {'findings': [], 'coverage_gaps': []})
+            return kwargs['validator'](value)
+        with patch.object(mod, '_run_json_contract_step', side_effect=fake):
+            report = mod.run_agents(self.work, self.snapshot, 4)
+        self.assertEqual(steps, ['source-mapper', 'source-correctness', 'source-security', 'source-validator', 'source-feedback'])
+        self.assertEqual(set(report['queues']), {'AUTO_FIX', 'HUMAN_REQUIRED'})
+        self.assertNotIn('standards', report)
+        self.assertNotIn('suggestions', report)
+
+    def test_rules_that_match_no_changed_file_cost_no_agent_call(self):
+        knowledge = {**self.knowledge, 'rules': [r for r in self.knowledge['rules'] if r['id'] == 'Z-1']}
+        standards = mod.prepare_standards(self.work, self.snapshot, knowledge)
+        self.assertEqual((standards['batches'], standards['selection']['skipped']), ([], ['Z-1']))
+
+
+def verdict(rule_id, status, ids, path='code.py'):
+    return {'id': rule_id, 'files': [{'path': path, 'status': status, 'finding_ids': ids}]}
+
+
+class ParallelStepsTest(unittest.TestCase):
+    """runtime.run_parallel_steps, as bundled into Source review."""
+
+    def test_results_come_back_in_call_order_and_the_cap_is_respected(self):
+        lock, running, peak = threading.Lock(), [0], [0]
+        release = threading.Event()
+        def call(value, delay):
+            def run():
+                with lock:
+                    running[0] += 1
+                    peak[0] = max(peak[0], running[0])
+                release.wait(delay)
+                with lock:
+                    running[0] -= 1
+                return value
+            return run
+        threading.Timer(0.3, release.set).start()
+        results = mod.run_parallel_steps([call(index, 0.05 * (6 - index)) for index in range(6)], 2)
+        self.assertEqual(results, list(range(6)))
+        self.assertEqual(peak[0], 2)
+
+    def test_one_means_sequential_on_the_calling_thread(self):
+        threads = mod.run_parallel_steps([lambda: threading.current_thread()] * 3, 1)
+        self.assertEqual(set(threads), {threading.current_thread()})
+
+    def test_every_call_finishes_and_the_first_failure_in_call_order_is_raised(self):
+        done = []
+        def fail(message, delay):
+            def run():
+                threading.Event().wait(delay)
+                done.append(message)
+                raise mod.WorkflowContractError(message)
+            return run
+        with self.assertRaisesRegex(mod.WorkflowContractError, 'first'):
+            mod.run_parallel_steps([fail('first', 0.2), fail('second', 0), lambda: done.append('ok')], 4)
+        self.assertEqual(sorted(done), ['first', 'ok', 'second'])
+
+    def test_the_cap_is_validated(self):
+        for value in (0, 5):
+            with self.subTest(value=value), self.assertRaises(mod.WorkflowContractError):
+                mod.run_parallel_steps([lambda: 1], value)
 
 
 if __name__ == '__main__':

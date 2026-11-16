@@ -28,7 +28,7 @@ Implement an approved Development Plan, verify the implementation, create a pull
 3. Integrate all changes into a coherent candidate implementation.
 4. Run developer verification: build, lint/static checks, unit/integration tests as applicable.
 5. Create or update the pull request.
-6. Perform independent read-only PR review against requirements, plan, repository conventions and test evidence.
+6. Perform independent read-only PR review against requirements, plan, repository conventions and test evidence; when the project declares rules, standards reviewers check the added code against them in the same round, with a verdict per rule and changed file.
 7. Adjudicate and classify findings under `../policies/pr-review.md`.
 8. Automatically remediate only eligible Low/Medium findings.
 9. Route High, ambiguous or policy-protected findings to a developer.
@@ -63,7 +63,7 @@ verification suites; missing tooling is a verification failure.
 - Pull request reference.
 - Current PR HEAD SHA.
 - Verification/test evidence.
-- Structured agent review findings.
+- Structured agent review findings, including project rule findings, suggestions and per-file rule verdicts when the project declares rules.
 - Remediation history.
 - Outstanding/escalated issues.
 - Human Review Brief.

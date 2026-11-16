@@ -5,7 +5,7 @@ import json
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .errors import WorkflowContractError
 from .artifacts import _read_json, _write_json, _write_text, _sha256_file
@@ -239,7 +239,8 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
                run_id: str, max_parallel: int,
                progress: dict[str, Any] | None = None,
                resume_from: dict[str, Any] | None = None,
-               redispatch: bool = False) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
+               redispatch: bool = False,
+               rules_for: Callable[[list[str]], str] | None = None) -> tuple[dict[str, Any], list[list[str]], str, list[dict[str, Any]]]:
     """Supervisor -> waves of workers -> integration; commits once per task (and once for integration).
 
     A wave of one task runs in the main checkout. A wave of two or more runs each
@@ -250,6 +251,9 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
 
     progress, when given, is filled as the run goes (dispatch, waves, one entry per
     finished task), so a caller still has it when a later step raises.
+
+    rules_for(paths), when given, returns the project rules index for an agent that writes under
+    those paths: the supervisor and the integration get the source roots, each worker its owns.
 
     resume_from, the hybrid record of a BLOCKED run, replaces the supervisor with its saved
     tasks (checked against the current registry) and skips the tasks it finished; their
@@ -262,6 +266,8 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
     roots = validate_source_config(registry)["source_roots"]
     _write_json(evidence_dir / "registry.json", registry)
     catalog = {"workers": registry["workers"], "skills": registry["skills"]}
+    rules_for = rules_for or (lambda paths: "")
+    roots_rules = rules_for(roots)
 
     def supervise(extra: str = "") -> dict[str, Any]:
         return _run_json_contract_step(
@@ -277,7 +283,7 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
             "repository, and merges them afterwards: declare depends_on only for real producer/consumer links, as in "
             "the plan's dependency table. List in owns the files or folders each task will change, and give each "
             "file to one task where possible; tasks whose owns overlap never run at the same time. "
-            "Do not change source. Select applicable skills explicitly." + extra,
+            "Do not change source. Select applicable skills explicitly." + extra + roots_rules,
             validator=lambda value: validate_dispatch(value, registry),
         )
 
@@ -325,7 +331,8 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
             agent=registry["workers"][task["worker"]]["profile"], label=f"Worker {task['id']}", step_id=step_id,
             repo=tree or repo, evidence_dir=evidence_dir if tree is None else tree / ".agentic-sdlc" / "runtime" / "answer",
             preserve_source=False, validator=completion_validator,
-            prompt=_worker_prompt(prompt, task, prior, hybrid_skill_context(repo, registry, task["skills"]), tree) + extra,
+            prompt=_worker_prompt(prompt, task, prior, hybrid_skill_context(repo, registry, task["skills"]), tree) + extra
+            + rules_for(task["owns"]),
         )
 
     def record(entry: dict[str, Any]) -> None:
@@ -421,7 +428,7 @@ def run_hybrid(*, repo: Path, prompt: str, evidence_dir: Path, completion_valida
         prompt=prompt + "\nIntegrate the completed assignments. Inspect actual source against EVERY approved task; "
         "resolve interface mismatches and missing approved work. Do not execute commands. "
         "Report completion for the whole feature, including unresolved deviations.\n" +
-        json.dumps({"dispatch": dispatch, "schedule": schedule["waves"], "results": results}) + "\n" + context,
+        json.dumps({"dispatch": dispatch, "schedule": schedule["waves"], "results": results}) + "\n" + context + roots_rules,
     )
     integration_sha = commit_task(repo, roots, f"[{ticket_id}] Integrate hybrid assignments")
     progress["integration"] = {"commit": integration_sha, "result": integrated}
