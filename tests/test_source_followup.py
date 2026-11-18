@@ -187,5 +187,124 @@ class ThreadsTests(unittest.TestCase):
         self.assertEqual(rt.load_fixture(path), {'login': 'rev', 'threads': [], 'reviews': [], 'issue_comments': []})
 
 
+import subprocess
+
+FIXTURE = ROOT / 'agentic-sdlc-local-inputs' / 'source-followup' / 'create_fixture.py'
+from sdlc_workflows import source_followup as fu
+from sdlc_workflows.review_knowledge import load_review_knowledge
+
+
+class FixtureItemsTests(unittest.TestCase):
+    """build_items and the judge contract on the planted fixture (no agents)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        base = Path(cls.temp.name)
+        cls.inputs = json.loads(subprocess.run([sys.executable, str(FIXTURE), str(base / 'fixture')], check=True,
+                                               capture_output=True, text=True).stdout)
+        root = base / 'run'
+        root.mkdir()
+        cls.snapshot, conversation, remote = fu.pin_pull_request(cls.inputs, root)
+        repo = Path(cls.inputs['repository_root'])
+        selection = rt.select_threads(conversation, [], rt.published_findings(repo, cls.snapshot['repository'],
+                                                                              cls.snapshot['pr_number']))
+        cls.work = root / 'workspace'
+        fu.export_tree(root / 'objects.git', cls.snapshot['head_sha'], cls.work / 'source' / 'head')
+        fu.configure_workspace(cls.work)
+        cls.items, cls.changes, cls.gaps = fu.build_items(selection, cls.snapshot, root / 'objects.git', remote,
+                                                          cls.work, load_review_knowledge(repo))
+        cls.by_key = {item['key']: item for item in cls.items}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    def verdict(self, key, verdict, evidence=(), **extra):
+        return {'item': key, 'verdict': verdict, 'reason': 'because', 'evidence': list(evidence),
+                'reply': 'Reply text', 'rule_verdict': None, **extra}
+
+    def check(self, *entries, keys=None):
+        batch = [self.by_key[k] for k in (keys or [e['item'] for e in entries])]
+        return fu.judge_contract({'verdicts': list(entries), 'coverage_gaps': []}, batch, self.changes, self.work)
+
+    def test_items_locations_and_rule_staging(self):
+        summary = {k: (i['kind'], i['location'], i.get('head_lines')) for k, i in self.by_key.items()}
+        self.assertEqual(summary, {'T1': ('TOOL', 'CHANGED', None), 'T2': ('HAND_WRITTEN', 'CURRENT', [26, 28]),
+                                   'T3': ('HAND_WRITTEN', 'CHANGED', None), 'T4': ('HAND_WRITTEN', 'CHANGED', None),
+                                   'T5': ('HAND_WRITTEN', 'CURRENT', [5, 8]), 'G6': ('GENERAL', 'CHANGED', None)})
+        self.assertEqual(self.by_key['T1']['rule'], {'id': 'NAMING-1', 'file': 'knowledge/rules/NAMING-1.md'})
+        self.assertTrue((self.work / 'knowledge' / 'rules' / 'NAMING-1.md').is_file())
+        self.assertTrue((self.work / self.by_key['T3']['changes_file']).is_file())
+        self.assertIn('16>     return int(text)', self.by_key['T3']['commented_code'])
+        self.assertEqual(self.gaps, [])
+
+    def test_addressed_must_cite_changed_lines(self):
+        # cart.py line 4 (TAX_RATE = 0.20) was added; line 7 (def checkout) is unchanged context.
+        self.check(self.verdict('T2', 'ADDRESSED', [{'file': 'app/billing/cart.py', 'side': 'head', 'line_start': 4, 'line_end': 4}]))
+        with self.assertRaisesRegex(WorkflowContractError, 'a reply alone never addresses'):
+            self.check(self.verdict('T2', 'ADDRESSED', [{'file': 'app/billing/cart.py', 'side': 'head', 'line_start': 7, 'line_end': 7}]))
+        with self.assertRaisesRegex(WorkflowContractError, 'a reply alone never addresses'):
+            self.check(self.verdict('T3', 'PARTIALLY_ADDRESSED'))
+        # A removed line counts on the before side.
+        self.check(self.verdict('T2', 'ADDRESSED', [{'file': 'app/billing/cart.py', 'side': 'before', 'line_start': 4, 'line_end': 4}]))
+        self.check(self.verdict('T3', 'NOT_ADDRESSED'))
+
+    def test_evidence_must_exist_in_the_head(self):
+        with self.assertRaisesRegex(WorkflowContractError, 'not in the current head'):
+            self.check(self.verdict('T3', 'NOT_ADDRESSED', [{'file': 'app/billing/invoice.py', 'side': 'head', 'line_start': 90, 'line_end': 91}]))
+        with self.assertRaises(WorkflowContractError):
+            self.check(self.verdict('T3', 'NOT_ADDRESSED', [{'file': '../x.py', 'side': 'head', 'line_start': 1, 'line_end': 1}]))
+
+    def test_rule_threads_need_a_rule_verdict(self):
+        cited = [{'file': 'app/billing/invoice.py', 'side': 'head', 'line_start': 22, 'line_end': 23}]
+        with self.assertRaisesRegex(WorkflowContractError, 'rule_verdict must be one of'):
+            self.check(self.verdict('T1', 'ADDRESSED', cited))
+        with self.assertRaisesRegex(WorkflowContractError, 'no longer violates NAMING-1'):
+            self.check(self.verdict('T1', 'ADDRESSED', cited, rule_verdict='VIOLATED'))
+        self.check(self.verdict('T1', 'ADDRESSED', cited, rule_verdict='NOT_VIOLATED'))
+        with self.assertRaisesRegex(WorkflowContractError, 'only for project-rule threads'):
+            self.check(self.verdict('T3', 'NOT_ADDRESSED', rule_verdict='VIOLATED'))
+
+    def test_every_item_once_and_replies_per_verdict(self):
+        with self.assertRaisesRegex(WorkflowContractError, 'missing'):
+            self.check(self.verdict('T3', 'NOT_ADDRESSED'), keys=['T3', 'T5'])
+        with self.assertRaisesRegex(WorkflowContractError, 'Unknown or repeated'):
+            self.check(self.verdict('T3', 'NOT_ADDRESSED'), self.verdict('T3', 'NOT_ADDRESSED'), keys=['T3'])
+        with self.assertRaisesRegex(WorkflowContractError, 'reply'):
+            self.check({**self.verdict('T3', 'NOT_ADDRESSED'), 'reply': ''})
+        # F10: the person writes the reply to a disputed or unclear thread.
+        result = self.check(self.verdict('T5', 'DISPUTED'))
+        self.assertEqual(result['verdicts'][0]['reply'], '')
+
+    def test_unknown_commit_allows_no_change_claim(self):
+        item = {**self.by_key['T3'], 'location': 'COMMIT_UNKNOWN', 'changes_file': None}
+        with self.assertRaisesRegex(WorkflowContractError, 'use UNCLEAR'):
+            fu.judge_contract({'verdicts': [self.verdict('T3', 'ADDRESSED', [{'file': 'app/billing/invoice.py', 'side': 'head',
+                               'line_start': 12, 'line_end': 12}])]}, [item], self.changes, self.work)
+        fu.judge_contract({'verdicts': [self.verdict('T3', 'UNCLEAR')]}, [item], self.changes, self.work)
+
+
+class HelperTests(unittest.TestCase):
+    def test_changed_lines_both_sides(self):
+        diff = ('diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -2,3 +2,3 @@\n a\n-b\n+B\n c\n'
+                'diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n')
+        self.assertEqual(fu.changed_lines(diff), {'head': {'x.py': {3}}, 'before': {'x.py': {3}, 'gone.py': {1}}})
+
+    def test_reviewer_logins(self):
+        self.assertEqual(fu.reviewer_logins(' alice, bob-2 ,'), ['alice', 'bob-2'])
+        self.assertEqual(fu.reviewer_logins(''), [])
+        with self.assertRaises(WorkflowContractError):
+            fu.reviewer_logins('alice;rm -rf')
+
+    def test_input_defaults_match_constants(self):
+        self.assertEqual(fu.INPUTS['threads_per_batch']['default'], fu.THREADS_PER_BATCH)
+        self.assertEqual(fu.INPUTS['review_max_parallel']['default'], fu.MAX_PARALLEL_REVIEWS)
+
+    def test_bundle_builds(self):
+        from build_workflow import build_source
+        self.assertIn('def judge_contract', build_source('source_followup'))
+
+
 if __name__ == '__main__':
     unittest.main()

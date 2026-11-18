@@ -16,8 +16,9 @@ import tempfile
 from build_workflow import WORKFLOWS, build_source
 
 REGISTERED_NAMES = {'dev_plan': 'sdlc_dev_plan', 'deliver': 'sdlc_deliver', 'source_review': 'source_review',
-                    'source_remediate': 'source_remediate'}
+                    'source_remediate': 'source_remediate', 'source_followup': 'source_followup'}
 SOURCE_ROLES = ('mapper', 'correctness', 'security', 'standards', 'validator', 'feedback')
+FOLLOWUP_ROLES = ('followup-judge',)
 
 
 def cao(*args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -70,6 +71,13 @@ def install(workflow: str, repository_root: Path, workflow_dir: Path, *, validat
                 for profile in ('sdlc_remediator', 'sdlc_source_fix_reviewer'):
                     if cao('profile', 'show', profile, check=False).returncode:
                         raise FileNotFoundError(f'Install required profile first: {profile}')
+            if workflow == 'source_followup':
+                # The follow-up owns its profiles, so an install replaces them with the repository's copy.
+                profiles = repository_root / '.agentic-sdlc/cao/profiles'
+                for role in FOLLOWUP_ROLES:
+                    cao('profile', 'validate', str(profiles / f'source-{role}.md'))
+                for role in FOLLOWUP_ROLES:
+                    cao('install', str(profiles / f'source-{role}.md'))
             if target.exists():
                 shutil.copy2(target, str(target) + '.bak')
             os.replace(staged, target)
