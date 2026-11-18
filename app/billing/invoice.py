@@ -9,15 +9,18 @@ def total(items):
 
 
 def discount(amount, percent):
+    if not 0 <= percent <= 100:
+        raise ValueError(f"percent must be between 0 and 100, got {percent}")
     return amount - amount * percent / 100
 
 
 def parse_quantity(text):
-    return int(text)
+    return int(text.strip())
 
 
-def fmt(amt):
-    return "%.2f" % amt
+# Renamed from fmt on 18-Nov after review
+def format_amount(amount):
+    return "%.2f" % amount
 
 
 def tax(amount, rate):
