@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 
 WORKFLOWS = {'dev_plan': 'planning', 'deliver': 'delivery', 'source_review': 'source_review',
-             'source_remediate': 'source_remediation'}
+             'source_remediate': 'source_remediation', 'source_followup': 'source_followup'}
 PACKAGE = Path(__file__).resolve().parent / 'sdlc_workflows'
 
 

@@ -1,6 +1,6 @@
 # CAO agent profiles
 
-These Markdown files are the repository-owned CAO profiles used by the four workflows. Install the profiles before starting a live workflow; the workflow installers do not install Planning, Delivery or Source remediation profiles automatically.
+These Markdown files are the repository-owned CAO profiles used by the five workflows. Install the profiles before starting a live workflow; the workflow installers do not install Planning, Delivery or Source remediation profiles automatically (the Source review and follow-up installers install their own).
 
 Checked on **2026-10-01** against the current repository working tree and the locally installed **CAO 2.5.0** implementation. Provider identifiers and launch behavior are version-dependent; verify the installed server as well as the CLI when upgrading.
 
@@ -25,6 +25,8 @@ Checked on **2026-10-01** against the current repository working tree and the lo
 | Source review | [`sdlc_source_feedback`](../../.agentic-sdlc/cao/profiles/source-feedback.md) | Explain validated findings in plain language for the PR author, without changing severity or routing; Python renders canonical feedback. |
 | Source remediation | [`sdlc_remediator`](../../.agentic-sdlc/cao/profiles/remediator.md) | Apply only authorized eligible findings within configured write roots; report attempted changes and deviations. |
 | Source remediation | [`sdlc_source_fix_reviewer`](../../.agentic-sdlc/cao/profiles/source-fix-reviewer.md) | Independently reassess every selected finding and check the resulting PR diff for regressions; return source/test evidence at the candidate HEAD. |
+| Follow-up on review comments | [`sdlc_source_followup_judge`](../../.agentic-sdlc/cao/profiles/source-followup-judge.md) | Decide per open review comment whether the changes since address it, citing the changed lines; draft a reply. |
+| Follow-up on review comments | [`sdlc_source_followup_changes`](../../.agentic-sdlc/cao/profiles/source-followup-changes.md) | Check the changes since the last checked head for regressions, weakened tests and unrequested risky edits; return findings on changed lines. The follow-up also reuses `sdlc_source_standards`. |
 
 ## Profile conventions
 
@@ -32,7 +34,7 @@ Follow these when adding or editing a profile.
 
 **Frontmatter**
 - `name`: never rename an existing profile. The write-scope hook, the workflows, the installer and tests refer to these names.
-- `description`: one sentence that starts with what the agent does and names its workflow (Planning, Delivery, Source review or Source remediation), never by number. CAO uses it only for `cao profile list` and search; the agent never sees it.
+- `description`: one sentence that starts with what the agent does and names its workflow (Planning, Delivery, Source review, Source remediation or the follow-up on review comments), never by number. CAO uses it only for `cao profile list` and search; the agent never sees it.
 - `provider: claude_code`.
 - `role: reviewer` on every profile, including those that write source. CAO uses `role` only to pick default tools when `allowedTools` is missing. Every profile sets `allowedTools`, so `role` has no effect today, and `reviewer` is the safest fallback (no shell) if the list were ever removed.
 - `allowedTools: ["fs_read", "fs_list", "fs_write"]` on every profile. Do not add `@builtin`: it changes nothing for Claude Code, but on other providers such as OpenCode it grants shell access. Where an agent may write is decided by the hooks, not by this list.
@@ -44,7 +46,7 @@ Follow these when adding or editing a profile.
 
 All profiles use the `claude_code` provider. The delivery supervisor proposes assignments to registered workers and selects required skills. Python validates and executes those assignments and owns stage ordering, retries and artifact persistence. Agents do not launch other agents directly. See [hybrid delivery and extension guide](../workflows/hybrid-delivery.md).
 
-All 16 files set `role: reviewer` and the same `allowedTools` (`fs_read`, `fs_list`, `fs_write`); see [Profile conventions](#profile-conventions) for why. Do not infer permissions from the profile name. Python owns Git operations and verification; human approval is recorded separately. Delivery currently prepares local PR artifacts, while source review can inspect an existing GitHub PR.
+All 18 files set `role: reviewer` and the same `allowedTools` (`fs_read`, `fs_list`, `fs_write`); see [Profile conventions](#profile-conventions) for why. Do not infer permissions from the profile name. Python owns Git operations and verification; human approval is recorded separately. Delivery currently prepares local PR artifacts, while source review can inspect an existing GitHub PR.
 
 The profiles instruct each agent to write one answer file. **Current hooks enforce a broader runtime directory boundary**, as shown below; exact per-step output authorization is proposed in [the hardening plan](../../hardening-plan.md).
 
@@ -52,7 +54,7 @@ The profiles instruct each agent to write one answer file. **Current hooks enfor
 |---|---|
 | Planning, code supervisor, PR reviewer, standards reviewer | Repository `.agentic-sdlc/runtime/**` |
 | Implementer, remediator | Runtime tree plus configured source roots (default `app/**`), narrowed by `write_profiles` where configured |
-| Source-review profiles | Only `.agentic-sdlc/runtime/**` inside the isolated run workspace; exported source and other workspace files are not writable |
+| Source-review and follow-up profiles | Only `.agentic-sdlc/runtime/**` inside the isolated run workspace; exported source and other workspace files are not writable |
 
 ## Install planning profiles
 
@@ -101,6 +103,12 @@ Source remediation reuses `sdlc_remediator` and adds `sdlc_source_fix_reviewer`
 `sdlc_source_` prefix is always read-only under the source-root validator and hook. Install the two profiles
 explicitly before the workflow, coordinating upgrades of the shared remediator with active Delivery runs.
 See [installation and usage](../workflows/source-remediation.md).
+
+## Follow-up installation
+
+`install_source_followup.sh` validates and installs `sdlc_source_followup_judge` and `sdlc_source_followup_changes`,
+replacing earlier copies, and refuses to run until Source review's `sdlc_source_standards` is installed. See the
+[follow-up guide](../workflows/source-review-follow-up.md).
 
 ## Write scope and validation warnings
 
