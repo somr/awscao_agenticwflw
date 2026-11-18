@@ -41,7 +41,7 @@ they can be read and edited as text.
 | D3 | Can a library change? | Never. Install builds it in a temporary folder next to the target and renames it into place; when `<id>` already exists, it verifies the hashes and reuses it. Files are made read-only. Nothing deletes a library automatically, because an older run may still resume from it; a later small tool can list libraries no installed entry uses. |
 | D4 | `INPUTS` | Still defined in each workflow module; the builder copies it into the entry as a literal (as today), and a test checks the two are equal. |
 | D5 | Tests | Drop the flattened-bundle mode and `SDLC_TEST_SOURCE`: tests import the modules (what the library contains, byte for byte). New tests: the entry is built correctly and refuses a changed, missing or extra file; `INPUTS` equality; a library builds identically twice; every entry stays under a margin (say 32 KB); and a static check that every `step()` call has `recovery=` and every literal `step_id` matches CAO's pattern (replacing the lint CAO no longer sees). The full suite then runs once, about 100 s instead of about 200 s. |
-| D6 | Where do prompts live and how are they filled in? | `sdlc_workflows/prompts/<name>.md`, one file per prompt or reusable part, read through one helper `prompts.render(name, **values)` that uses `string.Template` with `${name}` placeholders and `substitute` (a missing value is an error; `$` in text is written `$$`). Conditions and loops stay in code, which joins rendered parts. |
+| D6 | Where do prompts live and how are they filled in? | **Agreed 2026-11-18, with the workflow in the path.** `sdlc_workflows/prompts/<workflow>/<name>.md`, one folder per workflow that uses the prompt (`planning`, `delivery` (including hybrid workers and remediation), `source-review`, `source-review-follow-up`, `source-remediation`) and `shared/` for parts several workflows use (answer-file delivery instructions, rules guidance for authors). One file per prompt or reusable part, read through one helper `prompts.render("<workflow>/<name>", **values)` that uses `string.Template` with `${name}` placeholders and `substitute` (a missing value is an error; `$` in text is written `$$`). Conditions and loops stay in code, which joins rendered parts. |
 | D7 | What counts as "prompts and fixed text"? | Every agent prompt the workflows build (Planning, Delivery, hybrid, remediation, Source review, follow-up, source remediation), the answer-file delivery instructions, the rules guidance for authors, and the fixed Markdown the workflows write (the human review brief, the review draft). Error messages, contract vocabularies and JSON field names stay in code. |
 | D8 | How do we know nothing changed? | Before moving a prompt, a test renders it with fixed inputs through the current code and stores the output as a fixture; after the move the same test must give byte-identical output. Fixtures are removed only if a later change is meant to alter a prompt. |
 | D9 | Bundle identity | `bundle.manifest_sha256` becomes the sha256 of the library manifest, read from `manifest.json` in the library folder (absent when running from the repository, as today). Resume compares it as before. |
@@ -51,7 +51,7 @@ they can be read and edited as text.
 
 ### 4.1 Build (`build_workflow.py` replaced by `build_library.py`)
 
-- `build_library(package) -> (files, manifest, id)`: every `*.py` and `prompts/*.md` of the package, read as bytes,
+- `build_library(package) -> (files, manifest, id)`: every `*.py` and `prompts/<workflow>/*.md` of the package, read as bytes,
   hashed, in sorted order; no timestamps or machine paths, so the same tree gives the same id.
 - `build_entry(workflow, library_dir, manifest) -> str`: the entry script (D2); compiled once to check it.
 - The local entry points in `.agentic-sdlc/cao/workflows/*.py` stay for development.
@@ -64,7 +64,8 @@ they can be read and edited as text.
 
 ### 4.3 Prompts (`sdlc_workflows/prompts.py` + `prompts/*.md`)
 
-- `render(name, **values)` reads `Path(__file__).parent / "prompts" / f"{name}.md"` and substitutes.
+- `render("<workflow>/<name>", **values)` reads `Path(__file__).parent / "prompts" / "<workflow>/<name>.md"`
+  and substitutes; the name must be one of the known workflow folders (or `shared`) plus a plain file name.
 - Moved one workflow at a time under D8.
 
 ## 5. Steps (each ends with tests, reinstall and a live check)
