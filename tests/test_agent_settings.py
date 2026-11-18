@@ -14,8 +14,16 @@ stub.step = lambda *a, **k: None
 stub.emit_output = lambda value: None
 stub.get_inputs = lambda: {}
 sys.modules.setdefault('cao_workflow', stub)
+import importlib
+from build_library import PACKAGE, WORKFLOWS
 from sdlc_workflows import agent_settings as ags
 from sdlc_workflows.errors import WorkflowContractError
+
+
+
+def runtime_modules():
+    """The shared runtime every workflow calls agents through (the installed library is the same file)."""
+    return [('runtime', importlib.import_module('sdlc_workflows.runtime'))]
 
 
 class ValidationTest(unittest.TestCase):
@@ -120,6 +128,77 @@ class LoadingTest(unittest.TestCase):
                              registry={'agent_settings': {}})
             with self.assertRaisesRegex(WorkflowContractError, 'set in both'):
                 ags.load_agent_settings(repo)
+
+
+class RoutingTest(unittest.TestCase):
+    def run_step(self, module, agent, settings):
+        calls = []
+
+        def fake_step(*args, **kwargs):
+            calls.append((args, kwargs))
+            return types.SimpleNamespace(output='', terminal_id='term-1', replayed=False)
+
+        saved = (module.step, module._wait_for_answer_file, module._cleanup_step_terminal, module._AGENT_SETTINGS)
+        module.step = fake_step
+        module._wait_for_answer_file = lambda **kwargs: 'answer'
+        module._cleanup_step_terminal = lambda *a, **k: None
+        try:
+            module.set_agent_settings(settings)
+            with tempfile.TemporaryDirectory() as temp:
+                evidence = Path(temp) / 'evidence'
+                module._run_stabilized_step(agent=agent, prompt='p', step_id='s1', repo=Path(temp),
+                                            evidence_dir=evidence, answer_path=evidence / 's1.answer.json')
+                recorded = json.loads((evidence / 's1.agent-settings.json').read_text())
+        finally:
+            module.step, module._wait_for_answer_file, module._cleanup_step_terminal, module._AGENT_SETTINGS = saved
+        self.assertEqual(len(calls), 1)
+        return calls[0], recorded
+
+    def test_without_settings_the_step_call_is_unchanged(self):
+        for label, module in runtime_modules():
+            for settings in (None, ags.resolve_agent_settings(None)):
+                with self.subTest(module=label, settings=settings is not None):
+                    (args, kwargs), recorded = self.run_step(module, 'sdlc_pr_reviewer', settings)
+                    self.assertEqual(args, ('claude_code', 'sdlc_pr_reviewer', 'p'))
+                    self.assertEqual(set(kwargs), {'recovery', 'step_id', 'timeout', 'working_directory', 'teardown'})
+                    self.assertEqual(recorded, {'profile': 'sdlc_pr_reviewer', 'provider': 'claude_code',
+                                                'provider_from': 'unset', 'model': None, 'model_from': 'unset'})
+
+    def test_a_declared_model_reaches_the_step_call_and_the_evidence(self):
+        settings = ags.resolve_agent_settings({'default': {'model': 'sonnet'},
+                                               'profiles': {'sdlc_pr_reviewer': {'model': 'haiku'}}})
+        for label, module in runtime_modules():
+            with self.subTest(module=label):
+                (args, kwargs), recorded = self.run_step(module, 'sdlc_pr_reviewer', settings)
+                self.assertEqual(args[0], 'claude_code')
+                self.assertEqual(kwargs['model'], 'haiku')
+                self.assertEqual(recorded['model_from'], 'profile')
+                (args, kwargs), recorded = self.run_step(module, 'sdlc_implementer', settings)
+                self.assertEqual((kwargs['model'], recorded['model'], recorded['model_from']),
+                                 ('sonnet', 'sonnet', 'default'))
+
+    def test_configure_reads_the_checkout_and_an_invalid_setting_stops_before_any_agent(self):
+        for label, module in runtime_modules():
+            with self.subTest(module=label), tempfile.TemporaryDirectory() as temp:
+                saved = module._AGENT_SETTINGS
+                try:
+                    repo = Path(temp)
+                    project = repo / 'agentic-sdlc-project.json'
+                    project.write_text(json.dumps({'version': 1, 'agent_settings': {'default': {'model': 'opus'}}}))
+                    resolved = module.configure_agent_settings(repo)
+                    self.assertEqual(module._AGENT_SETTINGS, resolved)
+                    self.assertEqual(resolved['sdlc_plan_reviewer']['model'], 'opus')
+                    project.write_text(json.dumps({'version': 1, 'agent_settings': {'default': {'effort': 'low'}}}))
+                    with self.assertRaisesRegex(ValueError, 'unknown keys: effort'):
+                        module.configure_agent_settings(repo)
+                finally:
+                    module._AGENT_SETTINGS = saved
+
+    def test_every_workflow_configures_the_settings_before_its_agents(self):
+        for name, module in WORKFLOWS.items():
+            with self.subTest(workflow=name):
+                source = (PACKAGE / f'{module}.py').read_text(encoding='utf-8')
+                self.assertEqual(source.count('configure_agent_settings(repo)'), 1)  # the entry's one call
 
 
 if __name__ == '__main__':

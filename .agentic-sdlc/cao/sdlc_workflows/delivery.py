@@ -43,6 +43,7 @@ from .runtime import (
     installed_library_manifest,
     run_parallel_steps,
     MAX_PARALLEL_REVIEWS,
+    configure_agent_settings,
     PROVIDER,
 )
 from .review_knowledge import (
@@ -846,6 +847,8 @@ def main() -> None:
     registry = load_specialists(repo)
     # The project's rules for the standards reviewer; read from this checkout, which agents cannot change.
     knowledge = load_review_knowledge(repo)
+    # Each profile's provider and model for this run, from the same trusted checkout.
+    configure_agent_settings(repo)
     application_commands = registry["verification"].get("application")
     if implementation_mode == "single" and not application_commands:
         raise WorkflowContractError("single mode needs the registry's 'application' verification suite")

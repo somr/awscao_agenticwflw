@@ -20,8 +20,13 @@ from urllib.request import Request, urlopen
 from cao_workflow import step
 from .errors import WorkflowContractError, IncompleteAgentExecutionError
 from .artifacts import _write_json, _write_text, _sha256_bytes
+from .agent_settings import DEFAULT_PROVIDER, load_agent_settings, step_options
 
-PROVIDER = "claude_code"
+# The provider when a project declares none; per-profile choices come from agent_settings.
+PROVIDER = DEFAULT_PROVIDER
+# The project's resolved agent_settings for this run (one workflow per process), set once before the first agent
+# so retries, repair turns and parallel calls all use the same values; None means "as before".
+_AGENT_SETTINGS: dict[str, dict[str, Any]] | None = None
 # Upper bound for read-only agent steps run at the same time (reviewers); shares CAO server capacity.
 MAX_PARALLEL_REVIEWS = 4
 STEP_TIMEOUT_SECONDS = 1800
@@ -256,6 +261,28 @@ def installed_library_manifest() -> dict[str, str] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def set_agent_settings(resolved: dict[str, dict[str, Any]] | None) -> None:
+    """Fix the provider and model of every profile for the rest of this run."""
+    global _AGENT_SETTINGS
+    _AGENT_SETTINGS = resolved
+
+
+def configure_agent_settings(repo: Path) -> dict[str, dict[str, Any]]:
+    """Read agent_settings from the trusted checkout, validate it and use it for this run's agent calls.
+
+    Call it before the first agent; an invalid setting stops the run there.
+    """
+    resolved = load_agent_settings(repo)
+    set_agent_settings(resolved)
+    return resolved
+
+
+def _agent_settings_evidence(agent: str) -> dict[str, Any]:
+    entry = (_AGENT_SETTINGS or {}).get(agent) or {
+        "provider": PROVIDER, "provider_from": "unset", "model": None, "model_from": "unset"}
+    return {"profile": agent, **entry}
+
+
 def _run_stabilized_step(
     *,
     agent: str,
@@ -266,8 +293,11 @@ def _run_stabilized_step(
     answer_path: Path,
 ) -> str:
     """Run one CAO step without teardown, then wait for its answer file and clean up."""
+    provider, options = step_options(_AGENT_SETTINGS, agent)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(evidence_dir / f"{step_id}.agent-settings.json", _agent_settings_evidence(agent))
     handle = step(
-        PROVIDER,
+        provider,
         agent,
         prompt,
         recovery="idempotent",
@@ -275,6 +305,7 @@ def _run_stabilized_step(
         timeout=STEP_TIMEOUT_SECONDS,
         working_directory=str(repo),
         teardown=False,
+        **options,
     )
 
     # A replayed handle names a terminal that no longer exists, so there is no

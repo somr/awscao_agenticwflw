@@ -79,6 +79,7 @@ from .review_comments import (
 from .runtime import (
     _run_json_contract_step,
     run_parallel_steps,
+    configure_agent_settings,
     MAX_PARALLEL_REVIEWS,
 )
 
@@ -485,6 +486,8 @@ def main() -> None:
     require(repo.is_dir(), "repository_root must exist")
     # Invalid project rules stop the run before any work; they come from the trusted checkout, never the PR.
     knowledge = load_review_knowledge(repo)
+    # Each profile's provider and model, also from the trusted checkout, never the PR.
+    configure_agent_settings(repo)
     max_parallel = inputs.get("review_max_parallel", MAX_PARALLEL_REVIEWS)
     require(not isinstance(max_parallel, bool) and isinstance(max_parallel, int) and 1 <= max_parallel <= MAX_PARALLEL_REVIEWS,
             f"review_max_parallel must be an integer from 1 to {MAX_PARALLEL_REVIEWS}")

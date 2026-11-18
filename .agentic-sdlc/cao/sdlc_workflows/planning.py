@@ -40,6 +40,7 @@ from .source_config import load_source_config, resolve_source_roots
 from .runtime import (
     _run_delivered_step,
     _run_json_contract_step,
+    configure_agent_settings,
     PROVIDER,
 )
 
@@ -1151,6 +1152,8 @@ def main() -> None:
     # before any agent runs, exactly as it would stop Delivery.
     source_roots = load_source_config(repo)["source_roots"]
     resolve_source_roots(repo, source_roots)
+    # Each profile's provider and model for this run, from the same trusted checkout.
+    configure_agent_settings(repo)
 
     guidance_path, guidance_sha = (None, None) if guidance_source is None else freeze_guidance(guidance_source, runtime_dir)
 
