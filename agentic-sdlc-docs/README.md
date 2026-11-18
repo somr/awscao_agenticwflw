@@ -63,6 +63,7 @@ Implementation design history; use the workflow guides above for current operati
 - [Modular refactor validation](verification/modularity-verification.md)
 - [Source-review live verification](verification/source-review-live.md)
 - [Source-remediation verification and remaining live checks](verification/source-remediation.md)
+- [Follow-up on review comments live verification](verification/source-review-follow-up-live.md)
 - [Hybrid delivery live verification](verification/hybrid-delivery-live.md)
 - [Configurable source roots live verification](verification/configurable-source-roots-live.md)
 - [Parallel workers worktree spike](verification/parallel-workers-spike.md)

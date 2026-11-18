@@ -207,7 +207,8 @@ publishes are joined to its findings by later follow-ups, like Source review's.
 every verdict check, the choice of the start commit (including `BASE_UNKNOWN`), the change check's line limits, the
 draft's format and errors, and the publisher (replies, reruns without duplicates, a moved PR, resolved or deleted
 threads, anchors outside the diff) with GitHub simulated. See [build and install](../build-and-install.md#tests) for
-how to run them.
+how to run them, and the [verification record](../verification/source-review-follow-up-live.md) for the live
+checks and their limits.
 
 ## See also
 
