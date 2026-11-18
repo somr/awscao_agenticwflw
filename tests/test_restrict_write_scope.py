@@ -471,6 +471,16 @@ class ConfigurableSourceRootsHookTest(unittest.TestCase):
                        allowed=False)
         self.check(repo, "sdlc_implementer", ["agentic-sdlc-pr-review-kb/rules.md"], allowed=False, real=True)
 
+    def test_agent_settings_is_accepted_and_changes_no_write_scope(self):
+        repo = self.make_repo({"version": 1, "workers": {}},
+                              project={"version": 1, "source_roots": ["app"],
+                                       "agent_settings": {"default": {"model": "sonnet"},
+                                                          "profiles": {"sdlc_implementer": {"model": "opus"}}}})
+        self.check(repo, "sdlc_implementer", ["app/value.py"], allowed=True)
+        self.check(repo, "sdlc_implementer", ["app/value.py"], allowed=True, real=True)
+        self.check(repo, "sdlc_pr_reviewer", ["app/value.py"], allowed=False)
+        self.check(repo, "sdlc_implementer", ["agentic-sdlc-project.json"], allowed=False)
+
     def test_the_rules_folder_can_never_be_a_source_root(self):
         for roots in (["agentic-sdlc-pr-review-kb"], ["agentic-sdlc-pr-review-kb/sub"]):
             repo = self.make_repo({"version": 1}, project={"version": 1, "source_roots": roots})

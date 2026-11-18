@@ -146,7 +146,8 @@ class ValidatorParityTest(unittest.TestCase):
 
     def test_project_file_shape_and_selection_agree_everywhere(self):
         project = {'version': 1, 'source_roots': ['billing/src'], 'verification': {'application': [['make']]},
-                   'review_knowledge': {'files': ['agentic-sdlc-pr-review-kb/rules.md']}}
+                   'review_knowledge': {'files': ['agentic-sdlc-pr-review-kb/rules.md']},
+                   'agent_settings': {'default': {'model': 'sonnet'}}}
         for label, module in implementations():
             with self.subTest(implementation=label):
                 self.assertEqual(module.validate_project_file(project), project)
@@ -156,7 +157,7 @@ class ValidatorParityTest(unittest.TestCase):
                 for bad in ({'source_roots': ['app']}, {'version': 2}, {'version': 1, 'workers': {}}, ['app'], 'app'):
                     with self.assertRaises(ValueError):
                         module.validate_project_file(bad)
-                for key in ('source_roots', 'write_profiles', 'verification', 'review_knowledge'):
+                for key in ('source_roots', 'write_profiles', 'verification', 'review_knowledge', 'agent_settings'):
                     with self.assertRaisesRegex(ValueError, f'{key} set in both'):
                         module.select_source_settings({key: []}, {'version': 1})
                 with self.assertRaises(ValueError):

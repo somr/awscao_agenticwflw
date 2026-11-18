@@ -1,8 +1,8 @@
 """Source roots: the directories where Delivery agents may write, commit and verify generated source.
 
-Per-project settings (source_roots, write_profiles, the verification suites and review_knowledge) live in
-agentic-sdlc-project.json at the repository root, so .agentic-sdlc/ can stay common to every
-project. Without that file they are read from the common registry
+Per-project settings (source_roots, write_profiles, the verification suites, review_knowledge and
+agent_settings) live in agentic-sdlc-project.json at the repository root, so .agentic-sdlc/ can stay
+common to every project. Without that file they are read from the common registry
 (.agentic-sdlc/cao/specialists.json), and without either the defaults apply. Agents can edit
 neither file. .claude/hooks/restrict-write-scope.py keeps standalone copies of
 validate_source_config(), validate_project_file() and select_source_settings();
@@ -20,7 +20,7 @@ from .artifacts import _read_json
 REGISTRY_RELATIVE_PATH = ".agentic-sdlc/cao/specialists.json"
 PROJECT_RELATIVE_PATH = "agentic-sdlc-project.json"
 # Keys that belong to one project. With a project file they may appear only there.
-PROJECT_KEYS = ("source_roots", "write_profiles", "verification", "review_knowledge")
+PROJECT_KEYS = ("source_roots", "write_profiles", "verification", "review_knowledge", "agent_settings")
 PROJECT_FILE_VERSION = 1
 DEFAULT_SOURCE_ROOTS = ["app"]
 # Profile -> None means "all source roots". Absent config keeps the original behaviour.

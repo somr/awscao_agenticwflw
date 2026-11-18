@@ -1,6 +1,6 @@
 # Plan: per-project provider and model per profile
 
-Status: **step 0 done (2026-11-18); D1-D10 agreed 2026-11-18; steps 1-4 not started.** Progress notes go at the end.
+Status: **steps 0-1 done (2026-11-18); D1-D10 agreed 2026-11-18; steps 2-4 not started.** Progress notes go at the end.
 
 ## 1. Why
 
@@ -52,9 +52,9 @@ enforcement that has been checked for that provider. Effort is not part of this 
 
 ### 4.1 Configuration (D1-D5)
 
-- `source_config.py`: `PROJECT_KEYS` gains `agent_settings`; new `KNOWN_PROFILES`.
-- New module `agent_settings.py` (pure Python): `validate_agent_settings(raw)`, `resolve_agent_settings(raw) ->
-  {profile: {"provider", "model", "origin"}}` for all known profiles, `step_options(resolved, agent) ->
+- `source_config.py`: `PROJECT_KEYS` gains `agent_settings`.
+- New module `agent_settings.py` (pure Python): `KNOWN_PROFILES`, `ALLOWED_PROVIDERS`, `validate_agent_settings(raw)`, `resolve_agent_settings(raw) ->
+  {profile: {"provider", "provider_from", "model", "model_from"}}` for all known profiles, `step_options(resolved, agent) ->
   (provider, opts)` where `opts` holds `model` only when set.
 - `.claude/hooks/restrict-write-scope.py`: same `PROJECT_KEYS` (parity test). The hook does not inspect the entries.
 
@@ -106,3 +106,8 @@ enforcement that has been checked for that provider. Effort is not part of this 
 - 2026-11-18, step 0: per-call `model` reaches Claude Code (`--model haiku`, agent ran as `claude-haiku-5-5`) and
   Codex (`--model gpt-6-luna`); the write-scope hook still denied a Claude agent's write. Record:
   [agent-settings-spike.md](../verification/agent-settings-spike.md).
+- 2026-11-18, step 1: `agent_settings.py` (validation, resolution, `step_options`, `load_agent_settings`),
+  `agent_settings` in `PROJECT_KEYS` of `source_config.py` and the hook, tests in `tests/test_agent_settings.py`
+  (`KNOWN_PROFILES` against the profile files, every D4 rule, `effort` and non-Claude providers rejected), the
+  parity corpus and a hook test (the key changes no write scope). No workflow reads it yet. 432 tests pass in both
+  modes. `KNOWN_PROFILES` lives in `agent_settings.py`, not `source_config.py`, since only this module uses it.
