@@ -1,6 +1,6 @@
 # Plan: install the workflow code as a frozen library and keep prompts in files
 
-Status: **planned (2026-11-18); decisions in section 3 are recommendations, not yet agreed.** Progress notes go at
+Status: **step 0 done (2026-11-18); D6 agreed, the other decisions are recommendations awaiting agreement.** Progress notes go at
 the end.
 
 ## 1. Why
@@ -93,4 +93,6 @@ they can be read and edited as text.
 
 ## 7. Progress notes
 
-(none yet)
+- 2026-11-18, step 0: CAO 2.5.4 validates (no findings) and runs a 1.4 KB entry that verifies and imports a
+  content-addressed library; a template prompt from the library reached the agent; a changed library file stopped
+  the run before any step. Record: [workflow-library-spike.md](../verification/workflow-library-spike.md).
