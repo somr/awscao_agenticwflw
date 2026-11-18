@@ -1,6 +1,6 @@
 # Plan: per-project provider and model per profile
 
-Status: **steps 0-1 done (2026-11-18); D1-D10 agreed 2026-11-18; steps 2-4 not started.** Progress notes go at the end.
+Status: **steps 0-1 done, step 2 code done and installed for 3 of 5 workflows (2026-11-18); blocked: CAO 2.5.4 script size limit (see progress notes); D1-D10 agreed 2026-11-18.** Progress notes go at the end.
 
 ## 1. Why
 
@@ -111,3 +111,12 @@ enforcement that has been checked for that provider. Effort is not part of this 
   (`KNOWN_PROFILES` against the profile files, every D4 rule, `effort` and non-Claude providers rejected), the
   parity corpus and a hook test (the key changes no write scope). No workflow reads it yet. 432 tests pass in both
   modes. `KNOWN_PROFILES` lives in `agent_settings.py`, not `source_config.py`, since only this module uses it.
+- 2026-11-18, step 2 (code): `runtime.configure_agent_settings(repo)` called by all five workflow entries before
+  their first agent; `_run_stabilized_step` sends the resolved provider and, when set, `model`, and writes
+  `<step_id>.agent-settings.json`. 436 tests pass in both modes. Reinstalled `sdlc_dev_plan`, `source_review` (upgrade
+  procedure, rollback copy kept) and `source_remediate`. **`sdlc_deliver` and `source_followup` were refused**: CAO
+  2.5.4 (installed 2026-11-18 22:51, after the last follow-up install) caps a workflow script at 131,072 characters
+  (`SCRIPT_LINT_MAX_SOURCE_CHARS`, a constant, checked at validation and at run start). The bundles on `main` were
+  already over it (deliver 166,972, source_followup 138,284), so the installed copies of those two cannot run on 2.5.4
+  either. Removing docstrings alone leaves deliver at about 140,000. Needs a decision before Delivery or Follow-up
+  can run again.
