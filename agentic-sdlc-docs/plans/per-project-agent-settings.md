@@ -1,6 +1,6 @@
 # Plan: per-project provider and model per profile
 
-Status: **planned (2026-11-18); D1-D10 agreed 2026-11-18; not started.** Progress notes go at the end.
+Status: **step 0 done (2026-11-18); D1-D10 agreed 2026-11-18; steps 1-4 not started.** Progress notes go at the end.
 
 ## 1. Why
 
@@ -103,4 +103,6 @@ enforcement that has been checked for that provider. Effort is not part of this 
 
 ## 7. Progress notes
 
-(none yet)
+- 2026-11-18, step 0: per-call `model` reaches Claude Code (`--model haiku`, agent ran as `claude-haiku-5-5`) and
+  Codex (`--model gpt-6-luna`); the write-scope hook still denied a Claude agent's write. Record:
+  [agent-settings-spike.md](../verification/agent-settings-spike.md).
