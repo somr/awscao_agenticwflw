@@ -1,7 +1,8 @@
 # Plan: follow-up on review comments (did the developer address them?)
 
-Status: **planned 2026-11-16, not started; implementation waits for the user's go-ahead**. Decisions F1-F12 all
-agreed 2026-11-16 (section 3). Builds on the project rules (per-file rule verdicts, D16-D17 of
+Status: **implemented on branch `feature/source-review-follow-up`** (started 2026-11-18); see the
+[guide](../workflows/source-review-follow-up.md) for how it works now and section 7 for where the build departs from
+this plan. Decisions F1-F12 all agreed 2026-11-16 (section 3). Builds on the project rules (per-file rule verdicts, D16-D17 of
 [reviewer-knowledge.md](reviewer-knowledge.md)), merged to `main` 2026-11-16.
 
 ## 1. Why
@@ -98,3 +99,19 @@ Each step: unit tests green, install, live check, commit on a feature branch.
 - Threads started by other people or bots (F3).
 - Re-judging a thread already answered `ADDRESSED` when a later push touches its code again; the check of the
   changes (F7) still reviews that new code.
+
+## 7. Decisions taken while building
+
+- **Regression checker (step 3):** a new read-only profile, `sdlc_source_followup_changes`, rather than reusing the
+  fix reviewer, whose contract is tied to remediation's selected findings.
+- **No validator for new findings:** the change check has no separate validator agent. Its findings are limited to
+  changed lines by Python and pass through the person's draft before anything is posted.
+- **F9 start commit:** the recorded head nearest to the current head (fewest commits between) among the heads that
+  are still in its history; `BASE_UNKNOWN` only when none is.
+- **Moved PR at publication:** replies are posted with a note naming the head they were judged at; new findings are
+  held back for a new follow-up instead of being re-mapped.
+- **Shared modules:** the snapshot helpers moved to `source_snapshot.py`, the finding shapes to
+  `source_review_contracts.py` and the placement helpers to `review_comments.py`, so both workflows bundle them.
+- **Inputs:** `threads_file` is a string because CAO checks `path` inputs as directories; `threads_per_batch`
+  (1-20, default 6) sets the comments per judge.
+

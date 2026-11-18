@@ -33,6 +33,26 @@ ELIGIBILITY = (
     "deterministically_verifiable",
 )
 
+# The answer shape reviewers fill in for one finding (Source review and the follow-up).
+FINDING_SHAPE = {
+    "candidate_id": "assigned by reviewer", "title": "short concrete defect",
+    "file": "relative/source.py", "side": "head", "line_start": 1, "line_end": 1,
+    "symbol": "qualified function/type", "category": "CORRECTNESS", "severity": "MEDIUM",
+    "confidence": 0.95, "failure_scenario": "concrete reachable input/state",
+    "source_evidence": "specific source references and causal explanation",
+    "consequence": "observable incorrect result", "remediation_direction": "bounded fix direction",
+    "verification_method": "focused regression check and expected outcome; do not execute",
+    "evidence_sufficient": True, "intended_behavior_clear": True,
+    "localized_and_bounded": True, "deterministically_verifiable": True,
+    "protected_boundary": False, "introduced_by_pr": True,
+}
+
+
+STANDARDS_FINDING_SHAPE = {**FINDING_SHAPE, "category": "MAINTAINABILITY", "standard_ref": "RULE-ID",
+                           "failure_scenario": "the rule the added code violates and how",
+                           "consequence": "why the rule matters here"}
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise WorkflowContractError(message)

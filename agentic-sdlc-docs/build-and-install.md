@@ -13,6 +13,7 @@ cao/
 │   ├── deliver.py                   # Local entry point
 │   ├── source_review.py             # Local entry point
 │   ├── source_remediate.py          # Local entry point
+│   ├── source_followup.py           # Local entry point
 │   └── install*.sh                  # Compatibility installer commands
 ├── sdlc_workflows/
 │   ├── errors.py                    # Contract/execution exception types
@@ -29,9 +30,13 @@ cao/
 │   ├── delivery_standards.py        # Delivery's standards review rounds
 │   ├── source_review.py             # PR snapshots, source review and fix routing
 │   ├── source_remediation.py        # Ticket-independent bounded fixes and independent review
+│   ├── source_followup.py           # Follow-up on review comments: judging threads, checking the changes
+│   ├── source_snapshot.py           # Pinned PR snapshots and the isolated agent workspace
+│   ├── review_threads.py            # The follow-up's GitHub reads, thread selection and joining to findings
+│   ├── followup_draft.py            # The follow-up's editable draft, shared with its publisher
 │   ├── source_review_contracts.py   # Shared Source review policy and evidence contracts
 │   ├── source_remediation_support.py # Remediation helpers shared with its publisher
-│   ├── review_comments.py           # Stable identity of published review comments
+│   ├── review_comments.py           # Identity and placement of published review comments
 │   ├── verification.py              # Shared trusted verification runner
 │   └── remediation.py               # Shared remediator completion contract
 ├── build_workflow.py                # Deterministic standalone bundler
@@ -77,6 +82,7 @@ python3 .agentic-sdlc/cao/build_workflow.py dev_plan --output /tmp/sdlc_dev_plan
 python3 .agentic-sdlc/cao/build_workflow.py deliver --output /tmp/sdlc_deliver.py
 python3 .agentic-sdlc/cao/build_workflow.py source_review --output /tmp/source_review.py
 python3 .agentic-sdlc/cao/build_workflow.py source_remediate --output /tmp/source_remediate.py
+python3 .agentic-sdlc/cao/build_workflow.py source_followup --output /tmp/source_followup.py
 ```
 
 These commands require no CAO server and do not install profiles or run agents.
@@ -92,6 +98,7 @@ python3 .agentic-sdlc/cao/install_workflow.py dev_plan --validate-only
 python3 .agentic-sdlc/cao/install_workflow.py deliver --validate-only
 python3 .agentic-sdlc/cao/install_workflow.py source_review --validate-only
 python3 .agentic-sdlc/cao/install_workflow.py source_remediate --validate-only
+python3 .agentic-sdlc/cao/install_workflow.py source_followup --validate-only
 ```
 
 No registered workflow or profile is changed. The default repository root is the current
@@ -107,6 +114,7 @@ The existing commands and registered names are preserved:
 | `.agentic-sdlc/cao/workflows/install_deliver.sh` | `sdlc_deliver` |
 | `.agentic-sdlc/cao/workflows/install_source_review.sh` | `source_review` |
 | `.agentic-sdlc/cao/workflows/install_source_remediate.sh` | `source_remediate` |
+| `.agentic-sdlc/cao/workflows/install_source_followup.sh` | `source_followup` |
 
 Each wrapper accepts an optional repository-root argument as before. `CAO_WORKFLOW_DIR`
 still controls the destination. The equivalent Python installer also supports
@@ -115,6 +123,7 @@ still controls the destination. The equivalent Python installer also supports
 The shared installer builds the complete dependency closure, validates its candidate,
 and then promotes it. Planning, Delivery and Source remediation keep the previous installed file as `.bak`.
 Source remediation requires its two profiles to be installed explicitly; see its [guide](workflows/source-remediation.md).
+The follow-up installs its own two profiles and needs Source review's standards profile; see its [guide](workflows/source-review-follow-up.md).
 Source Review retains its stricter existing refusal to replace an installed workflow
 or any of its six profiles; follow its [upgrade procedure](workflows/source-review.md#upgrading).
 Profile installation is not transactional; inspect partial source-review installations
@@ -133,12 +142,12 @@ the previous artifact and restore it if a later environment-dependent check fail
 ## Check that CAO matches the repository
 
 Installed workflows are frozen copies, so after any change compare them with a fresh build. A change to a shared
-module (for example `errors.py` or `verification.py`) changes every bundle that includes it, so check all four
+module (for example `errors.py` or `verification.py`) changes every bundle that includes it, so check all five
 workflows, not only the one you worked on. The paths are CAO's defaults (`~/.aws/cli-agent-orchestrator/`;
 `CAO_WORKFLOW_DIR` moves the workflows):
 
 ```bash
-for pair in dev_plan:sdlc_dev_plan deliver:sdlc_deliver source_review:source_review source_remediate:source_remediate; do
+for pair in dev_plan:sdlc_dev_plan deliver:sdlc_deliver source_review:source_review source_remediate:source_remediate source_followup:source_followup; do
   python3 .agentic-sdlc/cao/build_workflow.py "${pair%%:*}" --output "/tmp/check_${pair%%:*}.py" > /dev/null
   cmp -s "/tmp/check_${pair%%:*}.py" ~/.aws/cli-agent-orchestrator/workflows/${pair##*:}.py \
     && echo "${pair##*:} matches" || echo "${pair##*:} DIFFERS"

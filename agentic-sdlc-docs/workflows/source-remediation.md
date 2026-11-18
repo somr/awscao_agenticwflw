@@ -258,5 +258,5 @@ the [verification record](../verification/source-remediation.md) for the live ch
 
 ## See also
 
-[Source review](source-review.md) · [Delivery](delivery.md) · [Contract](../contracts/source-remediation-workflow.md) ·
+[Source review](source-review.md) · [Follow-up on review comments](source-review-follow-up.md) · [Delivery](delivery.md) · [Contract](../contracts/source-remediation-workflow.md) ·
 [Policy](../policies/source-remediation.md) · [Agent profiles](../reference/agent-profiles.md)

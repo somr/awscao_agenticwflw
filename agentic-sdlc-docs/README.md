@@ -14,6 +14,7 @@ Start with the [project README](../README.md) for the quick start and current ca
 | Deliver a plan, resume a blocked delivery, configure source roots or record a delivery decision | [Delivery](workflows/delivery.md) |
 | Review an existing PR or publish feedback | [Source review](workflows/source-review.md) |
 | Fix eligible review findings without a ticket and publish done replies | [Source remediation](workflows/source-remediation.md) |
+| Check whether the developer addressed the review comments, and review the changes since | [Follow-up on review comments](workflows/source-review-follow-up.md) |
 | Extend Delivery with workers, skills or verification toolchains | [Specialists and skills](workflows/hybrid-delivery.md) |
 | Install or change agent profiles and providers | [Agent profiles](reference/agent-profiles.md) |
 | Inspect the answer protocol and write hook | [Agent answers and write scope](reference/write-scope-hook.md) |
@@ -55,7 +56,7 @@ Implementation design history; use the workflow guides above for current operati
 - [Resume a BLOCKED Delivery run](plans/delivery-resume.md)
 - [Per-suite verification timeouts and repair turns](plans/verification-timeouts-and-repair-turns.md) (planned)
 - [Project knowledge for the reviewers](plans/reviewer-knowledge.md)
-- [Follow-up on review comments](plans/source-review-follow-up.md) (planned)
+- [Follow-up on review comments](plans/source-review-follow-up.md)
 
 ## Verification records
 

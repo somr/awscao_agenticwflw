@@ -84,6 +84,8 @@ def followup_github(call: str, repository: str = "", number: str = "", cursor: s
         return [r for page in _gh([f"{base}/pulls/{number}/reviews?per_page=100", "--paginate", "--slurp"]) for r in page]
     if call == "issue_comments":
         return [c for page in _gh([f"{base}/issues/{number}/comments?per_page=100", "--paginate", "--slurp"]) for c in page]
+    if call == "files":
+        return [f for page in _gh([f"{base}/pulls/{number}/files?per_page=100", "--paginate", "--slurp"]) for f in page]
     owner, name = repository.split("/")
     args = ["graphql", "-f", f"query={THREADS_QUERY}", "-F", f"owner={owner}", "-F", f"name={name}",
             "-F", f"number={number}"]
@@ -92,7 +94,7 @@ def followup_github(call: str, repository: str = "", number: str = "", cursor: s
     return _gh(args)
 
 
-ALLOWED_READS = ("user", "pull", "reviews", "issue_comments", "threads")
+ALLOWED_READS = ("user", "pull", "reviews", "issue_comments", "threads", "files")
 
 
 def fetch_threads(repository: str, number: str, github=followup_github) -> list[dict]:
@@ -132,16 +134,36 @@ def _same_pr(snapshot: dict, repository: str, number: str) -> bool:
             and str(snapshot.get("pr_number")) == str(number))
 
 
+def pr_records_name(repository: str, number: str) -> str:
+    return review_records_name({"pr_url": f"https://github.com/{repository}/pull/{number}",
+                                "repository": repository, "pr_number": str(number), "head_sha": "0" * 40})
+
+
+def recorded_heads(repo: Path, repository: str, number: str) -> list[str]:
+    """The heads earlier Source reviews and follow-ups of this PR checked, from the trusted records (F9)."""
+    folder = repo / REVIEW_RECORDS / pr_records_name(repository, number)
+    paths = sorted(folder.glob("*/code-review.json")) + sorted(folder.glob("*/follow-up.json"))
+    paths += sorted((repo / REVIEW_RUNTIME).glob("*/code-review.json"))
+    heads = []
+    for path in paths:
+        snapshot = json.loads(path.read_text(encoding="utf-8")).get("snapshot") or {}
+        if _same_pr(snapshot, repository, number):
+            heads.append(sha(snapshot["head_sha"]))
+    return sorted(set(heads))
+
+
 def published_findings(repo: Path, repository: str, number: str) -> dict:
     """Findings that Source review published on this PR, from the trusted checkout's records.
 
     Returns {"by_marker": {token: entry}, "by_comment": {comment id: entry}, "general": [entry]};
     an entry is {"run_id", "finding", "review_id"}. Reviews posted before comments carried a
     marker are joined through publication.json (by comment id, or by path, side and line).
+    A follow-up's new findings (follow-up.json "findings") are read the same way.
     """
-    name = review_records_name({"pr_url": f"https://github.com/{repository}/pull/{number}",
-                                "repository": repository, "pr_number": str(number), "head_sha": "0" * 40})
+    name = pr_records_name(repository, number)
+    # Follow-ups publish their new findings the same way, so their threads join like Source review's.
     folders = sorted((repo / REVIEW_RECORDS / name).glob("*/code-review.json"))
+    folders += sorted((repo / REVIEW_RECORDS / name).glob("*/follow-up.json"))
     # Reviews from before the records split keep everything in the runtime folder.
     folders += sorted(p for p in (repo / REVIEW_RUNTIME).glob("*/code-review.json")
                       if not (repo / REVIEW_RECORDS / name / p.parent.name).exists())

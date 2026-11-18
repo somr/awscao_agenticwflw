@@ -560,5 +560,5 @@ accuracy across real PRs. The [live verification record](../verification/source-
 
 ## See also
 
-[Delivery](delivery.md) · [Agent profiles](../reference/agent-profiles.md) · [Project rules](../reference/project-rules.md) ·
+[Follow-up on review comments](source-review-follow-up.md) · [Delivery](delivery.md) · [Agent profiles](../reference/agent-profiles.md) · [Project rules](../reference/project-rules.md) ·
 [Source-review contract](../contracts/source-review-workflow.md) · [Source-review policy](../policies/source-review.md)

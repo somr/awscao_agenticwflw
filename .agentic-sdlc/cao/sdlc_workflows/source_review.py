@@ -39,6 +39,8 @@ from .source_review_contracts import (
     REVIEW_RECORDS,
     REVIEW_RUNTIME,
     review_records_name,
+    FINDING_SHAPE,
+    STANDARDS_FINDING_SHAPE,
 )
 from .errors import (
     WorkflowContractError,
@@ -67,6 +69,12 @@ from .source_snapshot import (
     parse_pr,
     export_tree,
     configure_workspace,
+)
+from .review_comments import (
+    HUNK_HEADER,
+    hunk_ranges,
+    diff_hunks,
+    place_finding,
 )
 from .runtime import (
     _run_json_contract_step,
@@ -124,25 +132,6 @@ def prepare_snapshot(inputs: dict, root: Path) -> dict:
                 "changed_files": changed, "coverage_gaps": sorted(set(gaps))}
     _write_json(work / "snapshot.json", snapshot)
     return snapshot
-
-
-FINDING_SHAPE = {
-    "candidate_id": "assigned by reviewer", "title": "short concrete defect",
-    "file": "relative/source.py", "side": "head", "line_start": 1, "line_end": 1,
-    "symbol": "qualified function/type", "category": "CORRECTNESS", "severity": "MEDIUM",
-    "confidence": 0.95, "failure_scenario": "concrete reachable input/state",
-    "source_evidence": "specific source references and causal explanation",
-    "consequence": "observable incorrect result", "remediation_direction": "bounded fix direction",
-    "verification_method": "focused regression check and expected outcome; do not execute",
-    "evidence_sufficient": True, "intended_behavior_clear": True,
-    "localized_and_bounded": True, "deterministically_verifiable": True,
-    "protected_boundary": False, "introduced_by_pr": True,
-}
-
-
-STANDARDS_FINDING_SHAPE = {**FINDING_SHAPE, "category": "MAINTAINABILITY", "standard_ref": "RULE-ID",
-                           "failure_scenario": "the rule the added code violates and how",
-                           "consequence": "why the rule matters here"}
 
 
 def prepare_standards(work: Path, snapshot: dict, knowledge: dict | None) -> dict | None:
@@ -415,60 +404,7 @@ def render_comments(report: dict) -> str:
 
 
 # --- Placement beside the code and the editable publication draft ------------
-HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 SEVERITY_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
-
-
-def hunk_ranges(patch: str) -> dict[str, list[tuple[int, int]]]:
-    """Line ranges per side that GitHub accepts for review comments in one file's hunks.
-
-    RIGHT covers added and context lines of the head; LEFT covers removed and context
-    lines of the base. Keep in sync with publish_source_review.hunk_ranges.
-    """
-    ranges: dict[str, list[tuple[int, int]]] = {"LEFT": [], "RIGHT": []}
-    for line in patch.splitlines():
-        match = HUNK_HEADER.match(line)
-        if match:
-            for side, start, count in (("LEFT", match[1], match[2]), ("RIGHT", match[3], match[4])):
-                size = 1 if count is None else int(count)
-                if size:
-                    ranges[side].append((int(start), int(start) + size - 1))
-    return ranges
-
-
-def diff_hunks(diff: str) -> dict[str, dict[str, list[tuple[int, int]]]]:
-    """Split a git diff into per-file hunk ranges; quoted (unusual) paths are skipped."""
-    files: dict[str, dict[str, list[tuple[int, int]]]] = {}
-    path, old, body = None, None, []
-
-    def flush():
-        if path is not None and not path.startswith('"'):
-            files[path] = hunk_ranges("\n".join(body))
-
-    for line in diff.splitlines():
-        if line.startswith("diff --git "):
-            flush()
-            path, old, body = None, None, []
-        elif line.startswith("--- ") and path is None and not body:
-            old = line[4:].removeprefix("a/")
-        elif line.startswith("+++ ") and path is None and not body:
-            new = line[4:]
-            path = old if new == "/dev/null" else new.removeprefix("b/")
-        elif path is not None:
-            body.append(line)
-    flush()
-    return files
-
-
-def place_finding(finding: dict, hunks: dict) -> dict:
-    """Deterministic anchor: inline only when the whole range sits in one hunk on its side."""
-    side = "RIGHT" if finding["side"] == "head" else "LEFT"
-    start, end = finding["line_start"], finding["line_end"]
-    if finding["file"] not in hunks:
-        return {"mode": "GENERAL", "reason": "File has no changed lines in the diff"}
-    if not any(low <= start and end <= high for low, high in hunks[finding["file"]][side]):
-        return {"mode": "GENERAL", "reason": f"Lines {start}-{end} are not within one changed section of the diff"}
-    return {"mode": "INLINE", "path": finding["file"], "side": side, "line_start": start, "line_end": end}
 
 
 def attention_order(findings: list[dict]) -> list[dict]:

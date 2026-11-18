@@ -195,7 +195,10 @@ class InstallerTest(unittest.TestCase):
 
     def fake_cao(self, *args, check=True):
         self.calls.append(args)
-        code = 1 if args[:2] == ('profile', 'show') and args[2] not in {'sdlc_remediator', 'sdlc_source_fix_reviewer'} else 0
+        # Profiles installed earlier in the same test count as present (source-standards.md -> sdlc_source_standards).
+        installed = {'sdlc_' + Path(c[1]).stem.replace('-', '_') for c in self.calls if c[0] == 'install'}
+        present = {'sdlc_remediator', 'sdlc_source_fix_reviewer'} | installed
+        code = 1 if args[:2] == ('profile', 'show') and args[2] not in present else 0
         return subprocess.CompletedProcess(args, code, 'ok', '')
 
     def test_all_installers_keep_names_and_install_self_contained_code(self):
@@ -206,7 +209,18 @@ class InstallerTest(unittest.TestCase):
                 self.assertEqual(target.read_text(), builder.build_source(name))
         self.assertFalse(list(self.destination.glob('*candidate*')))
         self.assertFalse(list(self.destination.glob('.*.lock')))
-        self.assertEqual(len([c for c in self.calls if c[0] == 'install']), 6)
+        # Source review's 6 profiles and the follow-up's 2.
+        self.assertEqual(len([c for c in self.calls if c[0] == 'install']), 8)
+
+    def test_followup_requires_the_standards_profile_and_installs_its_own(self):
+        with patch.object(installer, 'cao', side_effect=self.fake_cao), self.assertRaisesRegex(FileNotFoundError, 'source_review first'):
+            installer.install('source_followup', ROOT, self.destination)
+        self.assertFalse((self.destination / 'source_followup.py').exists())
+        self.calls.append(('install', 'profiles/source-standards.md'))
+        with patch.object(installer, 'cao', side_effect=self.fake_cao):
+            installer.install('source_followup', ROOT, self.destination)
+        self.assertEqual([Path(c[1]).name for c in self.calls if c[0] == 'install'][1:],
+                         ['source-followup-judge.md', 'source-followup-changes.md'])
 
     def test_validation_failure_preserves_installed_bytes_and_cleans_candidate(self):
         target = self.destination / 'sdlc_dev_plan.py'

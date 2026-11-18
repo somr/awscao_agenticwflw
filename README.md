@@ -2,12 +2,13 @@
 
 This repository is a learning and validation project for an agentic software-development lifecycle built on AWS Labs CLI Agent Orchestrator (CAO). The maintained implementation lives under [.agentic-sdlc/](.agentic-sdlc/).
 
-Current repository capabilities (2026-11-16):
+Current repository capabilities (2026-11-18):
 
 - Planning (`sdlc_dev_plan`) retrieves and normalizes requirements, analyses the repository, authors a Development Plan, and performs an independent plan review before human approval. It supports developer guidance, review history, and warm starts from eligible non-converged candidates.
 - Delivery (`sdlc_deliver`) implements an approved plan, runs configured verification commands, performs independent PR review and up to three remediation rounds, and prepares a human review package. Hybrid mode is the default: a supervisor assigns tasks to registered workers, independent tasks run at the same time in separate Git worktrees, and an integration pass follows. Single-implementer mode is also available. A run that ends `BLOCKED` can be resumed after a fix, keeping the tasks it finished. With project rules, the agents that write code get the rules for their files and standards reviewers check the added code against them.
 - Source review (`source_review`) reviews an existing GitHub pull request in an isolated snapshot and routes validated findings into `AUTO_FIX` or `HUMAN_REQUIRED` queues. With project rules, standards reviewers also check the PR against the project's own coding standards, and optional findings go to a `SUGGESTION` queue. It produces feedback only; it does not apply fixes or run tests. A person edits the generated `review-draft.md` and publishes it with a separate command, as one non-blocking `COMMENT` review with comments beside the code.
 - Source remediation (`source_remediate`) fixes selected eligible findings without a ticket, verifies and independently reviews the changes, then prepares local records for human review. A separate command can push the verified commit and post GitHub done replies.
+- Follow-up on review comments (`source_followup`) judges, for every open comment the reviewer made on a PR, whether the developer's later changes address it (a reply alone never does), and reviews those changes for new problems. A person edits the drafted replies and posts them with a separate command; nothing is resolved, approved or changed in the code.
 
 Python owns orchestration, validation, Git operations, verification and routing. Human approval is recorded separately for the reviewed plan and the delivered commit. Delivery produces local PR artifacts; it does not push, open a GitHub PR or merge.
 
@@ -172,6 +173,7 @@ See [future versions](future-versions.md) for remaining gaps, mitigation directi
 - [Hybrid delivery and specialist/skill extension guide](agentic-sdlc-docs/workflows/hybrid-delivery.md)
 - [Source-review workflow](agentic-sdlc-docs/workflows/source-review.md)
 - [Source remediation and GitHub done replies](agentic-sdlc-docs/workflows/source-remediation.md)
+- [Follow-up on review comments](agentic-sdlc-docs/workflows/source-review-follow-up.md)
 - [CAO profiles](agentic-sdlc-docs/reference/agent-profiles.md)
 - [Documentation map](agentic-sdlc-docs/README.md)
 - [Payment-service fixture](app/README.md)

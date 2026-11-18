@@ -23,6 +23,9 @@ flowchart TD
     FB -.->|Explicit invocation with selected eligible findings| FIX["Source remediation: source_remediate"]
     FIX --> FIXBRIEF["Verified local fixes and Human Review Brief"]
     FIXBRIEF -.->|Separate explicit push and notification| DONE["Existing PR branch and done replies"]
+    GH -.->|Developer pushes changes and replies| FU["Follow-up: source_followup"]
+    FU --> FUD["Verdict per comment, new findings<br/>and an editable draft"]
+    FUD -.->|Separate explicit publication command| GH
 ```
 
 Planning and Delivery share ticket-level records. Source review is independent: it needs no approved plan or delivery manifest. Its `AUTO_FIX` queue can be consumed by an explicitly invoked Source remediation run; Source review itself does not trigger edits. Delivery creates local PR artifacts and does not push, open a remote PR or merge. Source remediation also runs locally, with a separate optional push-and-notify command.
@@ -33,7 +36,9 @@ The maintained modules are under [`.agentic-sdlc/cao/sdlc_workflows/`](../.agent
 
 | Component | Responsibility |
 |---|---|
-| `planning.py`, `delivery.py`, `source_review.py`, `source_remediation.py` | Workflow inputs, domain contracts, routing and orchestration |
+| `planning.py`, `delivery.py`, `source_review.py`, `source_remediation.py`, `source_followup.py` | Workflow inputs, domain contracts, routing and orchestration |
+| `source_snapshot.py`, `review_comments.py` | Pinned PR snapshots and the isolated agent workspace; comment markers and placement beside the code (Source review and the follow-up) |
+| `review_threads.py`, `followup_draft.py` | The follow-up's allow-listed GitHub reads, thread selection and joining to findings; its editable draft |
 | `hybrid.py` | Specialist registry, supervisor assignments, wave schedule, parallel workers, skill injection and verification-suite selection |
 | `worktrees.py` | Per-task Git worktrees, trusted-file check, per-task commits and ordered cherry-picks |
 | `resume.py` | Delivery resume: reads a `BLOCKED` manifest and checks the delivery branch, hand commits and base-branch drift |
@@ -164,6 +169,15 @@ fix reviewer assesses each original finding and the full resulting PR diff. The 
 and a Human Review Brief. The separate publisher checks candidate evidence and current remote tips before
 an optional fast-forward push and done replies. Thread resolution and final PR approval remain human actions.
 See the [Source remediation guide](workflows/source-remediation.md).
+
+### Follow-up on review comments
+
+`source_followup` reads the threads a reviewer started on a PR and the developer's later changes. Read-only judges
+decide per comment whether the changes address it; Python requires `ADDRESSED` and `PARTIALLY_ADDRESSED` to cite
+lines that changed, so a reply alone never addresses a comment. In parallel, the standards reviewer and a regression
+checker review every change since the last checked head, keeping only findings on changed lines. A person edits
+the drafted replies and publishes them with a separate command; nothing is resolved, approved or fixed. See the
+[follow-up guide](workflows/source-review-follow-up.md).
 
 ## Build and deployment boundary
 
