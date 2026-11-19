@@ -1,6 +1,6 @@
 # Plan: install the workflow code as a frozen library and keep prompts in files
 
-Status: **steps 0-1 done (2026-11-18, 2026-11-19); step 2 next; D1-D10 agreed (D6 2026-11-18, the rest
+Status: **steps 0-2 done (2026-11-18, 2026-11-19); step 3 (prompts) next; D1-D10 agreed (D6 2026-11-18, the rest
 2026-11-19).** Progress notes go at the end.
 
 ## 1. Why
@@ -103,3 +103,7 @@ they can be read and edited as text.
   routed as expected, a changed library file stopped a run. CAO 2.5.4 refuses to replace profiles installed by an
   earlier CAO (delete and reinstall) and adds `x-cao-source-stem:` to installed profiles. Record:
   [workflow-library-live.md](../verification/workflow-library-live.md).
+- 2026-11-19, step 2: `deliver-PAY-DEMO-001-11` ran end to end from the library (AWAITING_HUMAN_REVIEW, two developer
+  findings, library manifest hash recorded) and `followup-library-1` gave every expected verdict on the follow-up
+  fixture (closed PR #3 is refused by design). Old `sdlc/PAY-DEMO-001` renamed
+  `archive/sdlc-PAY-DEMO-001-deliver10`. Record: [workflow-library-live.md](../verification/workflow-library-live.md).
