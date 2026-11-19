@@ -1,7 +1,7 @@
 """Planning that stops without a passing review must leave durable, non-approvable evidence.
 
 Drives the real planning control flow (real Git repo, only agent answers and CAO
-transport simulated) for every stop cause, in both the modular and bundled forms.
+transport simulated) for every stop cause.
 """
 from __future__ import annotations
 import hashlib
@@ -46,7 +46,7 @@ class NonConvergedPlanningTest(unittest.TestCase):
     make_repo = harness.LifecycleIntegrationTest.make_repo
     drive = harness.LifecycleIntegrationTest.drive
 
-    def run_planning(self, root, modular, responder, *, max_review_rounds=3, jira_available=True, run_id='nc-run-1'):
+    def run_planning(self, root, responder, *, max_review_rounds=3, jira_available=True, run_id='nc-run-1'):
         repo, git = self.make_repo(root)
         source = root / 'sources'
         source.mkdir()
@@ -55,7 +55,7 @@ class NonConvergedPlanningTest(unittest.TestCase):
         (source / 'context.json').write_text(json.dumps({'schema_version': '1.0', 'ticket': {
             'id': TICKET, 'source_id': 'JIRA:T-1', 'title': 'Request', 'file': 'jira.md', 'required': True},
             'confluence': []}))
-        planning, transport = harness.load('dev_plan', modular)
+        planning, transport = harness.load('dev_plan')
         inputs = {'repository_root': str(repo), 'ticket_id': TICKET, 'source_dir': str(source),
                   'baseline_sha': git('rev-parse', 'HEAD'), 'max_review_rounds': max_review_rounds}
         calls, output = self.drive(planning, transport, inputs, responder(planning), run_id)
@@ -110,21 +110,20 @@ class NonConvergedPlanningTest(unittest.TestCase):
                 return review('CHANGES_REQUIRED', finding('PLAN_CHANGE_REQUIRED'), finding('ADVISORY', 'P2'), prompt=prompt)
             return respond
 
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, _, calls, output = self.run_planning(Path(temp), modular, responder, max_review_rounds=2)
-                candidate, manifest, human = self.assert_stopped(repo, output, 'review_convergence_limit_reached')
-                self.assertEqual(manifest['review_rounds'], 2)
-                self.assertEqual(manifest['context_versions'], 1)
-                self.assertIn('plan-author-r2-c1', (candidate / 'candidate-plan.md').read_text())
-                self.assertEqual(manifest['plan_sha256'], sha256(candidate / 'candidate-plan.md'))
-                self.assertEqual(sorted(p.name for p in (candidate / 'reviews').iterdir()),
-                                 ['01-review-r1-c1.json', '02-review-r2-c1.json'])
-                self.assertTrue((candidate / 'planning-context.json').is_file())
-                self.assertTrue((candidate / 'planning-analysis.md').is_file())
-                # Only blocking findings are listed; the advisory one is not.
-                self.assertEqual([f['id'] for f in human['blocking_findings']], ['P1'])
-                self.assertEqual(human['blocking_findings'][0]['required_action'], 'Resolve it')
+        with tempfile.TemporaryDirectory() as temp:
+            repo, _, calls, output = self.run_planning(Path(temp), responder, max_review_rounds=2)
+            candidate, manifest, human = self.assert_stopped(repo, output, 'review_convergence_limit_reached')
+            self.assertEqual(manifest['review_rounds'], 2)
+            self.assertEqual(manifest['context_versions'], 1)
+            self.assertIn('plan-author-r2-c1', (candidate / 'candidate-plan.md').read_text())
+            self.assertEqual(manifest['plan_sha256'], sha256(candidate / 'candidate-plan.md'))
+            self.assertEqual(sorted(p.name for p in (candidate / 'reviews').iterdir()),
+                             ['01-review-r1-c1.json', '02-review-r2-c1.json'])
+            self.assertTrue((candidate / 'planning-context.json').is_file())
+            self.assertTrue((candidate / 'planning-analysis.md').is_file())
+            # Only blocking findings are listed; the advisory one is not.
+            self.assertEqual([f['id'] for f in human['blocking_findings']], ['P1'])
+            self.assertEqual(human['blocking_findings'][0]['required_action'], 'Resolve it')
 
     def test_human_decision_stops_immediately_with_the_deciding_finding(self):
         def responder(planning):
@@ -138,13 +137,12 @@ class NonConvergedPlanningTest(unittest.TestCase):
                 return review('HUMAN_DECISION_REQUIRED', finding('HUMAN_DECISION_REQUIRED', 'D1', 'HIGH'))
             return respond
 
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, _, calls, output = self.run_planning(Path(temp), modular, responder)
-                candidate, manifest, human = self.assert_stopped(repo, output, 'plan_review_requires_human_decision')
-                self.assertEqual(manifest['review_rounds'], 1)
-                self.assertEqual([f['id'] for f in human['blocking_findings']], ['D1'])
-                self.assertEqual(len([c for c in calls if c[0] == 'sdlc_plan_author']), 1)
+        with tempfile.TemporaryDirectory() as temp:
+            repo, _, calls, output = self.run_planning(Path(temp), responder)
+            candidate, manifest, human = self.assert_stopped(repo, output, 'plan_review_requires_human_decision')
+            self.assertEqual(manifest['review_rounds'], 1)
+            self.assertEqual([f['id'] for f in human['blocking_findings']], ['D1'])
+            self.assertEqual(len([c for c in calls if c[0] == 'sdlc_plan_author']), 1)
 
     def test_unavailable_required_source_leaves_context_only_evidence(self):
         def responder(planning):
@@ -153,19 +151,18 @@ class NonConvergedPlanningTest(unittest.TestCase):
                 return harness.context()
             return respond
 
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, _, calls, output = self.run_planning(Path(temp), modular, responder, jira_available=False)
-                candidate, manifest, human = self.assert_stopped(repo, output, 'context_not_ready')
-                self.assertEqual(manifest['review_rounds'], 0)
-                self.assertIsNone(manifest['plan_sha256'])
-                self.assertFalse((candidate / 'candidate-plan.md').exists())
-                self.assertFalse((candidate / 'reviews').exists())
-                self.assertFalse((candidate / 'planning-analysis.md').exists())
-                self.assertEqual(human['blockers'], ['required source unavailable: JIRA:T-1'])
-                sources = json.loads((candidate / 'sources.json').read_text())
-                self.assertEqual([(s['source_id'], s['status'], s['content_digest']) for s in sources],
-                                 [('JIRA:T-1', 'UNAVAILABLE', None)])
+        with tempfile.TemporaryDirectory() as temp:
+            repo, _, calls, output = self.run_planning(Path(temp), responder, jira_available=False)
+            candidate, manifest, human = self.assert_stopped(repo, output, 'context_not_ready')
+            self.assertEqual(manifest['review_rounds'], 0)
+            self.assertIsNone(manifest['plan_sha256'])
+            self.assertFalse((candidate / 'candidate-plan.md').exists())
+            self.assertFalse((candidate / 'reviews').exists())
+            self.assertFalse((candidate / 'planning-analysis.md').exists())
+            self.assertEqual(human['blockers'], ['required source unavailable: JIRA:T-1'])
+            sources = json.loads((candidate / 'sources.json').read_text())
+            self.assertEqual([(s['source_id'], s['status'], s['content_digest']) for s in sources],
+                             [('JIRA:T-1', 'UNAVAILABLE', None)])
 
     def test_renormalized_context_that_is_not_ready_keeps_the_plan_and_review(self):
         def responder(planning):
@@ -180,19 +177,18 @@ class NonConvergedPlanningTest(unittest.TestCase):
                               finding('CONTEXT_RENORMALIZATION_REQUIRED', 'C1', 'MEDIUM'))
             return respond
 
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, _, calls, output = self.run_planning(Path(temp), modular, responder)
-                candidate, manifest, human = self.assert_stopped(repo, output, 'renormalized_context_not_ready')
-                self.assertEqual(manifest['context_versions'], 2)
-                self.assertEqual(manifest['review_rounds'], 1)
-                runtime = repo / '.agentic-sdlc/runtime' / TICKET / 'nc-run-1'
-                self.assertEqual(manifest['planning_context_sha256'],
-                                 sha256(runtime / 'context/normalized/planning-context-v2.json'))
-                self.assertTrue((candidate / 'candidate-plan.md').is_file())
-                # The analysis predates the re-normalized context, so it is deliberately not kept.
-                self.assertFalse((candidate / 'planning-analysis.md').exists())
-                self.assertIn('blocking open question Q-1', human['blockers'])
+        with tempfile.TemporaryDirectory() as temp:
+            repo, _, calls, output = self.run_planning(Path(temp), responder)
+            candidate, manifest, human = self.assert_stopped(repo, output, 'renormalized_context_not_ready')
+            self.assertEqual(manifest['context_versions'], 2)
+            self.assertEqual(manifest['review_rounds'], 1)
+            runtime = repo / '.agentic-sdlc/runtime' / TICKET / 'nc-run-1'
+            self.assertEqual(manifest['planning_context_sha256'],
+                             sha256(runtime / 'context/normalized/planning-context-v2.json'))
+            self.assertTrue((candidate / 'candidate-plan.md').is_file())
+            # The analysis predates the re-normalized context, so it is deliberately not kept.
+            self.assertFalse((candidate / 'planning-analysis.md').exists())
+            self.assertIn('blocking open question Q-1', human['blockers'])
 
     def test_existing_candidate_is_never_overwritten(self):
         def responder(planning):
@@ -200,17 +196,16 @@ class NonConvergedPlanningTest(unittest.TestCase):
                 return harness.context()
             return respond
 
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, planning, _, output = self.run_planning(Path(temp), modular, responder, jira_available=False)
-                retrieval = {'sources': [{'source_id': 'JIRA:T-1', 'title': 'Request', 'type': 'JIRA',
-                                          'required': True, 'status': 'UNAVAILABLE', 'content_digest': None}]}
-                with self.assertRaisesRegex(planning.WorkflowContractError, 'candidate snapshot already exists'):
-                    planning._snapshot_candidate(
-                        repo=repo, ticket_id=TICKET, run_id='nc-run-1', base_branch='main', baseline_sha='0' * 40,
-                        stop_cause='context_not_ready', blockers=[], retrieval=retrieval, runtime_dir=repo / 'scratch',
-                        context_json=None, context_version=1, analysis_path=None, plan_path=None,
-                        review_paths=[], last_review=None)
+        with tempfile.TemporaryDirectory() as temp:
+            repo, planning, _, output = self.run_planning(Path(temp), responder, jira_available=False)
+            retrieval = {'sources': [{'source_id': 'JIRA:T-1', 'title': 'Request', 'type': 'JIRA',
+                                      'required': True, 'status': 'UNAVAILABLE', 'content_digest': None}]}
+            with self.assertRaisesRegex(planning.WorkflowContractError, 'candidate snapshot already exists'):
+                planning._snapshot_candidate(
+                    repo=repo, ticket_id=TICKET, run_id='nc-run-1', base_branch='main', baseline_sha='0' * 40,
+                    stop_cause='context_not_ready', blockers=[], retrieval=retrieval, runtime_dir=repo / 'scratch',
+                    context_json=None, context_version=1, analysis_path=None, plan_path=None,
+                    review_paths=[], last_review=None)
 
 
 if __name__ == '__main__':

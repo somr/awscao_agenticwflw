@@ -181,7 +181,7 @@ the drafted replies and publishes them with a separate command; nothing is resol
 
 ## Build and deployment boundary
 
-Repository modules are the maintained source. The builder follows each workflow's dependency graph and emits one standalone Python script, including a literal `INPUTS` declaration and `SDLC_BUNDLE_MANIFEST` with module digests. The installer validates the candidate through CAO before promoting it.
+Repository modules are the maintained source. The builder copies the whole module package, byte for byte, into a frozen library identified by the hash of its file manifest, and generates a small entry script per workflow with a literal `INPUTS` declaration, the library's path and its manifest. The installer validates the entry through CAO, writes the library once (read-only, never replaced) and then promotes the entry.
 
 ```mermaid
 flowchart LR
@@ -192,17 +192,19 @@ flowchart LR
     end
     CODE --> BUILD["Deterministic builder"]
     BUILD --> INSTALL["Installer: validate and promote"]
-    INSTALL --> BUNDLE["Installed standalone workflow"]
+    INSTALL --> LIB["Frozen library<br/>sdlc-lib/&lt;id&gt;"]
+    INSTALL --> ENTRY["Installed entry script"]
     PROFILES --> PI["Profile installation"]
     PI --> CP["CAO profile registry"]
-    BUNDLE --> RUN["CAO run<br/>frozen script snapshot"]
+    ENTRY --> RUN["CAO run<br/>frozen script snapshot"]
+    LIB -->|Checked by hash, then imported| RUN
     CP --> RUN
     ASSETS -->|Read from repository_root| RUN
 ```
 
-CAO snapshots the entry script, not its Python import tree, so local entry points must not be copied directly into the workflow installation directory. Bundling preserves the workflow code when that script is relocated or replayed. It does **not** freeze every external asset, and no workflow relies on CAO's own resume: Source Review refuses reuse of an existing run directory, and Planning warm starts and Delivery resumes are new runs that read durable records.
+CAO snapshots the entry script, not its Python import tree, so local entry points must not be copied directly into the workflow installation directory. The entry refers to its library by absolute path and checks every file's hash before importing it, so a relocated or replayed script runs the same code, and a changed library stops the run. CAO 2.5.4 also refuses scripts over 131,072 characters, so the workflow code cannot live in the script itself. It does **not** freeze every external asset, and no workflow relies on CAO's own resume: Source Review refuses reuse of an existing run directory, and Planning warm starts and Delivery resumes are new runs that read durable records.
 
-Python edits require rebuilding and reinstalling affected bundles. Profile edits require profile reinstallation. Repository assets such as the registry, skills and contracts remain outside the bundle and are read by subsequent runs. Planning and Delivery profiles are installed separately before their workflows; Source Review's installer includes its six profiles and refuses to overwrite an existing installation. See [build and install](build-and-install.md).
+Python edits give a new library, so all five workflows are reinstalled together. Profile edits require profile reinstallation. Repository assets such as the registry, skills and contracts remain outside the library and are read by subsequent runs. Planning and Delivery profiles are installed separately before their workflows; Source Review's installer includes its six profiles and refuses to overwrite an existing installation. See [build and install](build-and-install.md).
 
 ## Layout and evidence lifecycle
 
@@ -251,4 +253,4 @@ The [hardening plan](../hardening-plan.md) proposes exact answer-file authorizat
 - Planning gives the configured source roots to its agents and the reviewer flags tasks outside them, but that is an instruction, not a check of the plan text; a human still confirms that approved tasks fit Delivery's write scope.
 - Verification executes agent-editable application code and tests on the host without a dedicated sandbox.
 
-The [future-versions assessment](../future-versions.md) records remaining gaps and deferred capabilities. Tests cover source and bundled execution, hooks, approval and integration paths; real CAO checks and their limits are documented separately in the [verification records](README.md#verification-records).
+The [future-versions assessment](../future-versions.md) records remaining gaps and deferred capabilities. Tests cover the workflow modules, the library and entry scripts, hooks, approval and integration paths; real CAO checks and their limits are documented separately in the [verification records](README.md#verification-records).

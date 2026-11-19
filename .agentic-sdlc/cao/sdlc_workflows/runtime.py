@@ -244,6 +244,18 @@ def _wait_for_answer_file(
     )
 
 
+def installed_library_manifest() -> dict[str, str] | None:
+    """The manifest of the frozen library this code runs from, or None when it runs from the repository.
+
+    An installed library is <id>/manifest.json beside <id>/sdlc_workflows/ (build_library.py); the entry script has
+    already checked every file against it before importing this module.
+    """
+    path = Path(__file__).resolve().parents[1] / "manifest.json"
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def _run_stabilized_step(
     *,
     agent: str,

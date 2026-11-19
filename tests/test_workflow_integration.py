@@ -1,7 +1,7 @@
 """Exercise full planning/delivery control flow with real Git and verification.
 
-Only agent responses and CAO terminal transport are simulated. Both modular
-source and deployment bundles run the same orchestration and artifact checks.
+Only agent responses and CAO terminal transport are simulated. The installed library is these modules byte for
+byte (test_workflow_packaging checks the build), so they are tested once.
 """
 from __future__ import annotations
 from contextlib import ExitStack
@@ -25,16 +25,12 @@ shim.step = lambda *args, **kwargs: None
 shim.get_inputs = lambda: {}
 shim.emit_output = lambda value: None
 sys.modules.setdefault('cao_workflow', shim)
-from build_workflow import build_source
 
 
-def load(name, modular):
-    if modular:
-        domain = importlib.import_module('sdlc_workflows.' + {'dev_plan': 'planning', 'deliver': 'delivery'}[name])
-        return domain, importlib.import_module('sdlc_workflows.runtime')
-    mod = types.ModuleType(name + '_integration')
-    exec(build_source(name), mod.__dict__)
-    return mod, mod
+def load(name):
+    """The workflow module and the runtime module it calls agents through."""
+    domain = importlib.import_module('sdlc_workflows.' + {'dev_plan': 'planning', 'deliver': 'delivery'}[name])
+    return domain, importlib.import_module('sdlc_workflows.runtime')
 
 
 def prior_findings_for(prompt, status='RESOLVED'):
@@ -109,7 +105,7 @@ class DeliveryHarness:
                 self.assertEqual(cleanup.call_count, len(calls))
         return calls, outputs[-1]
 
-    def plan(self, root, modular, prompts=None, configure=None):
+    def plan(self, root, prompts=None, configure=None):
         repo, git = self.make_repo(root)
         if configure is not None:
             self.edit_config(repo, configure)
@@ -119,7 +115,7 @@ class DeliveryHarness:
         (source / 'jira.md').write_text('Return three from value().')
         (source / 'context.json').write_text(json.dumps({'schema_version': '1.0', 'ticket': {
             'id': 'T-1', 'source_id': 'JIRA:T-1', 'title': 'Request', 'file': 'jira.md', 'required': True}, 'confluence': []}))
-        planning, transport = load('dev_plan', modular)
+        planning, transport = load('dev_plan')
         inputs = {'repository_root': str(repo), 'ticket_id': 'T-1', 'source_dir': str(source), 'baseline_sha': git('rev-parse', 'HEAD')}
         def respond(agent, step_id, prompt):
             if prompts is not None:
@@ -165,188 +161,181 @@ class DeliveryHarness:
 
 class LifecycleIntegrationTest(DeliveryHarness, unittest.TestCase):
     def test_plan_delivery_repair_remediation_and_human_handoff(self):
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, git, records = self.plan(Path(temp), modular)
-                delivery, transport = load('deliver', modular)
-                # Exercise skill-selected verification with an actual local command;
-                # the integration fixture has no AngularJS application or npm setup.
-                def configure(config):
-                    config['verification']['angularjs'] = [[sys.executable, '-c', 'import runpy; assert runpy.run_path("app/value.py")["value"]() >= 2']]
-                    # A second source root that nobody creates: every git pathspec (implement, repair,
-                    # remediation) must skip it instead of failing.
-                    config['source_roots'] = ['app', 'extra/module']
-                self.edit_config(repo, configure)
-                human = {'id': 'H1', 'file': 'app/value.py', 'location': 'value', 'category': 'AUTHN_AUTHZ',
-                    'impact': 'HIGH', 'confidence': .99, 'failure_scenario': 'Synthetic protected concern',
-                    'consequence': 'Needs human review', 'remediation_direction': 'Human must assess',
-                    'automation_eligibility': 'AUTO_FIX', 'reason': 'Agent claim must be overridden',
-                    'localized_and_bounded': True, 'deterministically_verifiable': True}
-                auto = {**human, 'id': 'A1', 'category': 'CORRECTNESS', 'impact': 'MEDIUM',
-                        'failure_scenario': 'Value is two, expected three'}
-                def respond(agent, step_id, prompt):
-                    if agent == 'sdlc_code_supervisor':
-                        return {'tasks': [{'id': 'T1', 'worker': 'developer', 'plan_reference': 'T1',
-                            'instructions': 'Implement value', 'depends_on': [], 'skills': ['sdlc-angularjs-ui'], 'owns': ['app']}]}
-                    if agent == delivery.IMPLEMENTER:
-                        # Real compile/test subprocesses reject the first implementation.
-                        text = 'def value():\n    return 2\n' if step_id == 'implement-v1-repair-1' else 'invalid python !!!\n'
-                        (repo / 'app/value.py').write_text(text)
-                        return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
-                    if agent == delivery.REMEDIATOR:
-                        self.assertIn('"id": "A1"', prompt)
-                        self.assertNotIn('"id": "H1"', prompt)
-                        (repo / 'app/value.py').write_text('def value():\n    return 3\n')
-                        return {'findings_addressed': ['A1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
-                    return {'summary': 'Synthetic review', 'findings': [auto, human] if step_id == 'pr-review-r1' else [human]}
-                calls, output = self.drive(delivery, transport, {'repository_root': str(repo), 'ticket_id': 'T-1'}, respond, 'delivery-integration')
-                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW',
-                    str(output) + '\n' + '\n'.join(p.read_text() for p in (repo / '.agentic-sdlc/runtime/T-1/delivery-integration/verification').glob('*repair*.log')))
-                self.assertTrue(output['has_developer_required_findings'])
-                self.assertFalse(output['has_auto_fix_findings'])
-                self.assertEqual(output['remediation_rounds'], 1)
-                self.assertEqual(output['pr_head_sha'], git('rev-parse', 'HEAD'))
-                self.assertEqual(git('branch', '--show-current'), 'sdlc/T-1')
-                self.assertIn((delivery.IMPLEMENTER, 'implement-v1-repair-1'), calls)
-                self.assertIn(('sdlc_code_supervisor', 'dispatch-v1'), calls)
-                self.assertIn((delivery.IMPLEMENTER, 'worker-T1'), calls)
-                self.assertIn((delivery.IMPLEMENTER, 'integrate-v1'), calls)
-                self.assertTrue((records / 'human-review-brief.md').exists())
-                self.assertIn(output['pr_head_sha'], (records / 'pr-body.md').read_text())
-                self.assertIn('**Task commits (hybrid, in merge order):**\n- T1: `', (records / 'pr-body.md').read_text())
-                review = json.loads((records / 'pr-review-r2.json').read_text())
-                self.assertEqual(review['findings'][0]['automation_eligibility'], 'DEVELOPER_REQUIRED')
-                delivery_manifest = json.loads((records / 'delivery-manifest.json').read_text())
-                self.assertEqual(len(delivery_manifest['verification']['commands']), 3)
-                self.assertEqual(delivery_manifest['source_roots'], ['app', 'extra/module'])
-                self.assertFalse((repo / 'extra').exists())
+        with tempfile.TemporaryDirectory() as temp:
+            repo, git, records = self.plan(Path(temp))
+            delivery, transport = load('deliver')
+            # Exercise skill-selected verification with an actual local command;
+            # the integration fixture has no AngularJS application or npm setup.
+            def configure(config):
+                config['verification']['angularjs'] = [[sys.executable, '-c', 'import runpy; assert runpy.run_path("app/value.py")["value"]() >= 2']]
+                # A second source root that nobody creates: every git pathspec (implement, repair,
+                # remediation) must skip it instead of failing.
+                config['source_roots'] = ['app', 'extra/module']
+            self.edit_config(repo, configure)
+            human = {'id': 'H1', 'file': 'app/value.py', 'location': 'value', 'category': 'AUTHN_AUTHZ',
+                'impact': 'HIGH', 'confidence': .99, 'failure_scenario': 'Synthetic protected concern',
+                'consequence': 'Needs human review', 'remediation_direction': 'Human must assess',
+                'automation_eligibility': 'AUTO_FIX', 'reason': 'Agent claim must be overridden',
+                'localized_and_bounded': True, 'deterministically_verifiable': True}
+            auto = {**human, 'id': 'A1', 'category': 'CORRECTNESS', 'impact': 'MEDIUM',
+                    'failure_scenario': 'Value is two, expected three'}
+            def respond(agent, step_id, prompt):
+                if agent == 'sdlc_code_supervisor':
+                    return {'tasks': [{'id': 'T1', 'worker': 'developer', 'plan_reference': 'T1',
+                        'instructions': 'Implement value', 'depends_on': [], 'skills': ['sdlc-angularjs-ui'], 'owns': ['app']}]}
+                if agent == delivery.IMPLEMENTER:
+                    # Real compile/test subprocesses reject the first implementation.
+                    text = 'def value():\n    return 2\n' if step_id == 'implement-v1-repair-1' else 'invalid python !!!\n'
+                    (repo / 'app/value.py').write_text(text)
+                    return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
+                if agent == delivery.REMEDIATOR:
+                    self.assertIn('"id": "A1"', prompt)
+                    self.assertNotIn('"id": "H1"', prompt)
+                    (repo / 'app/value.py').write_text('def value():\n    return 3\n')
+                    return {'findings_addressed': ['A1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
+                return {'summary': 'Synthetic review', 'findings': [auto, human] if step_id == 'pr-review-r1' else [human]}
+            calls, output = self.drive(delivery, transport, {'repository_root': str(repo), 'ticket_id': 'T-1'}, respond, 'delivery-integration')
+            self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW',
+                str(output) + '\n' + '\n'.join(p.read_text() for p in (repo / '.agentic-sdlc/runtime/T-1/delivery-integration/verification').glob('*repair*.log')))
+            self.assertTrue(output['has_developer_required_findings'])
+            self.assertFalse(output['has_auto_fix_findings'])
+            self.assertEqual(output['remediation_rounds'], 1)
+            self.assertEqual(output['pr_head_sha'], git('rev-parse', 'HEAD'))
+            self.assertEqual(git('branch', '--show-current'), 'sdlc/T-1')
+            self.assertIn((delivery.IMPLEMENTER, 'implement-v1-repair-1'), calls)
+            self.assertIn(('sdlc_code_supervisor', 'dispatch-v1'), calls)
+            self.assertIn((delivery.IMPLEMENTER, 'worker-T1'), calls)
+            self.assertIn((delivery.IMPLEMENTER, 'integrate-v1'), calls)
+            self.assertTrue((records / 'human-review-brief.md').exists())
+            self.assertIn(output['pr_head_sha'], (records / 'pr-body.md').read_text())
+            self.assertIn('**Task commits (hybrid, in merge order):**\n- T1: `', (records / 'pr-body.md').read_text())
+            review = json.loads((records / 'pr-review-r2.json').read_text())
+            self.assertEqual(review['findings'][0]['automation_eligibility'], 'DEVELOPER_REQUIRED')
+            delivery_manifest = json.loads((records / 'delivery-manifest.json').read_text())
+            self.assertEqual(len(delivery_manifest['verification']['commands']), 3)
+            self.assertEqual(delivery_manifest['source_roots'], ['app', 'extra/module'])
+            self.assertFalse((repo / 'extra').exists())
 
     def test_remediation_without_source_changes_escalates_to_human_review(self):
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, git, records = self.plan(Path(temp), modular)
-                delivery, transport = load('deliver', modular)
-                evidence = {'id': 'A1', 'file': 'app/value.py', 'location': 'T7', 'category': 'TESTING',
-                    'impact': 'LOW', 'confidence': .9, 'failure_scenario': 'Flakiness loop was never run',
-                    'consequence': 'Unverified', 'remediation_direction': 'Run the loop',
-                    'automation_eligibility': 'AUTO_FIX', 'reason': 'Evidence missing',
-                    'localized_and_bounded': True, 'deterministically_verifiable': True}
-                def respond(agent, step_id, prompt):
-                    if agent == 'sdlc_code_supervisor':
-                        return {'tasks': [{'id': 'T1', 'worker': 'developer', 'plan_reference': 'T1',
-                            'instructions': 'Implement value', 'depends_on': [], 'skills': [], 'owns': ['app']}]}
-                    if agent == delivery.IMPLEMENTER:
-                        (repo / 'app/value.py').write_text('def value():\n    return 2\n')
-                        return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
-                    if agent == delivery.REMEDIATOR:
-                        return {'findings_addressed': [], 'files_changed': [], 'assumptions': [],
-                                'deviations': ['A1 needs commands this role cannot run.']}
-                    return {'summary': 'Synthetic review', 'findings': [evidence]}
-                calls, output = self.drive(delivery, transport, {'repository_root': str(repo), 'ticket_id': 'T-1'}, respond, 'delivery-escalation')
-                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW')
-                self.assertEqual(output['escalated_findings'], ['A1'])
-                self.assertTrue(output['has_developer_required_findings'])
-                self.assertFalse(output['has_auto_fix_findings'])
-                self.assertFalse(output['convergence_limit_reached'])
-                # One review, one remediation attempt, no second review: nothing changed to re-review.
-                self.assertEqual([c for c in calls if c[0] in (delivery.REMEDIATOR, delivery.PR_REVIEWER)],
-                                 [(delivery.PR_REVIEWER, 'pr-review-r1'), (delivery.REMEDIATOR, 'remediate-r1')])
-                self.assertEqual(output['pr_head_sha'], git('rev-parse', 'HEAD'))
-                self.assertEqual(git('log', '--format=%s', '-1'), '[T-1] T1: implement hybrid task')
-                manifest = json.loads((records / 'delivery-manifest.json').read_text())
-                self.assertEqual(manifest['state'], 'AWAITING_HUMAN_REVIEW')
-                self.assertEqual(manifest['escalated_findings'], ['A1'])
-                self.assertIsNone(manifest['remediation_history'][0]['commit_sha'])
-                brief = (records / 'human-review-brief.md').read_text()
-                self.assertIn('### 1. A1', brief)
-                self.assertIn('A1 needs commands this role cannot run.', brief)
-                self.assertIn('Automatically remediated: 0', brief)
-                self.assertNotIn('applied additional fixes', brief)
-                # The reviewer's own record stays as the reviewer wrote it.
-                review = json.loads((records / 'pr-review-r1.json').read_text())
-                self.assertEqual(review['findings'][0]['automation_eligibility'], 'AUTO_FIX')
+        with tempfile.TemporaryDirectory() as temp:
+            repo, git, records = self.plan(Path(temp))
+            delivery, transport = load('deliver')
+            evidence = {'id': 'A1', 'file': 'app/value.py', 'location': 'T7', 'category': 'TESTING',
+                'impact': 'LOW', 'confidence': .9, 'failure_scenario': 'Flakiness loop was never run',
+                'consequence': 'Unverified', 'remediation_direction': 'Run the loop',
+                'automation_eligibility': 'AUTO_FIX', 'reason': 'Evidence missing',
+                'localized_and_bounded': True, 'deterministically_verifiable': True}
+            def respond(agent, step_id, prompt):
+                if agent == 'sdlc_code_supervisor':
+                    return {'tasks': [{'id': 'T1', 'worker': 'developer', 'plan_reference': 'T1',
+                        'instructions': 'Implement value', 'depends_on': [], 'skills': [], 'owns': ['app']}]}
+                if agent == delivery.IMPLEMENTER:
+                    (repo / 'app/value.py').write_text('def value():\n    return 2\n')
+                    return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
+                if agent == delivery.REMEDIATOR:
+                    return {'findings_addressed': [], 'files_changed': [], 'assumptions': [],
+                            'deviations': ['A1 needs commands this role cannot run.']}
+                return {'summary': 'Synthetic review', 'findings': [evidence]}
+            calls, output = self.drive(delivery, transport, {'repository_root': str(repo), 'ticket_id': 'T-1'}, respond, 'delivery-escalation')
+            self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW')
+            self.assertEqual(output['escalated_findings'], ['A1'])
+            self.assertTrue(output['has_developer_required_findings'])
+            self.assertFalse(output['has_auto_fix_findings'])
+            self.assertFalse(output['convergence_limit_reached'])
+            # One review, one remediation attempt, no second review: nothing changed to re-review.
+            self.assertEqual([c for c in calls if c[0] in (delivery.REMEDIATOR, delivery.PR_REVIEWER)],
+                             [(delivery.PR_REVIEWER, 'pr-review-r1'), (delivery.REMEDIATOR, 'remediate-r1')])
+            self.assertEqual(output['pr_head_sha'], git('rev-parse', 'HEAD'))
+            self.assertEqual(git('log', '--format=%s', '-1'), '[T-1] T1: implement hybrid task')
+            manifest = json.loads((records / 'delivery-manifest.json').read_text())
+            self.assertEqual(manifest['state'], 'AWAITING_HUMAN_REVIEW')
+            self.assertEqual(manifest['escalated_findings'], ['A1'])
+            self.assertIsNone(manifest['remediation_history'][0]['commit_sha'])
+            brief = (records / 'human-review-brief.md').read_text()
+            self.assertIn('### 1. A1', brief)
+            self.assertIn('A1 needs commands this role cannot run.', brief)
+            self.assertIn('Automatically remediated: 0', brief)
+            self.assertNotIn('applied additional fixes', brief)
+            # The reviewer's own record stays as the reviewer wrote it.
+            review = json.loads((records / 'pr-review-r1.json').read_text())
+            self.assertEqual(review['findings'][0]['automation_eligibility'], 'AUTO_FIX')
 
     def test_delivery_rejects_changed_plan_before_any_agent_runs(self):
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, git, records = self.plan(Path(temp), modular)
-                (records / 'development-plan.md').write_text('Modified after approval')
-                delivery, transport = load('deliver', modular)
+        with tempfile.TemporaryDirectory() as temp:
+            repo, git, records = self.plan(Path(temp))
+            (records / 'development-plan.md').write_text('Modified after approval')
+            delivery, transport = load('deliver')
+            with patch.object(delivery, 'get_inputs', return_value={'repository_root': str(repo), 'ticket_id': 'T-1'}), patch.object(transport, 'step') as step:
+                with self.assertRaisesRegex(delivery.WorkflowContractError, 'changed since'):
+                    delivery.main()
+                step.assert_not_called()
+            self.assertEqual(git('branch', '--show-current'), 'main')
+
+    def test_planning_gives_the_source_roots_to_analyst_author_and_reviewer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            prompts = []
+            repo, git, records = self.plan(Path(temp), prompts,
+                                           lambda config: config.update(source_roots=['app', 'extra/module']))
+            line = 'Source roots (Delivery may create or change files only under these; the configuration is trusted): app, extra/module'
+            for agent, step_id, prompt in prompts:
+                with self.subTest(step=step_id):
+                    if 'normaliz' in step_id:
+                        self.assertNotIn('Source roots', prompt)
+                        self.assertIn('for the Planning workflow', prompt)
+                    else:
+                        self.assertIn(line, prompt)
+            self.assertEqual({p[1].split('-')[0] for p in prompts}, {'context', 'planning', 'plan'})
+            manifest = json.loads((records / 'execution-manifest.json').read_text())
+            self.assertEqual(manifest['source_roots'], ['app', 'extra/module'])
+
+    def test_planning_rejects_an_invalid_source_root_config_before_any_agent_runs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo, git = self.make_repo(Path(temp))
+            self.edit_config(repo, lambda config: config.update(source_roots=['.git']))
+            source = Path(temp) / 'sources'
+            source.mkdir()
+            planning, transport = load('dev_plan')
+            inputs = {'repository_root': str(repo), 'ticket_id': 'T-1', 'source_dir': str(source),
+                      'baseline_sha': git('rev-parse', 'HEAD')}
+            with patch.object(planning, 'get_inputs', return_value=inputs), patch.object(transport, 'step') as step:
+                with self.assertRaisesRegex(planning.WorkflowContractError, 'source_roots'):
+                    planning.main()
+                step.assert_not_called()
+
+    def test_delivery_rejects_an_invalid_source_root_config_before_any_agent_runs(self):
+        for change in (lambda r: r.update(source_roots=['.git']),
+                       lambda r: r.update(write_profiles={'sdlc_code_supervisor': None}),
+                       lambda r: r.update(source_roots=['app'], write_profiles={'sdlc_implementer': ['elsewhere']})):
+            with tempfile.TemporaryDirectory() as temp:
+                repo, git, records = self.plan(Path(temp))
+                self.edit_config(repo, change)
+                delivery, transport = load('deliver')
                 with patch.object(delivery, 'get_inputs', return_value={'repository_root': str(repo), 'ticket_id': 'T-1'}), patch.object(transport, 'step') as step:
-                    with self.assertRaisesRegex(delivery.WorkflowContractError, 'changed since'):
+                    with self.assertRaises(delivery.WorkflowContractError):
                         delivery.main()
                     step.assert_not_called()
                 self.assertEqual(git('branch', '--show-current'), 'main')
-
-    def test_planning_gives_the_source_roots_to_analyst_author_and_reviewer(self):
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                prompts = []
-                repo, git, records = self.plan(Path(temp), modular, prompts,
-                                               lambda config: config.update(source_roots=['app', 'extra/module']))
-                line = 'Source roots (Delivery may create or change files only under these; the configuration is trusted): app, extra/module'
-                for agent, step_id, prompt in prompts:
-                    with self.subTest(step=step_id):
-                        if 'normaliz' in step_id:
-                            self.assertNotIn('Source roots', prompt)
-                            self.assertIn('for the Planning workflow', prompt)
-                        else:
-                            self.assertIn(line, prompt)
-                self.assertEqual({p[1].split('-')[0] for p in prompts}, {'context', 'planning', 'plan'})
-                manifest = json.loads((records / 'execution-manifest.json').read_text())
-                self.assertEqual(manifest['source_roots'], ['app', 'extra/module'])
-
-    def test_planning_rejects_an_invalid_source_root_config_before_any_agent_runs(self):
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, git = self.make_repo(Path(temp))
-                self.edit_config(repo, lambda config: config.update(source_roots=['.git']))
-                source = Path(temp) / 'sources'
-                source.mkdir()
-                planning, transport = load('dev_plan', modular)
-                inputs = {'repository_root': str(repo), 'ticket_id': 'T-1', 'source_dir': str(source),
-                          'baseline_sha': git('rev-parse', 'HEAD')}
-                with patch.object(planning, 'get_inputs', return_value=inputs), patch.object(transport, 'step') as step:
-                    with self.assertRaisesRegex(planning.WorkflowContractError, 'source_roots'):
-                        planning.main()
-                    step.assert_not_called()
-
-    def test_delivery_rejects_an_invalid_source_root_config_before_any_agent_runs(self):
-        for modular in (False, True):
-            for change in (lambda r: r.update(source_roots=['.git']),
-                           lambda r: r.update(write_profiles={'sdlc_code_supervisor': None}),
-                           lambda r: r.update(source_roots=['app'], write_profiles={'sdlc_implementer': ['elsewhere']})):
-                with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                    repo, git, records = self.plan(Path(temp), modular)
-                    self.edit_config(repo, change)
-                    delivery, transport = load('deliver', modular)
-                    with patch.object(delivery, 'get_inputs', return_value={'repository_root': str(repo), 'ticket_id': 'T-1'}), patch.object(transport, 'step') as step:
-                        with self.assertRaises(delivery.WorkflowContractError):
-                            delivery.main()
-                        step.assert_not_called()
-                    self.assertEqual(git('branch', '--show-current'), 'main')
-                    self.assertFalse((records / 'delivery-manifest.json').exists())
+                self.assertFalse((records / 'delivery-manifest.json').exists())
 
     def test_single_mode_verifies_with_the_registry_application_suite(self):
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, git, records = self.plan(Path(temp), modular)
-                suite = [[sys.executable, '-c', 'import runpy; assert runpy.run_path("app/value.py")["value"]() >= 2']]
-                self.edit_config(repo, lambda r: r['verification'].update(application=suite))
-                delivery, transport = load('deliver', modular)
+        with tempfile.TemporaryDirectory() as temp:
+            repo, git, records = self.plan(Path(temp))
+            suite = [[sys.executable, '-c', 'import runpy; assert runpy.run_path("app/value.py")["value"]() >= 2']]
+            self.edit_config(repo, lambda r: r['verification'].update(application=suite))
+            delivery, transport = load('deliver')
 
-                def respond(agent, step_id, prompt):
-                    if agent == delivery.IMPLEMENTER:
-                        (repo / 'app/value.py').write_text('def value():\n    return 2\n')
-                        return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
-                    return {'summary': 'Synthetic review', 'findings': []}
-                calls, output = self.drive(delivery, transport, {'repository_root': str(repo), 'ticket_id': 'T-1',
-                                                                 'implementation_mode': 'single'}, respond, 'delivery-single')
-                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW')
-                manifest = json.loads((records / 'delivery-manifest.json').read_text())
-                self.assertEqual(manifest['implementation_mode'], 'single')
-                self.assertEqual([c['command'] for c in manifest['verification']['commands']], suite)
-                self.assertNotIn('sdlc_code_supervisor', [agent for agent, _ in calls])
+            def respond(agent, step_id, prompt):
+                if agent == delivery.IMPLEMENTER:
+                    (repo / 'app/value.py').write_text('def value():\n    return 2\n')
+                    return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
+                return {'summary': 'Synthetic review', 'findings': []}
+            calls, output = self.drive(delivery, transport, {'repository_root': str(repo), 'ticket_id': 'T-1',
+                                                             'implementation_mode': 'single'}, respond, 'delivery-single')
+            self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW')
+            manifest = json.loads((records / 'delivery-manifest.json').read_text())
+            self.assertEqual(manifest['implementation_mode'], 'single')
+            self.assertEqual([c['command'] for c in manifest['verification']['commands']], suite)
+            self.assertNotIn('sdlc_code_supervisor', [agent for agent, _ in calls])
 
     def test_project_rules_are_reviewed_beside_the_pr_reviewer_and_later_rounds_review_only_changed_files(self):
         rule = """## {id} - [{level}] Readability. Rule {id}
@@ -371,109 +360,107 @@ Text.
 
 Text.
 """
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, git, records = self.plan(Path(temp), modular)
-                (repo / 'agentic-sdlc-pr-review-kb').mkdir()
-                (repo / 'agentic-sdlc-pr-review-kb/rules.md').write_text('# Rules\n\n' + '\n'.join([
-                    rule.format(id='R-1', level='MANDATORY', glob='app/value.py'),
-                    rule.format(id='R-2', level='NICE-TO-HAVE', glob='app/other.py'),
-                    rule.format(id='R-3', level='MANDATORY', glob='app/ui/**/*.js')]))
-                suite = [[sys.executable, '-c', 'import runpy; assert runpy.run_path("app/value.py")["value"]() >= 2']]
-                def configure(config):
-                    config['verification'].update(application=suite)
-                    config['review_knowledge'] = {'files': ['agentic-sdlc-pr-review-kb/rules.md']}
-                self.edit_config(repo, configure)
-                delivery, transport = load('deliver', modular)
-                prompts = {}
+        with tempfile.TemporaryDirectory() as temp:
+            repo, git, records = self.plan(Path(temp))
+            (repo / 'agentic-sdlc-pr-review-kb').mkdir()
+            (repo / 'agentic-sdlc-pr-review-kb/rules.md').write_text('# Rules\n\n' + '\n'.join([
+                rule.format(id='R-1', level='MANDATORY', glob='app/value.py'),
+                rule.format(id='R-2', level='NICE-TO-HAVE', glob='app/other.py'),
+                rule.format(id='R-3', level='MANDATORY', glob='app/ui/**/*.js')]))
+            suite = [[sys.executable, '-c', 'import runpy; assert runpy.run_path("app/value.py")["value"]() >= 2']]
+            def configure(config):
+                config['verification'].update(application=suite)
+                config['review_knowledge'] = {'files': ['agentic-sdlc-pr-review-kb/rules.md']}
+            self.edit_config(repo, configure)
+            delivery, transport = load('deliver')
+            prompts = {}
 
-                def finding(fid, ref, path, line, impact, eligibility):
-                    return {'id': fid, 'standard_ref': ref, 'file': path, 'line_start': line, 'line_end': line,
-                            'location': f'line {line}', 'category': 'STYLE', 'impact': impact, 'confidence': 0.95,
-                            'failure_scenario': 'abbreviated name', 'consequence': 'harder to read',
-                            'related_acceptance_criterion': None, 'remediation_direction': 'use a full name',
-                            'localized_and_bounded': True, 'deterministically_verifiable': True,
-                            'automation_eligibility': eligibility, 'reason': 'a rename'}
+            def finding(fid, ref, path, line, impact, eligibility):
+                return {'id': fid, 'standard_ref': ref, 'file': path, 'line_start': line, 'line_end': line,
+                        'location': f'line {line}', 'category': 'STYLE', 'impact': impact, 'confidence': 0.95,
+                        'failure_scenario': 'abbreviated name', 'consequence': 'harder to read',
+                        'related_acceptance_criterion': None, 'remediation_direction': 'use a full name',
+                        'localized_and_bounded': True, 'deterministically_verifiable': True,
+                        'automation_eligibility': eligibility, 'reason': 'a rename'}
 
-                def respond(agent, step_id, prompt):
-                    prompts[step_id] = prompt
-                    if agent == delivery.IMPLEMENTER:
-                        (repo / 'app/value.py').write_text('def value():\n    v = 2\n    return v\n')
-                        (repo / 'app/other.py').write_text('def oth():\n    return 1\n')
-                        return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py', 'app/other.py'], 'assumptions': [], 'deviations': []}
-                    if agent == delivery.REMEDIATOR:
-                        self.assertIn('STD-r1-b1:N1', prompt)
-                        self.assertNotIn('N2', prompt)
-                        (repo / 'app/value.py').write_text('def value():\n    result = 2\n    return result\n')
-                        return {'findings_addressed': ['STD-r1-b1:N1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
-                    if step_id == 'standards-review-r1-b1':
-                        return {'rules': [{'id': 'R-1', 'files': [{'path': 'app/value.py', 'status': 'VIOLATED', 'finding_ids': ['N1', 'N3']}]},
-                                          {'id': 'R-2', 'files': [{'path': 'app/other.py', 'status': 'VIOLATED', 'finding_ids': ['N2']}]}],
-                                'findings': [finding('N1', 'R-1', 'app/value.py', 2, 'LOW', 'AUTO_FIX'),
-                                             finding('N2', 'R-2', 'app/other.py', 1, 'MEDIUM', 'AUTO_FIX'),
-                                             finding('N3', 'R-1', 'app/value.py', 1, 'LOW', 'AUTO_FIX')],
-                                'coverage_gaps': []}
-                    if step_id.startswith('standards-review-r2-b1'):
-                        # No verdict for app/value.py, also after the repair turn: the last attempt records it as a gap.
-                        return {'rules': [{'id': 'R-1', 'files': []}], 'findings': [], 'coverage_gaps': []}
-                    return {'summary': 'Synthetic review', 'findings': []}
-                calls, output = self.drive(delivery, transport, {'repository_root': str(repo), 'ticket_id': 'T-1',
-                                                                 'implementation_mode': 'single'}, respond, 'delivery-rules')
-                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW')
-                self.assertEqual(sorted(step for _, step in calls if 'review' in step),
-                                 ['pr-review-r1', 'pr-review-r2', 'standards-review-r1-b1', 'standards-review-r2-b1',
-                                  'standards-review-r2-b1-repair-1'])
-                self.assertIn('app/value.py has none', prompts['standards-review-r2-b1-repair-1'])
-                index = prompts['standards-review-r1-b1'].rsplit('```', 1)[1]
-                self.assertIn('R-1 [MANDATORY]', index)
-                self.assertIn('R-2 [NICE-TO-HAVE]', index)
-                self.assertNotIn('R-3', prompts['standards-review-r1-b1'])
-                self.assertNotIn('R-2 [', prompts['standards-review-r2-b1'].rsplit('```', 1)[1])
-                first = json.loads((records / 'pr-review-r1.json').read_text())
-                n1 = next(f for f in first['findings'] if f['id'] == 'STD-r1-b1:N1')
-                self.assertEqual((n1['impact'], n1['automation_eligibility']), ('LOW', 'AUTO_FIX'))
-                self.assertEqual(sorted((s['standard_ref'], s['suggestion_reason'].split(':')[0]) for s in first['suggestions']),
-                                 [('R-1', 'Outside the lines this diff adds'), ('R-2', 'NICE-TO-HAVE rule R-2')])
-                last = json.loads((records / 'pr-review-r2.json').read_text())
-                self.assertEqual(last['standards']['reviewed'], ['R-1'])
-                self.assertEqual(last['standards']['carried'], ['R-2'])
-                self.assertEqual(last['standards']['verdicts'], {'R-1': 'NOT_ASSESSED', 'R-2': 'VIOLATED'})
-                self.assertEqual(last['standards']['file_verdicts'], {'R-1': {'app/value.py': 'NOT_ASSESSED'},
-                                                                      'R-2': {'app/other.py': 'VIOLATED'}})
-                self.assertEqual(last['standards']['not_assessed'], ['R-1 in app/value.py'])
-                self.assertEqual(first['standards']['batches'], [{'rules': ['R-1', 'R-2'], 'files': ['app/other.py', 'app/value.py']}])
-                self.assertEqual([(s['standard_ref'], s['carried_from_round']) for s in last['suggestions']], [('R-2', 1)])
-                self.assertFalse(last['has_auto_fix'])
-                manifest = json.loads((records / 'delivery-manifest.json').read_text())
-                self.assertEqual([r['round'] for r in manifest['standards']['rounds']], [1, 2])
-                self.assertEqual(manifest['standards']['rounds'][0]['skipped'], ['R-3'])
-                # Step 5: the authors get the rules that can apply to what they write.
-                self.assertIn('- R-1 [MANDATORY]', prompts['implement-v1'])
-                self.assertIn('- R-2 [NICE-TO-HAVE]', prompts['implement-v1'])
-                self.assertIn('knowledge/authors/rules/<RULE-ID>.md', prompts['implement-v1'])
-                self.assertIn('- R-1 [MANDATORY]', prompts['remediate-r1'])
-                self.assertNotIn('- R-2 [', prompts['remediate-r1'])
-                self.assertNotIn('- R-3 [', prompts['remediate-r1'])
-                brief = (records / 'human-review-brief.md').read_text()
-                self.assertIn('## Project rules', brief)
-                self.assertIn('Suggestions (optional, never fixed automatically): 1', brief)
-                self.assertIn('- R-1 in app/value.py', brief)
-                self.assertIn('Reviewer note: The reviewer gave rule R-1 no verdict for app/value.py: not assessed', brief)
+            def respond(agent, step_id, prompt):
+                prompts[step_id] = prompt
+                if agent == delivery.IMPLEMENTER:
+                    (repo / 'app/value.py').write_text('def value():\n    v = 2\n    return v\n')
+                    (repo / 'app/other.py').write_text('def oth():\n    return 1\n')
+                    return {'tasks_completed': ['T1'], 'files_changed': ['app/value.py', 'app/other.py'], 'assumptions': [], 'deviations': []}
+                if agent == delivery.REMEDIATOR:
+                    self.assertIn('STD-r1-b1:N1', prompt)
+                    self.assertNotIn('N2', prompt)
+                    (repo / 'app/value.py').write_text('def value():\n    result = 2\n    return result\n')
+                    return {'findings_addressed': ['STD-r1-b1:N1'], 'files_changed': ['app/value.py'], 'assumptions': [], 'deviations': []}
+                if step_id == 'standards-review-r1-b1':
+                    return {'rules': [{'id': 'R-1', 'files': [{'path': 'app/value.py', 'status': 'VIOLATED', 'finding_ids': ['N1', 'N3']}]},
+                                      {'id': 'R-2', 'files': [{'path': 'app/other.py', 'status': 'VIOLATED', 'finding_ids': ['N2']}]}],
+                            'findings': [finding('N1', 'R-1', 'app/value.py', 2, 'LOW', 'AUTO_FIX'),
+                                         finding('N2', 'R-2', 'app/other.py', 1, 'MEDIUM', 'AUTO_FIX'),
+                                         finding('N3', 'R-1', 'app/value.py', 1, 'LOW', 'AUTO_FIX')],
+                            'coverage_gaps': []}
+                if step_id.startswith('standards-review-r2-b1'):
+                    # No verdict for app/value.py, also after the repair turn: the last attempt records it as a gap.
+                    return {'rules': [{'id': 'R-1', 'files': []}], 'findings': [], 'coverage_gaps': []}
+                return {'summary': 'Synthetic review', 'findings': []}
+            calls, output = self.drive(delivery, transport, {'repository_root': str(repo), 'ticket_id': 'T-1',
+                                                             'implementation_mode': 'single'}, respond, 'delivery-rules')
+            self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW')
+            self.assertEqual(sorted(step for _, step in calls if 'review' in step),
+                             ['pr-review-r1', 'pr-review-r2', 'standards-review-r1-b1', 'standards-review-r2-b1',
+                              'standards-review-r2-b1-repair-1'])
+            self.assertIn('app/value.py has none', prompts['standards-review-r2-b1-repair-1'])
+            index = prompts['standards-review-r1-b1'].rsplit('```', 1)[1]
+            self.assertIn('R-1 [MANDATORY]', index)
+            self.assertIn('R-2 [NICE-TO-HAVE]', index)
+            self.assertNotIn('R-3', prompts['standards-review-r1-b1'])
+            self.assertNotIn('R-2 [', prompts['standards-review-r2-b1'].rsplit('```', 1)[1])
+            first = json.loads((records / 'pr-review-r1.json').read_text())
+            n1 = next(f for f in first['findings'] if f['id'] == 'STD-r1-b1:N1')
+            self.assertEqual((n1['impact'], n1['automation_eligibility']), ('LOW', 'AUTO_FIX'))
+            self.assertEqual(sorted((s['standard_ref'], s['suggestion_reason'].split(':')[0]) for s in first['suggestions']),
+                             [('R-1', 'Outside the lines this diff adds'), ('R-2', 'NICE-TO-HAVE rule R-2')])
+            last = json.loads((records / 'pr-review-r2.json').read_text())
+            self.assertEqual(last['standards']['reviewed'], ['R-1'])
+            self.assertEqual(last['standards']['carried'], ['R-2'])
+            self.assertEqual(last['standards']['verdicts'], {'R-1': 'NOT_ASSESSED', 'R-2': 'VIOLATED'})
+            self.assertEqual(last['standards']['file_verdicts'], {'R-1': {'app/value.py': 'NOT_ASSESSED'},
+                                                                  'R-2': {'app/other.py': 'VIOLATED'}})
+            self.assertEqual(last['standards']['not_assessed'], ['R-1 in app/value.py'])
+            self.assertEqual(first['standards']['batches'], [{'rules': ['R-1', 'R-2'], 'files': ['app/other.py', 'app/value.py']}])
+            self.assertEqual([(s['standard_ref'], s['carried_from_round']) for s in last['suggestions']], [('R-2', 1)])
+            self.assertFalse(last['has_auto_fix'])
+            manifest = json.loads((records / 'delivery-manifest.json').read_text())
+            self.assertEqual([r['round'] for r in manifest['standards']['rounds']], [1, 2])
+            self.assertEqual(manifest['standards']['rounds'][0]['skipped'], ['R-3'])
+            # Step 5: the authors get the rules that can apply to what they write.
+            self.assertIn('- R-1 [MANDATORY]', prompts['implement-v1'])
+            self.assertIn('- R-2 [NICE-TO-HAVE]', prompts['implement-v1'])
+            self.assertIn('knowledge/authors/rules/<RULE-ID>.md', prompts['implement-v1'])
+            self.assertIn('- R-1 [MANDATORY]', prompts['remediate-r1'])
+            self.assertNotIn('- R-2 [', prompts['remediate-r1'])
+            self.assertNotIn('- R-3 [', prompts['remediate-r1'])
+            brief = (records / 'human-review-brief.md').read_text()
+            self.assertIn('## Project rules', brief)
+            self.assertIn('Suggestions (optional, never fixed automatically): 1', brief)
+            self.assertIn('- R-1 in app/value.py', brief)
+            self.assertIn('Reviewer note: The reviewer gave rule R-1 no verdict for app/value.py: not assessed', brief)
 
     def test_single_mode_needs_an_application_suite(self):
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, git, records = self.plan(Path(temp), modular)
+        with tempfile.TemporaryDirectory() as temp:
+            repo, git, records = self.plan(Path(temp))
 
-                def rename(registry):
-                    registry['verification']['tests-only'] = registry['verification'].pop('application')
-                    registry['workers']['developer']['verification'] = ['tests-only']
-                self.edit_config(repo, rename)
-                delivery, transport = load('deliver', modular)
-                with patch.object(delivery, 'get_inputs', return_value={'repository_root': str(repo), 'ticket_id': 'T-1', 'implementation_mode': 'single'}), patch.object(transport, 'step') as step:
-                    with self.assertRaisesRegex(delivery.WorkflowContractError, "'application' verification suite"):
-                        delivery.main()
-                    step.assert_not_called()
+            def rename(registry):
+                registry['verification']['tests-only'] = registry['verification'].pop('application')
+                registry['workers']['developer']['verification'] = ['tests-only']
+            self.edit_config(repo, rename)
+            delivery, transport = load('deliver')
+            with patch.object(delivery, 'get_inputs', return_value={'repository_root': str(repo), 'ticket_id': 'T-1', 'implementation_mode': 'single'}), patch.object(transport, 'step') as step:
+                with self.assertRaisesRegex(delivery.WorkflowContractError, "'application' verification suite"):
+                    delivery.main()
+                step.assert_not_called()
 
 
 if __name__ == '__main__':

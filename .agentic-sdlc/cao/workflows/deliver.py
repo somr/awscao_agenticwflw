@@ -1,6 +1,6 @@
-"""Local entry point. Install a standalone bundle with install_deliver.sh.
+"""Local entry point for development. Install into CAO with install_deliver.sh.
 
-CAO deployments must be built with ../build_workflow.py, not copied from here.
+The installer deploys the package as a frozen library with a generated entry script; do not copy this file.
 """
 from pathlib import Path
 import sys

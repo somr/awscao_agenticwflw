@@ -12,7 +12,7 @@ Current repository capabilities (2026-11-18):
 
 Python owns orchestration, validation, Git operations, verification and routing. Human approval is recorded separately for the reviewed plan and the delivered commit. Delivery produces local PR artifacts; it does not push, open a GitHub PR or merge.
 
-The workflow source is modular and is bundled into standalone CAO scripts during installation. The repository copy is the source of truth; installed CAO copies are deployment artifacts. This remains a learning prototype with [known enforcement gaps and planned hardening](#current-limits-and-planned-work).
+The workflow source is modular. Installation copies it into a frozen, read-only library and gives CAO a small entry script per workflow, which checks the library before running it. The repository copy is the source of truth; installed CAO copies are deployment artifacts. This remains a learning prototype with [known enforcement gaps and planned hardening](#current-limits-and-planned-work).
 
 ## Quick start
 
@@ -125,7 +125,7 @@ Agents cannot edit either file. An invalid file, or a per-project key set in bot
 
 The shipped registry has one general `developer` worker and AngularJS/Spark skills. This repository's project file defines their suites, which need project files and toolchains beyond the Python payment fixture. See [source roots](agentic-sdlc-docs/workflows/delivery.md#source-roots), the [registry reference](agentic-sdlc-docs/workflows/delivery.md#registry-reference) and the [specialist/skill extension guide](agentic-sdlc-docs/workflows/hybrid-delivery.md).
 
-Project-file, registry, skill and contract edits are read from the repository on subsequent runs. After changing Python workflow code, rebuild and reinstall the bundles; after changing profiles, reinstall them before the workflows. See [build and install](agentic-sdlc-docs/build-and-install.md) for validation-only commands and installed-copy comparisons.
+Project-file, registry, skill and contract edits are read from the repository on subsequent runs. After changing Python workflow code, reinstall all five workflows (they share one library); after changing profiles, reinstall them before the workflows. See [build and install](agentic-sdlc-docs/build-and-install.md) for validation-only commands and installed-copy comparisons.
 
 ## Repository layout and verification
 
@@ -141,11 +141,10 @@ Project-file, registry, skill and contract edits are read from the repository on
 | `app/` | Python payment-service example |
 | `tests/` | Workflow, integration, packaging and hook tests |
 
-Run the workflow suite in both bundled and source-module modes, then the sample application tests:
+Run the workflow suite (the installed library is these modules byte for byte), then the sample application tests:
 
 ```bash
 python3 -m unittest discover -s tests -v
-SDLC_TEST_SOURCE=1 python3 -m unittest discover -s tests -v
 python3 -m unittest discover -t app -s app/tests -v
 ```
 

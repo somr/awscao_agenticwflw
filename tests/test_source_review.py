@@ -21,13 +21,8 @@ sys.modules.setdefault('cao_workflow', stub)
 # Exercise the exact standalone artifact installed into CAO, not a second
 # compatibility implementation of the extracted helpers.
 sys.path.insert(0, str(ROOT / ".agentic-sdlc" / "cao"))
-from build_workflow import build_source
-if os.environ.get("SDLC_TEST_SOURCE") == "1":
-    mod = importlib.import_module("sdlc_workflows.source_review")
-else:
-    mod = types.ModuleType("source_review_bundle")
-    exec(compile(build_source("source_review"), "<bundled:source_review>", "exec"), mod.__dict__)
-execution_error = importlib.import_module("sdlc_workflows.errors").IncompleteAgentExecutionError if os.environ.get("SDLC_TEST_SOURCE") == "1" else mod.IncompleteAgentExecutionError
+mod = importlib.import_module("sdlc_workflows.source_review")
+execution_error = importlib.import_module("sdlc_workflows.errors").IncompleteAgentExecutionError
 spec2 = importlib.util.spec_from_file_location('publish_source_review', ROOT / '.agentic-sdlc/scripts/publish_source_review.py')
 publisher = importlib.util.module_from_spec(spec2)
 spec2.loader.exec_module(publisher)

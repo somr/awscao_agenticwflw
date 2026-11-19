@@ -514,9 +514,9 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(fu.INPUTS['threads_per_batch']['default'], fu.THREADS_PER_BATCH)
         self.assertEqual(fu.INPUTS['review_max_parallel']['default'], fu.MAX_PARALLEL_REVIEWS)
 
-    def test_bundle_builds(self):
-        from build_workflow import build_source
-        self.assertIn('def judge_contract', build_source('source_followup'))
+    def test_the_library_ships_the_followup_module(self):
+        from build_library import build_library
+        self.assertIn('source_followup.py', build_library()[1])
 
 
 if __name__ == '__main__':

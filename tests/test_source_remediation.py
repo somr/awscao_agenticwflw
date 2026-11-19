@@ -20,16 +20,11 @@ stub.step = lambda *a, **k: None
 stub.get_inputs = lambda: {}
 stub.emit_output = lambda value: None
 sys.modules.setdefault('cao_workflow', stub)
-from build_workflow import build_source
 from sdlc_workflows import source_review as source
 from sdlc_workflows.artifacts import _write_json
 from sdlc_workflows.review_comments import finding_comment_marker
 
-if os.environ.get('SDLC_TEST_SOURCE') == '1':
-    mod = importlib.import_module('sdlc_workflows.source_remediation')
-else:
-    mod = types.ModuleType('source_remediate_bundle')
-    exec(compile(build_source('source_remediate'), '<source-remediation-bundle>', 'exec'), mod.__dict__)
+mod = importlib.import_module('sdlc_workflows.source_remediation')
 spec = importlib.util.spec_from_file_location('publish_source_remediation', ROOT / '.agentic-sdlc/scripts/publish_source_remediation.py')
 publisher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publisher)

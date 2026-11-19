@@ -33,12 +33,7 @@ sys.modules.setdefault("cao_workflow", stub)
 # Exercise the exact standalone artifact installed into CAO, not a second
 # compatibility implementation of the extracted helpers.
 sys.path.insert(0, str(ROOT / ".agentic-sdlc" / "cao"))
-from build_workflow import build_source
-if os.environ.get("SDLC_TEST_SOURCE") == "1":
-    mod = importlib.import_module("sdlc_workflows.delivery")
-else:
-    mod = types.ModuleType("deliver_bundle")
-    exec(compile(build_source("deliver"), "<bundled:deliver>", "exec"), mod.__dict__)
+mod = importlib.import_module("sdlc_workflows.delivery")
 
 
 def _run(args: list[str], cwd: Path) -> None:

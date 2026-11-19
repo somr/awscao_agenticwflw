@@ -1,8 +1,8 @@
-"""Source-root configuration: one validator contract, three implementations that must agree.
+"""Source-root configuration: one validator contract, two implementations that must agree.
 
-The validator lives in the workflow package (modular and deployed-bundle forms) and, as a
-standalone copy, in the write-scope hook. Every case below runs through all three, so a rule
-added to one and forgotten in another fails here.
+The validator lives in the workflow package (installed byte for byte as the frozen library) and,
+as a standalone copy, in the write-scope hook. Every case below runs through both, so a rule
+added to one and forgotten in the other fails here.
 """
 import importlib
 import importlib.util
@@ -21,20 +21,17 @@ stub.step = lambda *a, **k: None
 stub.emit_output = lambda value: None
 stub.get_inputs = lambda: {}
 sys.modules.setdefault('cao_workflow', stub)
-from build_workflow import build_source
 
 DEFAULTS = {'source_roots': ['app'],
             'write_profiles': {'sdlc_implementer': ['app'], 'sdlc_remediator': ['app']}}
 
 
 def implementations():
-    """(label, module) for the modular package, the deployed bundle and the hook's standalone copy."""
-    bundle = types.ModuleType('source_config_bundle')
-    exec(compile(build_source('deliver'), '<deliver>', 'exec'), bundle.__dict__)
+    """(label, module) for the workflow package and the hook's standalone copy."""
     spec = importlib.util.spec_from_file_location('restrict_write_scope_hook', ROOT / '.claude/hooks/restrict-write-scope.py')
     hook = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(hook)
-    return [('modular', importlib.import_module('sdlc_workflows.source_config')), ('bundle', bundle), ('hook', hook)]
+    return [('modular', importlib.import_module('sdlc_workflows.source_config')), ('hook', hook)]
 
 
 def cfg(source_roots=None, write_profiles=None):
@@ -170,7 +167,7 @@ _REFERENCE = None
 
 
 def implementations_result(raw):
-    """The modular implementation's answer, used as the reference the other two must equal."""
+    """The modular implementation's answer, used as the reference the hook must equal."""
     global _REFERENCE
     if _REFERENCE is None:
         _REFERENCE = importlib.import_module('sdlc_workflows.source_config')

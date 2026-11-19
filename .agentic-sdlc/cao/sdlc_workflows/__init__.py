@@ -1,1 +1,1 @@
-"""Maintained SDLC workflow modules; deploy using build_workflow.py."""
+"""Maintained SDLC workflow modules; install_workflow.py deploys them as a frozen library (build_library.py)."""
