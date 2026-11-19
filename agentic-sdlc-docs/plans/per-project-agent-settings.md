@@ -1,6 +1,6 @@
 # Plan: per-project provider and model per profile
 
-Status: **steps 0-1 done, step 2 code done and installed for 3 of 5 workflows (2026-11-18); blocked: CAO 2.5.4 script size limit (see progress notes); D1-D10 agreed 2026-11-18.** Progress notes go at the end.
+Status: **steps 0-1 done, step 2 code done (2026-11-18); unblocked 2026-11-19 by the frozen workflow library (rebased onto `main` `36c164a`), step 2 live check next; D1-D10 agreed 2026-11-18.** Progress notes go at the end.
 
 ## 1. Why
 
@@ -31,7 +31,7 @@ enforcement that has been checked for that provider. Effort is not part of this 
 | Delivery resume starts a new CAO run and reuses evidence from the earlier one | `resume.py`, `delivery.py` | A resumed run may read different settings than the first run; that must be visible (D8). |
 | Non-Claude adapters: Codex defaults to `--yolo`, Antigravity to `--dangerously-skip-permissions`; the write-scope hooks are Claude Code hooks | `agentic-sdlc-docs/reference/agent-profiles.md` "Change one profile …" | Allowing another provider without its own verified enforcement would remove the write boundary (D3). |
 | Codex is installed for testing (limited allowance); `gpt-6-luna` is listed as "fast and affordable" | `~/.codex/models_cache.json` | Any Codex check uses `gpt-6-luna` and stays to a minimal prompt. |
-| Installed workflows are frozen bundles; profiles are installed machine-wide | `build-and-install.md` | Each code step ends with a reinstall of all five bundles. No profile reinstall is needed for the model. |
+| Installed workflows run from a frozen library; profiles are installed machine-wide | `build-and-install.md` | Each code step ends with a reinstall of all five workflows (a new library). No profile reinstall is needed for the model. |
 
 ## 3. Decisions
 
@@ -71,7 +71,7 @@ enforcement that has been checked for that provider. Effort is not part of this 
 
 - Manifests and run records as in D7; Delivery resume compares with the earlier manifest (D8).
 
-## 5. Steps (each ends with tests in both modes, reinstall and a live check)
+## 5. Steps (each ends with tests, reinstall and a live check)
 
 0. **Spike, no code in the repo.** With a scratch profile and `cao workflow run` of a two-line script, check that
    `step(..., model="haiku")` launches `claude --model haiku` (terminal log), the agent works on that model, and the
@@ -82,7 +82,7 @@ enforcement that has been checked for that provider. Effort is not part of this 
 1. **Configuration**: `agent_settings.py`, `PROJECT_KEYS` in both copies, `KNOWN_PROFILES` + its test, validation
    tests (every D4 rule, `effort` rejected, `provider` other than `claude_code` rejected). No behaviour change.
 2. **Routing and evidence**: runtime changes, the five workflow entries, per-step evidence, D9 tests (unchanged `step()`
-   arguments without the key). Reinstall all five bundles. Live: a Planning run on the fixture with
+   arguments without the key). Reinstall all five workflows. Live: a Planning run on the fixture with
    `sdlc_plan_reviewer` on a different model; check the terminal logs, the evidence files, and that the other
    profiles kept their settings.
 3. **Records and resume**: manifests / run records, brief line, D8. Live: a Source review run on a closed PR (cheap,
@@ -120,3 +120,7 @@ enforcement that has been checked for that provider. Effort is not part of this 
   already over it (deliver 166,972, source_followup 138,284), so the installed copies of those two cannot run on 2.5.4
   either. Removing docstrings alone leaves deliver at about 140,000. Needs a decision before Delivery or Follow-up
   can run again.
+- 2026-11-19: the size limit is solved by the frozen workflow library
+  ([its plan](workflow-library-and-prompt-files.md), merged to `main` `36c164a`). This branch was rebased onto it
+  (one conflict in `runtime.py`, both sides kept; `tests/test_agent_settings.py` now tests the shared runtime and the
+  five workflow modules instead of flattened bundles). 439 tests pass. Library id `57f24b1529586187`.
