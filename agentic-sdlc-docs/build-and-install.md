@@ -157,9 +157,14 @@ for name in sdlc_dev_plan sdlc_deliver source_review source_remediate source_fol
 done
 for profile in .agentic-sdlc/cao/profiles/*.md; do
   name=$(sed -n 's/^name: *//p' "$profile" | head -1)
-  cmp -s ~/.aws/cli-agent-orchestrator/agent-context/$name.md "$profile" && echo "$name matches" || echo "$name DIFFERS"
+  grep -v '^x-cao-source-stem: ' ~/.aws/cli-agent-orchestrator/agent-context/$name.md | cmp -s - "$profile" \
+    && echo "$name matches" || echo "$name DIFFERS"
 done
 ```
+
+CAO 2.5.4 adds an `x-cao-source-stem:` line (the source file's name) to each profile it installs, which the check
+ignores. It also refuses to replace a profile installed by an earlier CAO version, which has no such line; after
+checking that the installed copy is the repository's, delete `agent-context/<name>.md` and install again.
 
 After pulling changes, run the tests, reinstall the profiles that differ, then reinstall the workflows that
 differ (profiles first; `source_review` needs its [upgrade procedure](workflows/source-review.md#upgrading)), and use new
