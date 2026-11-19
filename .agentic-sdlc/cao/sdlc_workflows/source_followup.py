@@ -46,7 +46,8 @@ from .review_threads import (
     recorded_heads,
     select_threads,
 )
-from .runtime import _run_json_contract_step, configure_agent_settings, run_parallel_steps, MAX_PARALLEL_REVIEWS
+from .runtime import (_run_json_contract_step, agent_settings_record, configure_agent_settings, run_parallel_steps,
+                      MAX_PARALLEL_REVIEWS)
 from .source_review_contracts import (
     require,
     string,
@@ -615,6 +616,7 @@ def main() -> None:
             finding["placement"] = (place_finding(finding, hunks) if finding["side"] == "head" else
                                     {"mode": "GENERAL", "reason": "Code removed since the last check"})
         report["status"] = "JUDGED" if current_pr_matches(snapshot) else "STALE"
+        report["agent_settings"] = agent_settings_record()
         draft = render_draft(report)
         report["draft_sha256"] = hashlib.sha256(draft.encode()).hexdigest()
         name = (pr_records_name(snapshot["repository"], snapshot["pr_number"]) if known_pr

@@ -1,4 +1,5 @@
 """Per-project provider and model per profile: validation, resolution, step options and loading."""
+import hashlib
 import json
 import re
 import sys
@@ -193,6 +194,30 @@ class RoutingTest(unittest.TestCase):
                         module.configure_agent_settings(repo)
                 finally:
                     module._AGENT_SETTINGS = saved
+
+    def test_the_record_lists_only_profiles_with_settings_and_the_project_file_hash(self):
+        runtime = importlib.import_module('sdlc_workflows.runtime')
+        saved = (runtime._AGENT_SETTINGS, runtime._AGENT_SETTINGS_FILE_SHA256)
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                repo = Path(temp)
+                runtime.configure_agent_settings(repo)  # no project file
+                self.assertEqual(runtime.agent_settings_record(),
+                                 {'default_provider': 'claude_code', 'profiles': {}, 'project_file_sha256': None})
+                text = json.dumps({'version': 1, 'agent_settings': {
+                    'default': {'model': 'sonnet'}, 'profiles': {'sdlc_pr_reviewer': {'model': 'opus'}}}})
+                (repo / 'agentic-sdlc-project.json').write_text(text)
+                runtime.configure_agent_settings(repo)
+                record = runtime.agent_settings_record()
+            self.assertEqual(set(record['profiles']), set(ags.KNOWN_PROFILES))  # the default applies to every profile
+            self.assertEqual(record['profiles']['sdlc_pr_reviewer']['model_from'], 'profile')
+            self.assertEqual(record['project_file_sha256'], hashlib.sha256(text.encode()).hexdigest())
+            lines = runtime.agent_settings_lines({'sdlc_pr_reviewer': record['profiles']['sdlc_pr_reviewer'],
+                                                  'sdlc_implementer': record['profiles']['sdlc_implementer']})
+            self.assertEqual(lines, ['`sdlc_implementer`: provider `claude_code` (unset), model `sonnet` (default)',
+                                     '`sdlc_pr_reviewer`: provider `claude_code` (unset), model `opus` (profile)'])
+        finally:
+            runtime._AGENT_SETTINGS, runtime._AGENT_SETTINGS_FILE_SHA256 = saved
 
     def test_every_workflow_configures_the_settings_before_its_agents(self):
         for name, module in WORKFLOWS.items():

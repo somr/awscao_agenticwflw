@@ -80,6 +80,7 @@ from .runtime import (
     _run_json_contract_step,
     run_parallel_steps,
     configure_agent_settings,
+    agent_settings_record,
     MAX_PARALLEL_REVIEWS,
 )
 
@@ -503,6 +504,7 @@ def main() -> None:
         standards = prepare_standards(root / "workspace", snapshot, knowledge)
         report = run_agents(root / "workspace", snapshot, max_parallel, standards)
         report["run_id"] = run_id
+        report["agent_settings"] = agent_settings_record()
         report["status"] = "REVIEWED" if current_pr_matches(snapshot) else "STALE"
         hunks = diff_hunks((root / "workspace" / "diff.patch").read_text(encoding="utf-8", errors="replace"))
         for finding in report["findings"]:

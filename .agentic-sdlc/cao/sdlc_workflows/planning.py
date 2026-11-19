@@ -41,6 +41,7 @@ from .runtime import (
     _run_delivered_step,
     _run_json_contract_step,
     configure_agent_settings,
+    agent_settings_record,
     PROVIDER,
 )
 
@@ -1420,6 +1421,7 @@ def main() -> None:
         "planning_workflow_version": "1.3",
         "workflow_run_id": run_id,
         "provider": PROVIDER,
+        "agent_settings": agent_settings_record(),
         "repository_root": str(repo),
         "base_branch": base_branch,
         "repository_baseline_sha": baseline_sha,

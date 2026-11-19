@@ -154,7 +154,7 @@ class DeliveryHarness:
         registry_path, project_path = repo / '.agentic-sdlc/cao/specialists.json', repo / 'agentic-sdlc-project.json'
         config = {**json.loads(registry_path.read_text()), **json.loads(project_path.read_text())}
         change(config)
-        keys = ('source_roots', 'write_profiles', 'verification', 'review_knowledge')
+        keys = importlib.import_module('sdlc_workflows.source_config').PROJECT_KEYS
         project_path.write_text(json.dumps({'version': 1, **{k: config[k] for k in keys if k in config}}))
         registry_path.write_text(json.dumps({k: v for k, v in config.items() if k not in keys}))
 
@@ -171,6 +171,7 @@ class LifecycleIntegrationTest(DeliveryHarness, unittest.TestCase):
                 # A second source root that nobody creates: every git pathspec (implement, repair,
                 # remediation) must skip it instead of failing.
                 config['source_roots'] = ['app', 'extra/module']
+                config['agent_settings'] = {'profiles': {'sdlc_pr_reviewer': {'model': 'opus'}}}
             self.edit_config(repo, configure)
             human = {'id': 'H1', 'file': 'app/value.py', 'location': 'value', 'category': 'AUTHN_AUTHZ',
                 'impact': 'HIGH', 'confidence': .99, 'failure_scenario': 'Synthetic protected concern',
@@ -215,6 +216,17 @@ class LifecycleIntegrationTest(DeliveryHarness, unittest.TestCase):
             self.assertEqual(len(delivery_manifest['verification']['commands']), 3)
             self.assertEqual(delivery_manifest['source_roots'], ['app', 'extra/module'])
             self.assertFalse((repo / 'extra').exists())
+            # The declared model is recorded per run, per step and in the brief; other profiles stay unset.
+            settings = delivery_manifest['agent_settings']
+            self.assertEqual(settings['profiles'], {'sdlc_pr_reviewer': {
+                'provider': 'claude_code', 'provider_from': 'unset', 'model': 'opus', 'model_from': 'profile'}})
+            self.assertRegex(settings['project_file_sha256'], '^[0-9a-f]{64}$')
+            self.assertIn('`sdlc_pr_reviewer`: provider `claude_code` (unset), model `opus` (profile)',
+                          (records / 'human-review-brief.md').read_text())
+            evidence = {p.name: json.loads(p.read_text()) for p in
+                        (repo / '.agentic-sdlc/runtime/T-1/delivery-integration').rglob('*.agent-settings.json')}
+            self.assertEqual(evidence['pr-review-r1.agent-settings.json']['model'], 'opus')
+            self.assertIsNone(evidence['dispatch-v1.agent-settings.json']['model'])
 
     def test_remediation_without_source_changes_escalates_to_human_review(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -287,6 +299,8 @@ class LifecycleIntegrationTest(DeliveryHarness, unittest.TestCase):
             self.assertEqual({p[1].split('-')[0] for p in prompts}, {'context', 'planning', 'plan'})
             manifest = json.loads((records / 'execution-manifest.json').read_text())
             self.assertEqual(manifest['source_roots'], ['app', 'extra/module'])
+            self.assertEqual(manifest['agent_settings']['profiles'], {})  # nothing declared: every profile as before
+            self.assertEqual(manifest['agent_settings']['default_provider'], 'claude_code')
 
     def test_planning_rejects_an_invalid_source_root_config_before_any_agent_runs(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -11,7 +11,7 @@ from cao_workflow import emit_output, get_inputs
 from .artifacts import _read_json, _write_json, _write_text, _sha256_file
 from .errors import WorkflowContractError
 from .validation import _safe_component
-from .runtime import _run_json_contract_step, configure_agent_settings
+from .runtime import _run_json_contract_step, agent_settings_record, configure_agent_settings
 from .verification import _run_verification
 from .remediation import _remediator_completion_validator
 from .source_config import (
@@ -155,7 +155,7 @@ def execute_source_remediation(inputs: dict, run_id: str) -> dict:
     locked = False
     manifest = {'schema_version': 1, 'workflow': 'source_remediate', 'run_id': run_id,
                 'repository_root': str(repo), 'state': 'READY', 'publication_safe': False,
-                'history': [], 'resolutions': [], 'evidence_sha256': {}}
+                'history': [], 'resolutions': [], 'evidence_sha256': {}, 'agent_settings': agent_settings_record()}
 
     def persist():
         target = records or runtime

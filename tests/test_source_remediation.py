@@ -163,6 +163,7 @@ class RemediationTests(unittest.TestCase):
         records = Path(result['records_directory'])
         self.assertTrue(records.name.startswith('local-' + self.head[:12]))
         self.assertTrue((records / 'human-review-brief.md').is_file())
+        self.assertEqual(result['agent_settings']['default_provider'], 'claude_code')
 
     def test_pr_records_are_flat_and_fork_identity_uses_base_repo(self):
         self.save_review(github=True)
