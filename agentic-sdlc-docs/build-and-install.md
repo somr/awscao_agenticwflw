@@ -1,8 +1,8 @@
-# Modular workflows and standalone CAO deployment
+# Modular workflows and frozen CAO deployment
 
-The four workflows share maintained Python modules. Each installer builds a
-self-contained Python artifact for CAO. This removes duplicated lifecycle code while
-keeping a resumed run independent of later edits to the source package.
+The five workflows share maintained Python modules. The installer copies the module package, unchanged, into a
+frozen library and gives CAO a small generated entry script per workflow. This keeps every installed script far
+below CAO's size limit and keeps a resumed run independent of later edits to the source package.
 
 ## Source layout
 
@@ -39,54 +39,56 @@ cao/
 │   ├── review_comments.py           # Identity and placement of published review comments
 │   ├── verification.py              # Shared trusted verification runner
 │   └── remediation.py               # Shared remediator completion contract
-├── build_workflow.py                # Deterministic standalone bundler
+├── build_library.py                 # Deterministic library and entry-script builder
 └── install_workflow.py              # Shared validation and atomic installation
 ```
 
 The workflow entry points import their package for local development. **Do not copy
 those entry points directly into CAO's workflow directory.** CAO's installed input
 scanner needs a literal `INPUTS` declaration, and its resume mechanism relocates a
-frozen script. The generated bundle contains the declaration and every local dependency.
+frozen script. The generated entry contains the declaration and the absolute path of its library.
 
 Keep each workflow's policy in its own module. In particular, Delivery's review policy
 and Source Review's policy deliberately have different routing contracts and confidence
 thresholds. Write permissions remain in their existing profiles/hooks; sharing execution
 helpers does not grant the reviewer an implementer's permissions.
 
-## Why bundle at installation?
+## Why a frozen library?
 
-The inspected CAO runner snapshots the entry script's source, path and content hash.
-On resume it executes that source from an engine-owned temporary file. It does not
-snapshot a Python import tree. A normal sibling import could therefore fail after
-relocation, or use updated code when resuming an older run.
+The inspected CAO runner snapshots the entry script's source, path and content hash. On resume it executes that
+source from an engine-owned temporary file; it does not snapshot a Python import tree. A normal sibling import could
+therefore fail after relocation, or use updated code when resuming an older run. CAO 2.5.4 also refuses any workflow
+script over 131,072 characters (`SCRIPT_LINT_MAX_SOURCE_CHARS`, a constant), both at validation and when a run
+starts; flattening every module into one script made Delivery and the follow-up too large.
 
-The builder follows the local dependency graph and emits ordinary Python definitions
-in dependency order. CAO can lint the complete code, including the actual `step()` call.
-There is no embedded archive, opaque `exec` payload or import-time dependency on this
-repository in the installed artifact. Python's standard library and `cao_workflow`
-remain environment dependencies, as before.
+So the installer writes the whole `sdlc_workflows` package once into
+`~/.aws/cli-agent-orchestrator/sdlc-lib/<id>/` (beside CAO's workflows folder), byte for byte, with a
+`manifest.json` of every file's SHA-256. `<id>` is the first 16 hex digits of the manifest's SHA-256, so the same
+source always gives the same library, and a changed module gives a new one. A library is written to a temporary
+folder, renamed into place and made read-only; an existing one is verified and reused, never replaced or deleted
+automatically, because an older run may still resume from it.
 
-Every bundle includes `SDLC_BUNDLE_MANIFEST`, mapping module filenames to their source
-SHA-256 digests. Builds contain no timestamp or machine-specific source path, so the
-same source produces identical bytes. A changed shared module changes the bundle and
-its CAO source hash. Already-frozen bundles retain the previous helper implementation.
-This preserves CAO's source-snapshot boundary; it does not add resume support to
-source review, which still refuses reuse of an existing run directory.
+Each workflow's entry script (a few KB) holds its literal `INPUTS`, the library's absolute path and its manifest.
+Before importing anything it checks that the library holds exactly the listed files with those hashes, then puts the
+library first on `sys.path` and runs the workflow. Any difference stops the run before an agent starts, with a
+message to reinstall. There is no import-time dependency on this repository. Python's standard library and
+`cao_workflow` remain environment dependencies, as before.
+
+CAO's linter sees only the entry script, not the `step()` calls in the library. The packaging tests take over its two
+relevant checks: every `step()` call declares `recovery=`, and every literal `step_id` matches CAO's pattern.
+Delivery records the SHA-256 of the library manifest as `bundle.manifest_sha256` (`null` when run from the
+repository) and compares it on resume.
 
 ## Build without installation
 
-From the repository root:
+From the repository root, print a workflow's entry script for a given library folder (the library id is printed too):
 
 ```bash
-python3 .agentic-sdlc/cao/build_workflow.py dev_plan --output /tmp/sdlc_dev_plan.py
-python3 .agentic-sdlc/cao/build_workflow.py deliver --output /tmp/sdlc_deliver.py
-python3 .agentic-sdlc/cao/build_workflow.py source_review --output /tmp/source_review.py
-python3 .agentic-sdlc/cao/build_workflow.py source_remediate --output /tmp/source_remediate.py
-python3 .agentic-sdlc/cao/build_workflow.py source_followup --output /tmp/source_followup.py
+python3 .agentic-sdlc/cao/build_library.py dev_plan --library /tmp/sdlc-lib/check --output /tmp/sdlc_dev_plan.py
 ```
 
-These commands require no CAO server and do not install profiles or run agents.
-Treat generated files as deployment artifacts; edit the package, then rebuild.
+This requires no CAO server and does not install anything. Treat generated files as deployment artifacts; edit the
+package, then reinstall.
 
 ## Validate against CAO without replacing anything
 
@@ -101,7 +103,7 @@ python3 .agentic-sdlc/cao/install_workflow.py source_remediate --validate-only
 python3 .agentic-sdlc/cao/install_workflow.py source_followup --validate-only
 ```
 
-No registered workflow or profile is changed. The default repository root is the current
+No library, registered workflow or profile is changed. The default repository root is the current
 directory; use `--repository-root /path/to/repo` when running elsewhere.
 
 ## Install or upgrade
@@ -120,8 +122,9 @@ Each wrapper accepts an optional repository-root argument as before. `CAO_WORKFL
 still controls the destination. The equivalent Python installer also supports
 `--workflow-dir` explicitly.
 
-The shared installer builds the complete dependency closure, validates its candidate,
-and then promotes it. Planning, Delivery and Source remediation keep the previous installed file as `.bak`.
+The shared installer builds the entry, validates it as a temporary candidate, writes the library (or verifies an
+existing one with the same id), and then promotes the entry. `--library-root` moves the libraries (default:
+`sdlc-lib` beside the workflow folder). Planning, Delivery and Source remediation keep the previous installed file as `.bak`.
 Source remediation requires its two profiles to be installed explicitly; see its [guide](workflows/source-remediation.md).
 The follow-up installs its own two profiles and needs Source review's standards profile; see its [guide](workflows/source-review-follow-up.md).
 Source Review retains its stricter existing refusal to replace an installed workflow
@@ -141,16 +144,16 @@ the previous artifact and restore it if a later environment-dependent check fail
 
 ## Check that CAO matches the repository
 
-Installed workflows are frozen copies, so after any change compare them with a fresh build. A change to a shared
-module (for example `errors.py` or `verification.py`) changes every bundle that includes it, so check all five
-workflows, not only the one you worked on. The paths are CAO's defaults (`~/.aws/cli-agent-orchestrator/`;
+Installed workflows are frozen, so after any change check that each installed entry points to the library the current
+source would produce, and that the profiles match. A change to any module or prompt file gives a new library id, so
+all five workflows need reinstalling together. The paths are CAO's defaults (`~/.aws/cli-agent-orchestrator/`;
 `CAO_WORKFLOW_DIR` moves the workflows):
 
 ```bash
-for pair in dev_plan:sdlc_dev_plan deliver:sdlc_deliver source_review:source_review source_remediate:source_remediate source_followup:source_followup; do
-  python3 .agentic-sdlc/cao/build_workflow.py "${pair%%:*}" --output "/tmp/check_${pair%%:*}.py" > /dev/null
-  cmp -s "/tmp/check_${pair%%:*}.py" ~/.aws/cli-agent-orchestrator/workflows/${pair##*:}.py \
-    && echo "${pair##*:} matches" || echo "${pair##*:} DIFFERS"
+id=$(cd .agentic-sdlc/cao && python3 -c 'from build_library import build_library; print(build_library()[2])')
+for name in sdlc_dev_plan sdlc_deliver source_review source_remediate source_followup; do
+  grep -q "sdlc-lib/$id'" ~/.aws/cli-agent-orchestrator/workflows/$name.py \
+    && echo "$name matches" || echo "$name DIFFERS"
 done
 for profile in .agentic-sdlc/cao/profiles/*.md; do
   name=$(sed -n 's/^name: *//p' "$profile" | head -1)
@@ -165,23 +168,17 @@ they are read from the repository when a run starts.
 
 ## Editing and extending modules
 
-Use explicit, top-level relative imports for local dependencies:
+Modules use explicit, top-level relative imports for local dependencies:
 
 ```python
 from .errors import WorkflowContractError
 from .runtime import _run_json_contract_step
 ```
 
-This is a small project-specific bundler, not a general Python application packager.
-Local imports must be single-level, named and unaliased; wildcard imports, dependency
-cycles and ambiguous top-level bindings are rejected. The package initializer must contain only documentation, not hidden import-time
-side effects. References to `__file__`/`__package__` are rejected. Shared definitions
-and constants must have exactly one owner. Identical external imports can appear in multiple modules.
-
-Keep local module namespaces distinct: do not rely on a module's `__file__`, inspect its
-namespace dynamically, or introduce hidden runtime imports of local dependencies.
-Repository files must be resolved from explicit workflow inputs, as the existing code
-does. Add bundler support and regression tests before using a new module pattern.
+The library holds only `.py` modules and prompt files under `prompts/<workflow>/`; the builder refuses any other
+file in the package. A module may locate its own files with `__file__` (the library is never moved), but repository
+files must still be resolved from explicit workflow inputs, as the existing code does. Each workflow module keeps a
+literal `INPUTS`, which the builder copies into the entry.
 
 `runtime.py` owns the same timing, retry limits, recovery policy, answer-file names and
 terminal cleanup protocol as before extraction. Its `preserve_source` option retains
@@ -189,36 +186,35 @@ the two existing repair-prompt variants: true for Planning/Source Review, explic
 false for Delivery and remediation writes. The headless-interaction error message says "workflow agents";
 the exception and control flow are unchanged.
 
-## Runtime assets outside the bundle
+## Runtime assets outside the library
 
-A bundle contains code only. Everything a run reads from the repository at start-up is
+The library contains code and prompt texts only. Everything a run reads from the repository at start-up is
 resolved from `repository_root`, not embedded: the contracts, policies, schemas and
 templates under `.agentic-sdlc/`, the project's `agentic-sdlc-project.json` and the rule files it names in
 `agentic-sdlc-pr-review-kb/` ([project rules](reference/project-rules.md)), and, for hybrid Delivery,
 `.agentic-sdlc/cao/specialists.json` and `.agentic-sdlc/cao/skills/`. Changing those files takes effect on the next run without a
-rebuild; changing Python modules requires rebuilding and reinstalling the bundle. Installing
+reinstall; changing Python modules or prompt files requires reinstalling the workflows. Installing
 `sdlc_deliver` also requires the `sdlc_code_supervisor` profile, because Delivery defaults to
 `implementation_mode=hybrid` (see [hybrid delivery](workflows/hybrid-delivery.md)), and, for a project with rules,
 the `sdlc_standards_reviewer` profile.
 
 ## Tests
 
-Run the full suite against **both** execution forms:
+Run the full suite from the repository root:
 
 ```bash
-python3 -m unittest discover -s tests -v
-SDLC_TEST_SOURCE=1 python3 -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
-The default mode builds the deployed artifacts in memory and tests those exact
-implementations. Source mode tests the domain modules and the shared runtime directly.
-Existing assertions are retained; common lifecycle assertions now live in their own
-test class. Local HTTP fixture tests require socket access.
+The tests import the modules directly; the installed library is those files byte for byte. The packaging tests
+cover the library build (deterministic id, only modules and prompt files, a changed module giving a new library),
+the entry scripts (literal `INPUTS` equal to the modules', a size margin, refusal of a changed, missing or extra
+file or a changed manifest before anything is imported), a relocated entry running a JSON repair from the library in
+an isolated interpreter, the `step()` checks CAO's linter no longer sees, exact terminal cleanup, and installer
+collision/failure handling, including a library that is never replaced. Local HTTP fixture tests require socket
+access.
 
-Additional packaging tests cover deterministic output and dependency digests, module
-conflicts, execution in isolated Python with no source-package path, frozen bundles
-surviving dependency changes, exact terminal cleanup, and installer collision/failure
-handling. Further suites cover the write-scope hook (including the configurable source roots, and a parity test that runs the workflow's validator and the hook's copy over one corpus), non-converged planning, developer guidance, warm start, reviewer history, hybrid delivery with parallel worktree waves, Delivery resume, Source remediation and project rules (parsing, batching, per-file verdicts, both workflows' standards reviews). The integration tests use real Git commits and application verification
+Further suites cover the write-scope hook (including the configurable source roots, and a parity test that runs the workflow's validator and the hook's copy over one corpus), non-converged planning, developer guidance, warm start, reviewer history, hybrid delivery with parallel worktree waves, Delivery resume, Source remediation and project rules (parsing, batching, per-file verdicts, both workflows' standards reviews). The integration tests use real Git commits and application verification
 subprocesses, with only agent responses/CAO transport simulated. They cover planning
 JSON repair and plan revision, digest-bound approval, delivery verification repair,
 automatic remediation, protected findings, re-review and human handoff.

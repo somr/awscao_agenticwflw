@@ -1,7 +1,7 @@
 # Plan: install the workflow code as a frozen library and keep prompts in files
 
-Status: **step 0 done (2026-11-18); D6 agreed, the other decisions are recommendations awaiting agreement.** Progress notes go at
-the end.
+Status: **step 0 done (2026-11-18); step 1 in progress (2026-11-19); D1-D10 agreed (D6 2026-11-18, the rest
+2026-11-19).** Progress notes go at the end.
 
 ## 1. Why
 
@@ -32,9 +32,9 @@ they can be read and edited as text.
 | Ten test files exec the flattened bundles; six switch to the modules with `SDLC_TEST_SOURCE=1`; each full mode takes about 100 s | `tests/` | Without flattening, the two modes test the same code. |
 | Source review's installer refuses to overwrite its installed workflow and six profiles | `install_workflow.py`, `workflows/source-review.md#upgrading` | The rule stays for the entry script. |
 
-## 3. Decisions (recommendations, to agree)
+## 3. Decisions (agreed; D6 2026-11-18, the rest 2026-11-19)
 
-| # | Question | Recommendation |
+| # | Question | Decision |
 |---|---|---|
 | D1 | What is installed where? | The whole `sdlc_workflows` package (all modules and the prompt files) as one library in `~/.aws/cli-agent-orchestrator/sdlc-lib/<id>/sdlc_workflows/`, where `<id>` is the first 16 hex digits of the sha256 of its manifest. One library serves all five workflows installed from the same tree. Each workflow gets an entry script in CAO's workflows folder under today's name. |
 | D2 | What does the entry script do? | Generated, a few KB: a docstring, the workflow's `INPUTS` literal, the library path, the library manifest (every file → sha256). It checks that every listed file exists with that hash and that the package holds no other `.py` file, then puts the library first on `sys.path`, imports the workflow's `main` and runs it. Any mismatch stops the run with "reinstall; this run cannot resume". Uses only the standard library. |
