@@ -117,7 +117,8 @@ The sample application lives under `app/`. `.agentic-sdlc/` is common to every p
 - `source_roots`: the directories where generated source is written, committed and diffed (default `["app"]`);
 - `write_profiles`: which agent profiles may write there;
 - `verification`: the commands that verify a change, so use your own build and test commands;
-- `review_knowledge` (optional): the project's own coding standards, as rule files in `agentic-sdlc-pr-review-kb/`, which Delivery's and Source review's standards reviewers check and Delivery's authors follow. See [Project rules for the reviewers](agentic-sdlc-docs/reference/project-rules.md).
+- `review_knowledge` (optional): the project's own coding standards, as rule files in `agentic-sdlc-pr-review-kb/`, which Delivery's and Source review's standards reviewers check and Delivery's authors follow. See [Project rules for the reviewers](agentic-sdlc-docs/reference/project-rules.md);
+- `agent_settings` (optional): the provider and model each agent profile runs on, as a default and per profile. See [Provider and model per agent profile](agentic-sdlc-docs/reference/agent-settings.md).
 
 The common [`.agentic-sdlc/cao/specialists.json`](.agentic-sdlc/cao/specialists.json) holds `workers` and `skills`, the specialists Delivery can assign work to. A skill is available only when the project defines its verification suites.
 

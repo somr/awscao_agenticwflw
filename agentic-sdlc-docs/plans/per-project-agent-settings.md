@@ -1,6 +1,6 @@
 # Plan: per-project provider and model per profile
 
-Status: **steps 0-1 done, step 2 code done (2026-11-18); unblocked 2026-11-19 by the frozen workflow library (rebased onto `main` `36c164a`), steps 2-3 done 2026-11-19; step 4 (docs) next; D1-D10 agreed 2026-11-18.** Progress notes go at the end.
+Status: **done 2026-11-19 (steps 0-1 on 2026-11-18; blocked in between by the CAO 2.5.4 size limit, see the progress notes); D1-D10 agreed 2026-11-18.** Progress notes go at the end.
 
 ## 1. Why
 
@@ -133,3 +133,8 @@ enforcement that has been checked for that provider. Effort is not part of this 
   adds a note to the review prompt, PR body and brief (D8). 441 tests. Live: `source-review-settings-2` with a
   `default` model (see the record). The follow-up's report has no workflow-level test; it is covered by the shared
   helper's tests only.
+- 2026-11-19, step 4: new reference page `reference/agent-settings.md`; pointers in README, the docs index, every
+  workflow guide's configuration, `delivery.md` (configuration tables and resume records), `architecture.md` and
+  `build-and-install.md` (module lists; no profile reinstall to change a model); `agent-profiles.md` "Change one
+  profile" now says the routing exists and only another provider's admission (`ALLOWED_PROVIDERS`) and enforcement are
+  missing.

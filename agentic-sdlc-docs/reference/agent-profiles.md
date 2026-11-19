@@ -130,9 +130,9 @@ Do not launch these profiles with `--yolo`; that overrides their tool restrictio
 
 ## Change one profile from Claude to Codex, Gemini or another provider
 
-**This project currently requires more than a profile edit.** CAO supports multiple providers, but [runtime.py](../../.agentic-sdlc/cao/sdlc_workflows/runtime.py) passes the fixed `PROVIDER = "claude_code"` to every `step(PROVIDER, agent, ...)`. Its Python workflow API uses that explicit provider. The profile-based inheritance described for CAO handoff/assign does not automatically change these workflow calls. The existing path guards are also Claude-specific.
+**This project requires more than a profile edit.** CAO supports multiple providers, but the workflows pass an explicit provider to every `step(provider, agent, ...)` call, taken from the project's [agent settings](agent-settings.md), not from the installed profile; the profile-based inheritance described for CAO handoff/assign does not change these calls. The settings accept only `claude_code` today, because the existing path guards are Claude-specific.
 
-The following is migration guidance; per-profile workflow routing and equivalent non-Claude enforcement have not been implemented or live-validated here.
+The following is migration guidance. Per-profile routing exists and is live-validated for models on `claude_code`; equivalent non-Claude enforcement has not been implemented or live-validated here.
 
 ### 1. Select an identifier supported by the installed CAO
 
@@ -177,20 +177,21 @@ For **Antigravity**, the inspected adapter launches `agy --dangerously-skip-perm
 
 ### 4. Route that profile in the Python workflow
 
-Add trusted per-profile provider selection at the shared `_run_stabilized_step()` call. For a small first implementation, the required shape is:
+The routing exists: every agent call takes its provider and model from `agent_settings` in the project's
+`agentic-sdlc-project.json` (see [Provider and model per agent profile](agent-settings.md)), resolved once per run
+and recorded per step and in the run's manifest or report. What is missing for another provider is only its
+admission: `ALLOWED_PROVIDERS` in `.agentic-sdlc/cao/sdlc_workflows/agent_settings.py` holds `claude_code` alone, and a
+project file naming any other provider stops the run before the first agent. Add a provider there only together with
+the enforcement from step 3 and its tests, then select it for one profile:
 
-```python
-# Illustrative runtime change; this routing does not exist yet.
-PROFILE_PROVIDERS = {"sdlc_pr_reviewer": "codex"}
-
-# Inside _run_stabilized_step(), before the existing step() call:
-provider = PROFILE_PROVIDERS.get(agent, PROVIDER)
-# Pass provider as step()'s first argument; retain its other arguments.
+```json
+"agent_settings": {"profiles": {"sdlc_pr_reviewer": {"provider": "codex", "model": "<a model the Codex CLI accepts>"}}}
 ```
 
-Validate routing against installed profiles/providers and reject mismatches before dispatch. For broader use, load the mapping from trusted configuration rather than model output. Do not change the global `PROVIDER` to switch only one profile: that selects the new provider for every shared-runtime step. Adding a provider field to a specialist registry entry also has no effect unless the runtime is changed to read it.
-
-Record the actual provider per step in evidence and update planning/delivery manifests that currently report one global provider. Keep routing stable for a run and its retries. If switching `sdlc_implementer`, remember that it is reused by hybrid workers, integration and verification repair; all those uses change. A new profile name instead requires updating workflow references, registry entries and write-profile authorization.
+Do not change the global `PROVIDER`: that is the default for every profile. Adding a provider field to a specialist
+registry entry has no effect. If switching `sdlc_implementer`, remember that it is reused by hybrid workers,
+integration and verification repair; all those uses change. A new profile name instead requires updating workflow
+references, registry entries, write-profile authorization and `KNOWN_PROFILES`.
 
 ### 5. Validate, install and exercise the complete path
 
@@ -204,6 +205,6 @@ cao profile show sdlc_pr_reviewer
 
 Keep the `--provider` argument and frontmatter aligned. CAO installation chooses the explicit flag before frontmatter; installation alone does not modify the workflow's explicit `step()` provider. See [CAO CLI installation options](https://awslabs.github.io/cli-agent-orchestrator/docs/reference/cli-commands/#cao-install).
 
-Reinstall the workflows after runtime changes; all five run from one shared library, so a changed module needs all of them reinstalled. Use [the build/install guide](../build-and-install.md) and respect source review's no-overwrite upgrade procedure. Finish active runs before replacing shared definitions or hooks.
+Reinstall the workflows after code changes (such as a new allowed provider); all five run from one shared library, so a changed module needs all of them reinstalled. Changing `agent_settings` alone needs no reinstall. Use [the build/install guide](../build-and-install.md) and respect source review's no-overwrite upgrade procedure. Finish active runs before replacing shared definitions or hooks.
 
-Run the tests, then run a disposable live fixture proving: the selected profile uses the new provider; other profiles retain theirs; the answer file and JSON contract work; forbidden writes/commands are denied; and repair, timeout, cleanup and replay behave correctly. A successful `cao launch --provider codex` only validates a direct launch, not this workflow path. No profile/provider switch was performed as part of this documentation update.
+Run the tests, then run a disposable live fixture proving: the selected profile uses the new provider; other profiles retain theirs; the answer file and JSON contract work; forbidden writes/commands are denied; and repair, timeout, cleanup and replay behave correctly. A successful `cao launch --provider codex` only validates a direct launch, not this workflow path.
