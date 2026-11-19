@@ -1,6 +1,6 @@
 # Plan: per-project provider and model per profile
 
-Status: **steps 0-1 done, step 2 code done (2026-11-18); unblocked 2026-11-19 by the frozen workflow library (rebased onto `main` `36c164a`), step 2 live check next; D1-D10 agreed 2026-11-18.** Progress notes go at the end.
+Status: **steps 0-1 done, step 2 code done (2026-11-18); unblocked 2026-11-19 by the frozen workflow library (rebased onto `main` `36c164a`), step 2 done 2026-11-19; steps 3-4 next; D1-D10 agreed 2026-11-18.** Progress notes go at the end.
 
 ## 1. Why
 
@@ -124,3 +124,6 @@ enforcement that has been checked for that provider. Effort is not part of this 
   ([its plan](workflow-library-and-prompt-files.md), merged to `main` `36c164a`). This branch was rebased onto it
   (one conflict in `runtime.py`, both sides kept; `tests/test_agent_settings.py` now tests the shared runtime and the
   five workflow modules instead of flattened bundles). 439 tests pass. Library id `57f24b1529586187`.
+- 2026-11-19, step 2 live: `source-review-settings-1` with `sdlc_source_mapper` on `haiku` (temporary key, restored):
+  only the mapper's terminal started with `--model haiku`, the other four with no model; each step's
+  `agent-settings.json` says so. Record: [agent-settings-live.md](../verification/agent-settings-live.md).
