@@ -1,7 +1,7 @@
 """Planning: retrieve requirements, author a plan, and independently review it.
 
-Shared execution support lives in runtime.py; build_workflow.py creates the
-standalone CAO deployment without changing this workflow's policy or inputs.
+Shared execution support lives in runtime.py; build_library.py installs this package as a frozen
+library with a small CAO entry script, without changing this workflow's policy or inputs.
 """
 from __future__ import annotations
 

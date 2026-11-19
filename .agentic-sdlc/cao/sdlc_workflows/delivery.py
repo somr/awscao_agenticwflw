@@ -1,7 +1,7 @@
 """Delivery: implement an approved plan, verify, review, remediate and hand off.
 
-Shared execution support lives in runtime.py; build_workflow.py creates the
-standalone CAO deployment without changing this workflow's policy or inputs.
+Shared execution support lives in runtime.py; build_library.py installs this package as a frozen
+library with a small CAO entry script, without changing this workflow's policy or inputs.
 """
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ from .validation import (
 )
 from .runtime import (
     _run_json_contract_step,
+    installed_library_manifest,
     run_parallel_steps,
     MAX_PARALLEL_REVIEWS,
     PROVIDER,
@@ -332,8 +333,8 @@ def _json_sha256(value: Any) -> str:
 
 def _bundle_identity(registry: dict[str, Any]) -> dict[str, Any]:
     """Which workflow code and settings ran: compared when a later run resumes this one."""
-    bundle = globals().get("SDLC_BUNDLE_MANIFEST")  # defined only in the generated CAO bundle
-    return {"manifest_sha256": _json_sha256(bundle) if bundle else None, "registry_sha256": _json_sha256(registry)}
+    library = installed_library_manifest()  # None when running from the repository
+    return {"manifest_sha256": _json_sha256(library) if library else None, "registry_sha256": _json_sha256(registry)}
 
 
 def _hybrid_record(progress: dict[str, Any]) -> dict[str, Any]:

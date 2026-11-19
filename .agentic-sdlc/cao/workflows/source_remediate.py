@@ -1,4 +1,4 @@
-"""Local entry point; install a frozen standalone bundle with install_source_remediate.sh."""
+"""Local entry point for development; install into CAO (frozen library + entry script) with install_source_remediate.sh."""
 from pathlib import Path
 import sys
 

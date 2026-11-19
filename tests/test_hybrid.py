@@ -20,13 +20,10 @@ stub.step = lambda *a, **k: None
 stub.emit_output = lambda value: None
 stub.get_inputs = lambda: {}
 sys.modules.setdefault('cao_workflow', stub)
-from build_workflow import build_source
 
 
 def modules():
-    bundle = types.ModuleType('hybrid_bundle')
-    exec(compile(build_source('deliver'), '<deliver>', 'exec'), bundle.__dict__)
-    return [importlib.import_module('sdlc_workflows.hybrid'), bundle]
+    return [importlib.import_module('sdlc_workflows.hybrid')]
 
 
 def task(name='T1', **changes):

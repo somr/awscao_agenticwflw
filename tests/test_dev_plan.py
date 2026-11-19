@@ -23,12 +23,7 @@ sys.modules.setdefault("cao_workflow", stub)
 # Exercise the exact standalone artifact installed into CAO, not a second
 # compatibility implementation of the extracted helpers.
 sys.path.insert(0, str(ROOT / ".agentic-sdlc" / "cao"))
-from build_workflow import build_source
-if os.environ.get("SDLC_TEST_SOURCE") == "1":
-    mod = importlib.import_module("sdlc_workflows.planning")
-else:
-    mod = types.ModuleType("dev_plan_bundle")
-    exec(compile(build_source("dev_plan"), "<bundled:dev_plan>", "exec"), mod.__dict__)
+mod = importlib.import_module("sdlc_workflows.planning")
 
 
 def valid_context() -> dict:
@@ -117,7 +112,7 @@ class WorkflowHelpersTest(unittest.TestCase):
 
 
 # The same lifecycle assertions run against the shared module and the installed bundle.
-runtime_mod = importlib.import_module("sdlc_workflows.runtime") if os.environ.get("SDLC_TEST_SOURCE") == "1" else mod
+runtime_mod = importlib.import_module("sdlc_workflows.runtime")
 
 
 class CommonRuntimeTest(unittest.TestCase):

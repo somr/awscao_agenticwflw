@@ -1,7 +1,7 @@
 """The plan reviewer sees earlier reviews and must account for each earlier blocking finding.
 
 Covers the validator rules, what each review round's prompt contains, and the repair path,
-using the real planning control flow in both the modular and bundled forms.
+using the real planning control flow.
 """
 from __future__ import annotations
 import json
@@ -35,44 +35,42 @@ def entry(ref, status='RESOLVED'):
 
 class ValidatorTest(unittest.TestCase):
     def test_rules(self):
-        for modular in (False, True):
-            planning, _ = harness.load('dev_plan', modular)
-            error = planning.WorkflowContractError
-            validate = planning.validate_review
-            refs = ['r1:P1', 'r1:P2']
-            with self.subTest(modular=modular):
-                # Backward compatible: no history means no prior_findings.
-                validate(base_review())
-                validate(base_review(prior=[]))
-                # Fully accounted for, each status allowed.
-                validate(base_review(prior=[entry('r1:P1'), entry('r1:P2', 'UNRESOLVED')]), refs)
-                validate(base_review('PASS', prior=[entry('r1:P1'), entry('r1:P2', 'NOT_APPLICABLE')], findings=[]), refs)
-                validate(base_review(prior=[entry('r1:P1', 'RESOLVED_BY_GUIDANCE'), entry('r1:P2')]), refs, True)
+        planning, _ = harness.load('dev_plan')
+        error = planning.WorkflowContractError
+        validate = planning.validate_review
+        refs = ['r1:P1', 'r1:P2']
+        # Backward compatible: no history means no prior_findings.
+        validate(base_review())
+        validate(base_review(prior=[]))
+        # Fully accounted for, each status allowed.
+        validate(base_review(prior=[entry('r1:P1'), entry('r1:P2', 'UNRESOLVED')]), refs)
+        validate(base_review('PASS', prior=[entry('r1:P1'), entry('r1:P2', 'NOT_APPLICABLE')], findings=[]), refs)
+        validate(base_review(prior=[entry('r1:P1', 'RESOLVED_BY_GUIDANCE'), entry('r1:P2')]), refs, True)
 
-                rejected = {
-                    'is required and must account for': (base_review(), refs, False),
-                    'does not account for: r1:P2': (base_review(prior=[entry('r1:P1')]), refs, False),
-                    'unknown finding': (base_review(prior=[entry('r1:P1'), entry('r1:P2'), entry('r1:P7')]), refs, False),
-                    'more than once': (base_review(prior=[entry('r1:P1'), entry('r1:P1'), entry('r1:P2')]), refs, False),
-                    'invalid prior finding status': (base_review(prior=[entry('r1:P1', 'FIXED'), entry('r1:P2')]), refs, False),
-                    'no developer guidance was supplied': (
-                        base_review(prior=[entry('r1:P1', 'RESOLVED_BY_GUIDANCE'), entry('r1:P2')]), refs, False),
-                    'conflicts with an UNRESOLVED prior finding': (
-                        base_review('PASS', prior=[entry('r1:P1', 'UNRESOLVED'), entry('r1:P2')], findings=[]), refs, False),
-                    'must be empty': (base_review(prior=[entry('r1:P1')]), [], False),
-                    'missing required keys': (base_review(prior=[{'ref': 'r1:P1', 'status': 'RESOLVED'}, entry('r1:P2')]), refs, False),
-                }
-                for message, (value, required, guidance) in rejected.items():
-                    with self.subTest(message=message):
-                        with self.assertRaisesRegex(error, message):
-                            validate(value, required, guidance)
+        rejected = {
+            'is required and must account for': (base_review(), refs, False),
+            'does not account for: r1:P2': (base_review(prior=[entry('r1:P1')]), refs, False),
+            'unknown finding': (base_review(prior=[entry('r1:P1'), entry('r1:P2'), entry('r1:P7')]), refs, False),
+            'more than once': (base_review(prior=[entry('r1:P1'), entry('r1:P1'), entry('r1:P2')]), refs, False),
+            'invalid prior finding status': (base_review(prior=[entry('r1:P1', 'FIXED'), entry('r1:P2')]), refs, False),
+            'no developer guidance was supplied': (
+                base_review(prior=[entry('r1:P1', 'RESOLVED_BY_GUIDANCE'), entry('r1:P2')]), refs, False),
+            'conflicts with an UNRESOLVED prior finding': (
+                base_review('PASS', prior=[entry('r1:P1', 'UNRESOLVED'), entry('r1:P2')], findings=[]), refs, False),
+            'must be empty': (base_review(prior=[entry('r1:P1')]), [], False),
+            'missing required keys': (base_review(prior=[{'ref': 'r1:P1', 'status': 'RESOLVED'}, entry('r1:P2')]), refs, False),
+        }
+        for message, (value, required, guidance) in rejected.items():
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(error, message):
+                    validate(value, required, guidance)
 
 
 class ReviewerHistoryFlowTest(unittest.TestCase):
     make_repo = harness.LifecycleIntegrationTest.make_repo
     drive = harness.LifecycleIntegrationTest.drive
 
-    def run_planning(self, root, modular, review_for, *, max_review_rounds=3):
+    def run_planning(self, root, review_for, *, max_review_rounds=3):
         repo, git = self.make_repo(root)
         source = root / 'sources'
         source.mkdir()
@@ -80,7 +78,7 @@ class ReviewerHistoryFlowTest(unittest.TestCase):
         (source / 'context.json').write_text(json.dumps({'schema_version': '1.0', 'ticket': {
             'id': TICKET, 'source_id': 'JIRA:T-1', 'title': 'Request', 'file': 'jira.md', 'required': True},
             'confluence': []}))
-        planning, transport = harness.load('dev_plan', modular)
+        planning, transport = harness.load('dev_plan')
         prompts = []
 
         def respond(agent, step_id, prompt):
@@ -111,24 +109,23 @@ class ReviewerHistoryFlowTest(unittest.TestCase):
             return {'review_status': 'CHANGES_REQUIRED', 'summary': 'changes', 'findings': findings,
                     'prior_findings': harness.prior_findings_for(prompt)}
 
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                repo, _, prompts, output = self.run_planning(Path(temp), modular, review_for)
-                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_APPROVAL')
-                self.assertEqual(output['review_rounds'], 3)
-                (_, first), (_, second), (_, third) = self.reviewer_prompts(prompts)
-                runtime = repo / '.agentic-sdlc/runtime' / TICKET / 'history-run/planning'
+        with tempfile.TemporaryDirectory() as temp:
+            repo, _, prompts, output = self.run_planning(Path(temp), review_for)
+            self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_APPROVAL')
+            self.assertEqual(output['review_rounds'], 3)
+            (_, first), (_, second), (_, third) = self.reviewer_prompts(prompts)
+            runtime = repo / '.agentic-sdlc/runtime' / TICKET / 'history-run/planning'
 
-                self.assertNotIn('Previous reviews', first)
-                self.assertNotIn('prior_findings', first)
+            self.assertNotIn('Previous reviews', first)
+            self.assertNotIn('prior_findings', first)
 
-                self.assertIn(f'- r1: {runtime}/review-r1-c1.json', second)
-                self.assertNotIn('r2:', second)
-                self.assertIn('exactly these refs: r1:P1.', second)  # blocking only, not the advisory A1
+            self.assertIn(f'- r1: {runtime}/review-r1-c1.json', second)
+            self.assertNotIn('r2:', second)
+            self.assertIn('exactly these refs: r1:P1.', second)  # blocking only, not the advisory A1
 
-                self.assertIn(f'- r1: {runtime}/review-r1-c1.json', third)
-                self.assertIn(f'- r2: {runtime}/review-r2-c1.json', third)
-                self.assertIn('exactly these refs: r2:P2.', third)  # latest review only
+            self.assertIn(f'- r1: {runtime}/review-r1-c1.json', third)
+            self.assertIn(f'- r2: {runtime}/review-r2-c1.json', third)
+            self.assertIn('exactly these refs: r2:P2.', third)  # latest review only
 
     def test_a_reviewer_that_omits_prior_findings_gets_one_repair_turn(self):
         def review_for(step_id, prompt):
@@ -140,12 +137,11 @@ class ReviewerHistoryFlowTest(unittest.TestCase):
                 answer['prior_findings'] = harness.prior_findings_for(prompt) or [entry('r1:P1')]
             return answer
 
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                _, _, prompts, output = self.run_planning(Path(temp), modular, review_for)
-                self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_APPROVAL')
-                steps = [step for step, _ in self.reviewer_prompts(prompts)]
-                self.assertEqual(steps, ['plan-review-r1-c1', 'plan-review-r2-c1', 'plan-review-r2-c1-repair-1'])
+        with tempfile.TemporaryDirectory() as temp:
+            _, _, prompts, output = self.run_planning(Path(temp), review_for)
+            self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_APPROVAL')
+            steps = [step for step, _ in self.reviewer_prompts(prompts)]
+            self.assertEqual(steps, ['plan-review-r1-c1', 'plan-review-r2-c1', 'plan-review-r2-c1-repair-1'])
 
     def test_a_reviewer_that_keeps_omitting_it_fails_the_contract(self):
         def review_for(step_id, prompt):
@@ -154,12 +150,11 @@ class ReviewerHistoryFlowTest(unittest.TestCase):
                 return {'review_status': 'CHANGES_REQUIRED', 'summary': 'changes', 'findings': [finding('P1')]}
             return {'review_status': 'PASS', 'summary': 'ready', 'findings': []}
 
-        for modular in (False, True):
-            with self.subTest(modular=modular), tempfile.TemporaryDirectory() as temp:
-                planning, transport = harness.load('dev_plan', modular)
-                with self.assertRaisesRegex(planning.WorkflowContractError,
-                                            'failed its JSON contract.*prior_findings is required'):
-                    self.run_planning_with(Path(temp), planning, transport, review_for)
+        with tempfile.TemporaryDirectory() as temp:
+            planning, transport = harness.load('dev_plan')
+            with self.assertRaisesRegex(planning.WorkflowContractError,
+                                        'failed its JSON contract.*prior_findings is required'):
+                self.run_planning_with(Path(temp), planning, transport, review_for)
 
     def run_planning_with(self, root, planning, transport, review_for):
         """Same flow as run_planning but with an already loaded module (exception classes must match)."""
