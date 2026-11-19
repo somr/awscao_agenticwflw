@@ -47,6 +47,7 @@ The maintained modules are under [`.agentic-sdlc/cao/sdlc_workflows/`](../.agent
 | `source_review_contracts.py`, `review_comments.py`, `source_remediation_support.py` | Source-review finding contracts and routing, stable comment identity, and remediation helpers shared with the publishers |
 | `artifacts.py`, `validation.py`, `errors.py` | Evidence files, digests, validation helpers and error types |
 | `source_config.py` | Project-file loading and source-root and write-profile validation for Planning, Delivery and Source remediation; the hook carries a standalone copy checked by parity tests |
+| `agent_settings.py` | The project's provider and model per agent profile, validated and resolved once per run; the runtime applies them to every agent call ([agent settings](reference/agent-settings.md)) |
 
 The common agent-step protocol is shown below. Each workflow supplies its profile, prompt and output contract; it retains its own domain policy. In particular, Delivery and Source Review use different finding-routing rules.
 

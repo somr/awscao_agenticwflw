@@ -46,7 +46,8 @@ from .review_threads import (
     recorded_heads,
     select_threads,
 )
-from .runtime import _run_json_contract_step, run_parallel_steps, MAX_PARALLEL_REVIEWS
+from .runtime import (_run_json_contract_step, agent_settings_record, configure_agent_settings, run_parallel_steps,
+                      MAX_PARALLEL_REVIEWS)
 from .source_review_contracts import (
     require,
     string,
@@ -561,6 +562,8 @@ def main() -> None:
     repo = Path(inputs["repository_root"]).resolve()
     require(repo.is_dir(), "repository_root must exist")
     knowledge = load_review_knowledge(repo)
+    # Each profile's provider and model, also from the trusted checkout, never the PR.
+    configure_agent_settings(repo)
     max_parallel = bounded(inputs, "review_max_parallel", MAX_PARALLEL_REVIEWS, MAX_PARALLEL_REVIEWS)
     per_batch = bounded(inputs, "threads_per_batch", THREADS_PER_BATCH, MAX_THREADS_PER_BATCH)
     reviewers = reviewer_logins(inputs.get("reviewers"))
@@ -613,6 +616,7 @@ def main() -> None:
             finding["placement"] = (place_finding(finding, hunks) if finding["side"] == "head" else
                                     {"mode": "GENERAL", "reason": "Code removed since the last check"})
         report["status"] = "JUDGED" if current_pr_matches(snapshot) else "STALE"
+        report["agent_settings"] = agent_settings_record()
         draft = render_draft(report)
         report["draft_sha256"] = hashlib.sha256(draft.encode()).hexdigest()
         name = (pr_records_name(snapshot["repository"], snapshot["pr_number"]) if known_pr

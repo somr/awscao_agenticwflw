@@ -170,6 +170,9 @@ never overwritten. To plan the ticket again, move `agentic-sdlc-records/<ticket>
 
 ## Configuration
 
+The provider and model of each agent come from `agent_settings` in `agentic-sdlc-project.json`; see
+[Provider and model per agent profile](../reference/agent-settings.md). The execution manifest records them.
+
 ### Source adapters
 
 Retrieval is deterministic Python, never an agent. The `source_adapter` input picks the adapter, and both

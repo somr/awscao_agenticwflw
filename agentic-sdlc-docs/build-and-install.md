@@ -26,6 +26,7 @@ cao/
 │   ├── worktrees.py                 # Per-task worktrees, commits and ordered cherry-picks
 │   ├── resume.py                    # Resuming a BLOCKED delivery from its manifest
 │   ├── source_config.py             # Project file, source roots and write profiles
+│   ├── agent_settings.py            # Provider and model per agent profile
 │   ├── review_knowledge.py          # Project rules: loading, selection, batches, per-file verdicts
 │   ├── delivery_standards.py        # Delivery's standards review rounds
 │   ├── source_review.py             # PR snapshots, source review and fix routing
@@ -193,10 +194,11 @@ the exception and control flow are unchanged.
 
 ## Runtime assets outside the library
 
-The library contains code and prompt texts only. Everything a run reads from the repository at start-up is
+The library contains the workflow code only. Everything a run reads from the repository at start-up is
 resolved from `repository_root`, not embedded: the contracts, policies, schemas and
 templates under `.agentic-sdlc/`, the project's `agentic-sdlc-project.json` and the rule files it names in
-`agentic-sdlc-pr-review-kb/` ([project rules](reference/project-rules.md)), and, for hybrid Delivery,
+`agentic-sdlc-pr-review-kb/` ([project rules](reference/project-rules.md)), its `agent_settings`
+([provider and model per profile](reference/agent-settings.md); no profile reinstall is needed to change a model), and, for hybrid Delivery,
 `.agentic-sdlc/cao/specialists.json` and `.agentic-sdlc/cao/skills/`. Changing those files takes effect on the next run without a
 reinstall; changing Python modules or prompt files requires reinstalling the workflows. Installing
 `sdlc_deliver` also requires the `sdlc_code_supervisor` profile, because Delivery defaults to

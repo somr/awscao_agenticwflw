@@ -197,6 +197,29 @@ class ResumeFromVerificationTest(DeliveryHarness, unittest.TestCase):
                 self.assertIn(f'Commit {fix[:12]} was added by hand', text)
                 self.assertIn('pom.xml', text)
             self.assertIn('pom.xml', (records / 'pr-diff.patch').read_text())
+            self.assertNotIn('agent_settings_changed', manifest)  # same (empty) settings in both runs
+
+    def test_a_resume_uses_the_current_agent_settings_and_says_they_changed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo, git, records = self.blocked(temp)
+            self.assertEqual(json.loads((records / 'delivery-manifest.json').read_text())['agent_settings']['profiles'], {})
+            self.hand_fix(repo, git)
+            project = json.loads((repo / 'agentic-sdlc-project.json').read_text())
+            project['agent_settings'] = {'profiles': {'sdlc_pr_reviewer': {'model': 'opus'}}}
+            (repo / 'agentic-sdlc-project.json').write_text(json.dumps(project))
+            git('commit', '-qam', 'Review with a stronger model')
+            prompts = {}
+            calls, output = self.run_delivery(repo, self.reviewer(prompts), 'second-run', resume=True)
+            self.assertEqual(output['workflow_outcome'], 'AWAITING_HUMAN_REVIEW', output)
+            manifest = json.loads((records / 'delivery-manifest.json').read_text())
+            self.assertTrue(manifest['agent_settings_changed'])
+            self.assertEqual(manifest['previous_agent_settings'], {})
+            self.assertEqual(manifest['agent_settings']['profiles']['sdlc_pr_reviewer']['model'], 'opus')
+            note = ("The agents' provider and model settings changed since run first-run: before: none set; "
+                    "now: `sdlc_pr_reviewer`: provider `claude_code` (unset), model `opus` (profile).")
+            for text in (prompts['pr-review-r1'], (records / 'pr-body.md').read_text(),
+                         (records / 'human-review-brief.md').read_text()):
+                self.assertIn(note, text)
 
     def test_a_refused_resume_leaves_the_blocked_manifest_for_the_next_attempt(self):
         cases = {

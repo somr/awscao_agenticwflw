@@ -177,6 +177,8 @@ publishes are joined to its findings by later follow-ups, like Source review's.
 
 ## Configuration
 
+- **Agent settings:** the provider and model of its agents come from `agent_settings` in the trusted checkout's
+  `agentic-sdlc-project.json`, never from the PR; see [Provider and model per agent profile](../reference/agent-settings.md).
 - **Project rules:** the follow-up reads the same [project rules](../reference/project-rules.md) as Source review
   from the trusted checkout. They decide which rules the standards reviewer checks on the changed files and give the
   judges the text of the rule a comment cites. A rule that no longer exists is reported as a coverage gap.

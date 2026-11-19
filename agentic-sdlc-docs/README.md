@@ -19,6 +19,7 @@ Start with the [project README](../README.md) for the quick start and current ca
 | Install or change agent profiles and providers | [Agent profiles](reference/agent-profiles.md) |
 | Inspect the answer protocol and write hook | [Agent answers and write scope](reference/write-scope-hook.md) |
 | Give the reviewers the project's own coding standards | [Project rules for the reviewers](reference/project-rules.md) |
+| Choose the provider and model of each agent profile | [Provider and model per agent profile](reference/agent-settings.md) |
 | Check current enforcement boundaries and limitations | [Enforcement and human authority](architecture.md#enforcement-and-human-authority) |
 
 ## Contracts and policies

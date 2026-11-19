@@ -708,6 +708,7 @@ class SnapshotTests(unittest.TestCase):
                          (str(run), str(run / 'review-draft.md')))
         report = json.loads((run / 'code-review.json').read_text())
         self.assertEqual(report['status'], 'REVIEWED')
+        self.assertEqual(report['agent_settings']['profiles'], {})  # nothing declared in this checkout
         self.assertEqual(report['comments_sha256'], mod.hashlib.sha256((run / 'comments.md').read_bytes()).hexdigest())
         self.assertEqual(emit.call_args.args[0]['coverage_status'], 'INCOMPLETE')
         self.assertEqual(report['draft_sha256'], mod.hashlib.sha256((run / 'review-draft.md').read_bytes()).hexdigest())

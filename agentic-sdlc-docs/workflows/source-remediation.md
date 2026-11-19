@@ -219,6 +219,8 @@ process and the remote state before removing it. If the PR moves again, run a ne
 
 Source remediation reads the same trusted files as Delivery; there is no separate configuration.
 
+- **Agent settings:** the provider and model of its agents come from `agent_settings` in `agentic-sdlc-project.json`; see
+  [Provider and model per agent profile](../reference/agent-settings.md).
 - **Write roots:** the roots that `write_profiles` gives `sdlc_remediator` in `agentic-sdlc-project.json` (see
   [source roots](delivery.md#source-roots)). Findings outside them are excluded as `HUMAN_REQUIRED`.
 - **Verification:** the `application` suite from the same file, run from the repository root without a shell. Without

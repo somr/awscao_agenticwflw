@@ -40,6 +40,8 @@ from .source_config import load_source_config, resolve_source_roots
 from .runtime import (
     _run_delivered_step,
     _run_json_contract_step,
+    configure_agent_settings,
+    agent_settings_record,
     PROVIDER,
 )
 
@@ -1151,6 +1153,8 @@ def main() -> None:
     # before any agent runs, exactly as it would stop Delivery.
     source_roots = load_source_config(repo)["source_roots"]
     resolve_source_roots(repo, source_roots)
+    # Each profile's provider and model for this run, from the same trusted checkout.
+    configure_agent_settings(repo)
 
     guidance_path, guidance_sha = (None, None) if guidance_source is None else freeze_guidance(guidance_source, runtime_dir)
 
@@ -1417,6 +1421,7 @@ def main() -> None:
         "planning_workflow_version": "1.3",
         "workflow_run_id": run_id,
         "provider": PROVIDER,
+        "agent_settings": agent_settings_record(),
         "repository_root": str(repo),
         "base_branch": base_branch,
         "repository_baseline_sha": baseline_sha,

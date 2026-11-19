@@ -299,7 +299,9 @@ hand and resume again.
 manifest counts runs, repair turns and remediation rounds across the whole chain. Review records continue the earlier
 numbering (`pr-review-r<N>.json`). The new manifest names the run it continued in `resumed_from`, together with that
 run's bundle identity (`bundle`: hashes of the installed workflow library's manifest, `null` when run from the
-repository, and of the merged registry and project settings).
+repository, and of the merged registry and project settings). A resume uses the current
+[agent settings](../reference/agent-settings.md); when they differ from the earlier run's, the manifest records
+`agent_settings_changed` and `previous_agent_settings`, and the review prompt, PR body and brief say so.
 
 A plan that names files outside the configured source roots cannot be implemented. The agents are told to report
 those tasks as deviations instead of writing them, and the hook denies the write anyway.
@@ -388,6 +390,7 @@ flowchart LR
 | Workers, skills and the suites they need | `workers`, `skills` in `.agentic-sdlc/cao/specialists.json` | one `developer` worker |
 | Implementation mode | input `implementation_mode` | `hybrid` |
 | Project rules the reviewers check | `review_knowledge` in `agentic-sdlc-project.json` | none |
+| Provider and model of each agent profile | `agent_settings` in `agentic-sdlc-project.json` | `claude_code`, the provider's default model |
 | Workers running at the same time | input `hybrid_max_parallel` | `4` |
 | Review calls running at the same time | input `review_max_parallel` | `4` |
 | Base branch | input `base_branch` | `main` |
@@ -440,10 +443,11 @@ The common registry, `.agentic-sdlc/cao/specialists.json`:
 
 | Key | File | Required | Rules |
 |---|---|---|---|
-| `version` | both | yes | Must be `1`. The project file accepts no other keys than the four below. |
+| `version` | both | yes | Must be `1`. The project file accepts no other keys than the five below. |
 | `source_roots` | project | no, default `["app"]` | See [Source roots](#source-roots). |
 | `write_profiles` | project | no, default implementer and remediator | Which agent profiles may write under the roots. |
 | `review_knowledge` | project | no | The rule files the reviewers check and their batch limits. See [Project rules](../reference/project-rules.md#enabling-the-rules). |
+| `agent_settings` | project | no | Provider and model per agent profile. See [Provider and model per agent profile](../reference/agent-settings.md). |
 | `verification` | project | yes, not empty | Suite name to a non-empty list of commands. A command is a non-empty list of non-empty strings: the program and its arguments, with no shell. |
 | `workers` | registry | yes, not empty | Each worker needs `profile` (an agent profile listed in `write_profiles`), `description` (the supervisor uses it to route work), `skills` (registered skill names; may be empty) and `verification` (a non-empty list of suite names the project defines). |
 | `skills` | registry | no | Each skill needs `path` (a file below `.agentic-sdlc/cao`, normally `skills/<name>/SKILL.md`), `description`, and `verification` (a non-empty list of suite names that run whenever the skill is selected). |

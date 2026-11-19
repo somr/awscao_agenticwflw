@@ -484,7 +484,9 @@ The separate publisher can push verified fixes and reply to the original GitHub 
 ## Configuration
 
 Source review's routing policy is fixed. What you choose is the mode, the inputs above and, optionally, project
-rules. To try it without a real PR, use fixture mode.
+rules and the provider and model of its agents (`agent_settings` in `repository_root`'s project file, never the PR's;
+see [Provider and model per agent profile](../reference/agent-settings.md)). To try it without a real PR, use fixture
+mode.
 
 ### Project rules
 

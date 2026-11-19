@@ -95,7 +95,7 @@ DENY_ALWAYS_ROOTS = [
 # test). Any rule added there must be added here, and the other way round.
 REGISTRY_RELATIVE_PATH = ".agentic-sdlc/cao/specialists.json"
 PROJECT_RELATIVE_PATH = "agentic-sdlc-project.json"
-PROJECT_KEYS = ("source_roots", "write_profiles", "verification", "review_knowledge")
+PROJECT_KEYS = ("source_roots", "write_profiles", "verification", "review_knowledge", "agent_settings")
 PROJECT_FILE_VERSION = 1
 DEFAULT_SOURCE_ROOTS = ["app"]
 DEFAULT_WRITE_PROFILES = {"sdlc_implementer": None, "sdlc_remediator": None}

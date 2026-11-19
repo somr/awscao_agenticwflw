@@ -43,6 +43,9 @@ from .runtime import (
     installed_library_manifest,
     run_parallel_steps,
     MAX_PARALLEL_REVIEWS,
+    configure_agent_settings,
+    agent_settings_lines,
+    agent_settings_record,
     PROVIDER,
 )
 from .review_knowledge import (
@@ -392,6 +395,11 @@ def _resume_notes(manifest: dict[str, Any]) -> list[str]:
     for commit in manifest.get("hand_commits", []):
         notes.append(f"Commit {commit['sha'][:12]} was added by hand, not by an agent: {commit['subject']} "
                      f"(changes {', '.join(commit['paths']) or 'no files'}).")
+    if manifest.get("agent_settings_changed"):
+        before = "; ".join(agent_settings_lines(manifest.get("previous_agent_settings") or {})) or "none set"
+        now = "; ".join(agent_settings_lines((manifest.get("agent_settings") or {}).get("profiles") or {})) or "none set"
+        notes.append(f"The agents' provider and model settings changed since run {previous['run_id']}: "
+                     f"before: {before}; now: {now}.")
     drift = manifest.get("base_drift") or {}
     if drift.get("commits_behind"):
         notes.append(f"The base branch is {drift['commits_behind']} commit(s) ahead of the delivery branch; they share no "
@@ -666,6 +674,7 @@ def render_human_review_brief(
     verification: dict[str, Any],
     convergence_limit_reached: bool,
     resume_notes: list[str] | None = None,
+    agent_settings: dict[str, Any] | None = None,
 ) -> str:
     """Deterministic Python rendering of the human-review-brief template from
     canonical JSON — same pattern as render_planning_context in dev_plan.py:
@@ -743,6 +752,9 @@ def render_human_review_brief(
 
     pr_display = pr_reference or "(local, not yet created)"
     rules_section = render_standards_section(review)
+    settings_lines = agent_settings_lines((agent_settings or {}).get("profiles") or {})
+    settings_text = ("\n- Agent settings (provider, model):\n" + "\n".join(f"  - {line}" for line in settings_lines)
+                     if settings_lines else "")
 
     return f"""# Human Review Brief — {ticket_id} / PR {pr_display}
 
@@ -751,7 +763,7 @@ def render_human_review_brief(
 - Jira ticket: `{ticket_id}`
 - Pull request: `{pr_display}`
 - Current PR HEAD SHA: `{pr_head_sha}`
-- Approved plan digest: `{plan_sha256}`
+- Approved plan digest: `{plan_sha256}`{settings_text}
 
 ## Implementation summary
 
@@ -846,6 +858,8 @@ def main() -> None:
     registry = load_specialists(repo)
     # The project's rules for the standards reviewer; read from this checkout, which agents cannot change.
     knowledge = load_review_knowledge(repo)
+    # Each profile's provider and model for this run, from the same trusted checkout.
+    configure_agent_settings(repo)
     application_commands = registry["verification"].get("application")
     if implementation_mode == "single" and not application_commands:
         raise WorkflowContractError("single mode needs the registry's 'application' verification suite")
@@ -888,6 +902,10 @@ def main() -> None:
             base_drift=base_drift(repo, base_branch, previous["base_sha"]),
         )
         carried["resumed_from"]["run_id"] = carried["resumed_from"].pop("workflow_run_id")
+        # D8: a resume uses the current settings (a human may have chosen another model) and says when they differ.
+        earlier_settings = (previous.get("agent_settings") or {}).get("profiles") or {}
+        if earlier_settings != agent_settings_record()["profiles"]:
+            carried.update(agent_settings_changed=True, previous_agent_settings=earlier_settings)
     else:
         _ensure_delivery_branch(repo, delivery_branch, base_branch)
     _write_json(delivery_manifest_path, {
@@ -897,6 +915,7 @@ def main() -> None:
         "delivery_workflow_version": "1.0",
         "workflow_run_id": run_id,
         "provider": PROVIDER,
+        "agent_settings": agent_settings_record(),
         "repository_root": str(repo),
         "base_branch": base_branch,
         "delivery_branch": delivery_branch,
@@ -911,7 +930,7 @@ def main() -> None:
         "source_roots": source_roots,
         **carried,
     })
-    resume_notes = _resume_notes(carried)
+    resume_notes = _resume_notes({**carried, "agent_settings": agent_settings_record()})
     if previous is not None and carried["base_drift"]["overlapping_paths"]:
         # D6: the base branch changed files this delivery changed; a human merges it (or plans again).
         _end_blocked(delivery_manifest_path, _read_json(delivery_manifest_path), repo,
@@ -1302,6 +1321,7 @@ def main() -> None:
         verification=verification,
         convergence_limit_reached=convergence_limit_reached,
         resume_notes=resume_notes,
+        agent_settings=agent_settings_record(),
     )
     brief_path = records_dir / "human-review-brief.md"
     _write_text(brief_path, brief_text)

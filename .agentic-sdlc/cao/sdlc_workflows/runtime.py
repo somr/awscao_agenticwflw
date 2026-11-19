@@ -20,8 +20,16 @@ from urllib.request import Request, urlopen
 from cao_workflow import step
 from .errors import WorkflowContractError, IncompleteAgentExecutionError
 from .artifacts import _write_json, _write_text, _sha256_bytes
+from .agent_settings import DEFAULT_PROVIDER, load_agent_settings, step_options
+from .source_config import PROJECT_RELATIVE_PATH
 
-PROVIDER = "claude_code"
+# The provider when a project declares none; per-profile choices come from agent_settings.
+PROVIDER = DEFAULT_PROVIDER
+# The project's resolved agent_settings for this run (one workflow per process), set once before the first agent
+# so retries, repair turns and parallel calls all use the same values; None means "as before".
+_AGENT_SETTINGS: dict[str, dict[str, Any]] | None = None
+# SHA-256 of the project file the settings were read from (None without one), for the run's records.
+_AGENT_SETTINGS_FILE_SHA256: str | None = None
 # Upper bound for read-only agent steps run at the same time (reviewers); shares CAO server capacity.
 MAX_PARALLEL_REVIEWS = 4
 STEP_TIMEOUT_SECONDS = 1800
@@ -256,6 +264,48 @@ def installed_library_manifest() -> dict[str, str] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def set_agent_settings(resolved: dict[str, dict[str, Any]] | None) -> None:
+    """Fix the provider and model of every profile for the rest of this run."""
+    global _AGENT_SETTINGS
+    _AGENT_SETTINGS = resolved
+
+
+def configure_agent_settings(repo: Path) -> dict[str, dict[str, Any]]:
+    """Read agent_settings from the trusted checkout, validate it and use it for this run's agent calls.
+
+    Call it before the first agent; an invalid setting stops the run there.
+    """
+    global _AGENT_SETTINGS_FILE_SHA256
+    resolved = load_agent_settings(repo)
+    set_agent_settings(resolved)
+    project_file = repo / PROJECT_RELATIVE_PATH
+    _AGENT_SETTINGS_FILE_SHA256 = _sha256_bytes(project_file.read_bytes()) if project_file.is_file() else None
+    return resolved
+
+
+def agent_settings_record() -> dict[str, Any]:
+    """The run's agent settings for its records: only profiles with a provider or model set, and the file's hash.
+
+    A profile that is not listed ran on the default provider with the provider's own default model.
+    """
+    profiles = {name: dict(entry) for name, entry in sorted((_AGENT_SETTINGS or {}).items())
+                if entry["provider_from"] != "unset" or entry["model_from"] != "unset"}
+    return {"default_provider": PROVIDER, "profiles": profiles, "project_file_sha256": _AGENT_SETTINGS_FILE_SHA256}
+
+
+def agent_settings_lines(profiles: dict[str, dict[str, Any]]) -> list[str]:
+    """One readable line per profile with settings, for briefs and notes."""
+    return [f"`{name}`: provider `{entry['provider']}` ({entry['provider_from']}), "
+            f"model `{entry['model'] or 'provider default'}` ({entry['model_from']})"
+            for name, entry in sorted(profiles.items())]
+
+
+def _agent_settings_evidence(agent: str) -> dict[str, Any]:
+    entry = (_AGENT_SETTINGS or {}).get(agent) or {
+        "provider": PROVIDER, "provider_from": "unset", "model": None, "model_from": "unset"}
+    return {"profile": agent, **entry}
+
+
 def _run_stabilized_step(
     *,
     agent: str,
@@ -266,8 +316,11 @@ def _run_stabilized_step(
     answer_path: Path,
 ) -> str:
     """Run one CAO step without teardown, then wait for its answer file and clean up."""
+    provider, options = step_options(_AGENT_SETTINGS, agent)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(evidence_dir / f"{step_id}.agent-settings.json", _agent_settings_evidence(agent))
     handle = step(
-        PROVIDER,
+        provider,
         agent,
         prompt,
         recovery="idempotent",
@@ -275,6 +328,7 @@ def _run_stabilized_step(
         timeout=STEP_TIMEOUT_SECONDS,
         working_directory=str(repo),
         teardown=False,
+        **options,
     )
 
     # A replayed handle names a terminal that no longer exists, so there is no
