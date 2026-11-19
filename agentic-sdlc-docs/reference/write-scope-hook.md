@@ -133,7 +133,7 @@ surfacing as denied writes. See [Delivery](../workflows/delivery.md#configuratio
 |---|---|
 | The hook, including its standalone copy of the validator | `.claude/hooks/restrict-write-scope.py` |
 | Hook wiring | `.claude/settings.json` |
-| The validator used by Planning, Delivery and Source remediation (bundled into each workflow) | `.agentic-sdlc/cao/sdlc_workflows/source_config.py` |
+| The validator used by Planning, Delivery and Source remediation (part of the installed workflow library) | `.agentic-sdlc/cao/sdlc_workflows/source_config.py` |
 | Answer-file protocol and JSON repair | `.agentic-sdlc/cao/sdlc_workflows/runtime.py` |
 | Trusted configuration | `agentic-sdlc-project.json` (per project) and `.agentic-sdlc/cao/specialists.json` (common) |
 
@@ -144,7 +144,7 @@ surfacing as denied writes. See [Delivery](../workflows/delivery.md#configuratio
   `notebook_path` inputs, and the answer-path shapes the workflows build. It also holds the configuration matrix:
   multiple roots, narrowed profiles, missing and broken registries, and symlinked roots.
 - `tests/test_source_config.py` runs one corpus of valid and invalid configurations through the workflow's validator
-  (source and bundled forms) and through the hook's copy, so the two cannot drift apart.
+  and through the hook's copy, so the two cannot drift apart.
 
 Run both whenever the hook, the answer-path layout or the validator changes.
 

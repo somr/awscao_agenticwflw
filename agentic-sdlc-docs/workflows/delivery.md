@@ -298,7 +298,8 @@ hand and resume again.
 **Budgets and records.** The repair turn and the three remediation rounds start again on each resume; `totals` in the
 manifest counts runs, repair turns and remediation rounds across the whole chain. Review records continue the earlier
 numbering (`pr-review-r<N>.json`). The new manifest names the run it continued in `resumed_from`, together with that
-run's bundle identity (`bundle`: hashes of the workflow bundle and of the merged registry and project settings).
+run's bundle identity (`bundle`: hashes of the installed workflow library's manifest, `null` when run from the
+repository, and of the merged registry and project settings).
 
 A plan that names files outside the configured source roots cannot be implemented. The agents are told to report
 those tasks as deviations instead of writing them, and the hook denies the write anyway.

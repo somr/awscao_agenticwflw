@@ -1,6 +1,6 @@
 # Plan: install the workflow code as a frozen library and keep prompts in files
 
-Status: **steps 0-2 done (2026-11-18, 2026-11-19); step 3 (prompts) next; D1-D10 agreed (D6 2026-11-18, the rest
+Status: **done: steps 0-2 and 4 (2026-11-18, 2026-11-19); step 3 (prompts) deferred by the user 2026-11-19; D1-D10 agreed (D6 2026-11-18, the rest
 2026-11-19).** Progress notes go at the end.
 
 ## 1. Why
@@ -79,7 +79,7 @@ they can be read and edited as text.
    that each installed entry is small and that a changed library file stops a run.
 2. **Delivery and follow-up live**: a Delivery run on the demo ticket (old branch moved aside as before) and a
    follow-up run on a closed PR, the two workflows that could not run on 2.5.4.
-3. **Prompts, one workflow at a time** (Source review, follow-up, source remediation, Planning, Delivery with
+3. **Deferred (2026-11-19, user's decision; D6-D8 stay agreed for when it is done).** **Prompts, one workflow at a time** (Source review, follow-up, source remediation, Planning, Delivery with
    hybrid and remediation): fixtures first, then move, byte-identical tests (D8). Reinstall; one cheap live run at
    the end.
 4. **Docs**: `build-and-install.md` ("Why bundle" becomes "Why a frozen library"), `architecture.md`, the workflow
@@ -87,6 +87,9 @@ they can be read and edited as text.
 
 ## 6. Out of scope
 
+- For now: step 3, moving the prompts into files. The size limit does not need it (prompts are about 14,000
+  characters of `deliver`), and the builder already accepts `prompts/<workflow>/*.md`, so it can follow later without
+  changing installation.
 - Automatic removal of unused libraries (a listing tool can come later).
 - Changing any prompt's wording (D8 keeps them identical).
 - Splitting workflows.
@@ -107,3 +110,8 @@ they can be read and edited as text.
   findings, library manifest hash recorded) and `followup-library-1` gave every expected verdict on the follow-up
   fixture (closed PR #3 is refused by design). Old `sdlc/PAY-DEMO-001` renamed
   `archive/sdlc-PAY-DEMO-001-deliver10`. Record: [workflow-library-live.md](../verification/workflow-library-live.md).
+- 2026-11-19, step 3 deferred by the user. Step 4: README, `architecture.md` (text and diagram), `agent-profiles.md`,
+  `write-scope-hook.md`, `delivery.md` and `source-review.md` describe the library instead of bundles and the second
+  test mode. The library id is unchanged (`bc242cd5ecfe82ca`, docs are not part of it), so the installs match.
+  `hardening-plan.md` and `future-versions.md` still mention `build_workflow.py`, bundles and `SDLC_TEST_SOURCE`;
+  they are the user's documents and were left as they are.

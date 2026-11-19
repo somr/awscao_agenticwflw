@@ -123,8 +123,9 @@ that policy and are not configurable.
    bash .agentic-sdlc/cao/workflows/install_source_review.sh "$PWD"
    ```
 
-   The installer builds the workflow and its shared modules into one standalone artifact, validates it, and adds
-   only `~/.aws/cli-agent-orchestrator/workflows/source_review.py` and the profiles `sdlc_source_mapper`,
+   The installer validates a small entry script, writes the shared workflow library under
+   `~/.aws/cli-agent-orchestrator/sdlc-lib/` if that version is not there yet (never replacing one), and adds only
+   `~/.aws/cli-agent-orchestrator/workflows/source_review.py` and the profiles `sdlc_source_mapper`,
    `sdlc_source_correctness`, `sdlc_source_security`, `sdlc_source_standards`, `sdlc_source_validator` and
    `sdlc_source_feedback`. It does not
    touch the other workflows, their profiles or the repository hook.
