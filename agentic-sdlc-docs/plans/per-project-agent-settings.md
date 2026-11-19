@@ -1,6 +1,6 @@
 # Plan: per-project provider and model per profile
 
-Status: **steps 0-1 done, step 2 code done (2026-11-18); unblocked 2026-11-19 by the frozen workflow library (rebased onto `main` `36c164a`), step 2 done 2026-11-19; steps 3-4 next; D1-D10 agreed 2026-11-18.** Progress notes go at the end.
+Status: **steps 0-1 done, step 2 code done (2026-11-18); unblocked 2026-11-19 by the frozen workflow library (rebased onto `main` `36c164a`), steps 2-3 done 2026-11-19; step 4 (docs) next; D1-D10 agreed 2026-11-18.** Progress notes go at the end.
 
 ## 1. Why
 
@@ -127,3 +127,9 @@ enforcement that has been checked for that provider. Effort is not part of this 
 - 2026-11-19, step 2 live: `source-review-settings-1` with `sdlc_source_mapper` on `haiku` (temporary key, restored):
   only the mapper's terminal started with `--model haiku`, the other four with no model; each step's
   `agent-settings.json` says so. Record: [agent-settings-live.md](../verification/agent-settings-live.md).
+- 2026-11-19, step 3: `agent_settings` block (default provider, profiles with settings, project file hash) in the
+  Planning and Delivery manifests, the Source review and follow-up reports and the source remediation manifest;
+  Delivery's brief lists the profiles; a resume records `agent_settings_changed` and `previous_agent_settings` and
+  adds a note to the review prompt, PR body and brief (D8). 441 tests. Live: `source-review-settings-2` with a
+  `default` model (see the record). The follow-up's report has no workflow-level test; it is covered by the shared
+  helper's tests only.

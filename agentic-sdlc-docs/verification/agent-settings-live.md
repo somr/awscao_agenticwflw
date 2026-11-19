@@ -1,8 +1,9 @@
 # Per-profile provider and model: live checks (2026-11-19)
 
 Result: a model declared for one profile in `agent_settings` reached exactly that profile's agent; the other profiles
-ran as before, and every step recorded the settings it used. Step 2 of
-[the agent settings plan](../plans/per-project-agent-settings.md).
+ran as before, and every step recorded the settings it used (step 2 of
+[the agent settings plan](../plans/per-project-agent-settings.md)). A `default` model reached every agent and the
+run's report recorded the settings with the project file's hash (step 3).
 
 ## Setup
 
@@ -32,3 +33,16 @@ one attempt each. Routing as expected: the slice defect `AUTO_FIX` (CORRECTNESS,
 The two parallel reviewer terminals (`67b3fa33`, `1a1eff52`) are correctness and security; neither names a model, so
 which is which does not matter here. Without the key, the step calls are unchanged (covered by tests; no live run
 needed).
+
+## Run `source-review-settings-2` (step 3)
+
+Installed library `20bf16cb251a6311` (`feature/agent-settings` `c673b58`). Temporary key, restored right after:
+`"agent_settings": {"default": {"model": "haiku"}}`. Same fixture, approved by the user. 23:30:23-23:32:57, five
+steps in one attempt each; routing unchanged (one `AUTO_FIX`, one `HUMAN_REQUIRED`).
+
+- All five terminals started with `--model haiku`; all five `agent-settings.json` files say `haiku`, `model_from:
+  default`.
+- `code-review.json` has `agent_settings` with `default_provider: claude_code`, all 18 profiles (a default applies to
+  every profile) with `haiku` from `default`, and `project_file_sha256` `e14e7a4c…`, equal to the SHA-256 of the edited
+  project file.
+
