@@ -1,6 +1,6 @@
 # Plan: install the workflow code as a frozen library and keep prompts in files
 
-Status: **step 0 done (2026-11-18); step 1 in progress (2026-11-19); D1-D10 agreed (D6 2026-11-18, the rest
+Status: **steps 0-1 done (2026-11-18, 2026-11-19); step 2 next; D1-D10 agreed (D6 2026-11-18, the rest
 2026-11-19).** Progress notes go at the end.
 
 ## 1. Why
@@ -96,3 +96,10 @@ they can be read and edited as text.
 - 2026-11-18, step 0: CAO 2.5.4 validates (no findings) and runs a 1.4 KB entry that verifies and imports a
   content-addressed library; a template prompt from the library reached the agent; a changed library file stopped
   the run before any step. Record: [workflow-library-spike.md](../verification/workflow-library-spike.md).
+- 2026-11-19, step 1: `build_library.py` replaces `build_workflow.py`; installer writes the library once
+  (`sdlc-lib/<id>/`, read-only, never replaced) and installs ~4.7 KB entries; tests run once (425 in about 50 s; the
+  10 `ResourceWarning`s were already on `main`); `build-and-install.md` rewritten for the library. Installed all five
+  (library `bc242cd5ecfe82ca`). Live: Planning ran from the library to its approved-plan guard, Source review fixture
+  routed as expected, a changed library file stopped a run. CAO 2.5.4 refuses to replace profiles installed by an
+  earlier CAO (delete and reinstall) and adds `x-cao-source-stem:` to installed profiles. Record:
+  [workflow-library-live.md](../verification/workflow-library-live.md).
